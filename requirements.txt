@@ -6,3 +6,4 @@ fastapi
 uvicorn[standard]
 pyaudio
 websockets
+google-cloud-translate

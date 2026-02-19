@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Subtitles & Translation</title>
+    <style>
+        :root {
+            --bg-color: #f4f4f9;
+            --card-bg: #ffffff;
+            --text-color: #333;
+            --interim-color: #888;
+            --border-color: #ddd;
+            --accent-color: #007bff;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background-color: var(--card-bg);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.5rem;
+        }
+
+        #status {
+            font-size: 0.9rem;
+            padding: 0.3rem 0.8rem;
+            border-radius: 1rem;
+            background-color: #eee;
+        }
+
+        #status.connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        #status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .controls select {
+            padding: 5px;
+            border-radius: 4px;
+        }
+
+        .controls button {
+            padding: 5px 10px;
+            border-radius: 4px;
+            border: none;
+            background: #007bff;
+            color: white;
+            cursor: pointer;
+        }
+
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1rem;
+            padding: 1rem;
+            overflow: hidden;
+            /* Columns scroll independently */
+        }
+
+        .column {
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .column-header {
+            padding: 1rem;
+            font-weight: bold;
+            border-bottom: 1px solid var(--border-color);
+            background-color: #f8f9fa;
+        }
+
+        .column-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+            scroll-behavior: smooth;
+        }
+
+        .segment {
+            padding: 0.8rem;
+            border-radius: 6px;
+            background-color: #fff;
+            border: 1px solid #eee;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            transition: all 0.2s ease;
+        }
+
+        .segment.interim {
+            color: var(--interim-color);
+            font-style: italic;
+            border-style: dashed;
+        }
+
+        .segment.final {
+            color: var(--text-color);
+            border-style: solid;
+            border-left: 4px solid var(--accent-color);
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #ccc;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #aaa;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>Live Subtitles</h1>
+
+        <div class="controls">
+            <label>Source:
+                <select id="source-lang">
+                    <option value="nl-NL">Dutch (Nederlands)</option>
+                    <option value="en-US">English (English)</option>
+                </select>
+            </label>
+
+            <label>Left:
+                <select id="target-lang-1">
+                    <option value="en">English (English)</option>
+                    <option value="fr">French (Français)</option>
+                    <option value="de">German (Deutsch)</option>
+                    <option value="ru">Russian (Русский)</option>
+                    <option value="uk">Ukrainian (Українська)</option>
+                    <option value="fa">Farsi (فارسی)</option>
+                    <option value="ar">Arabic (العربية)</option>
+                </select>
+            </label>
+
+            <label>Right:
+                <select id="target-lang-2">
+                    <option value="en">English (English)</option>
+                    <option value="fr" selected>French (Français)</option>
+                    <option value="de">German (Deutsch)</option>
+                    <option value="ru">Russian (Русский)</option>
+                    <option value="uk">Ukrainian (Українська)</option>
+                    <option value="fa">Farsi (فارسی)</option>
+                    <option value="ar">Arabic (العربية)</option>
+                </select>
+            </label>
+
+            <button id="pause-btn">Pause</button>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <div id="volume-bar"
+                style="width: 100px; height: 10px; background: #ddd; border-radius: 5px; overflow: hidden;">
+                <div id="volume-level" style="width: 0%; height: 100%; background: #28a745; transition: width 0.1s;">
+                </div>
+            </div>
+            <div id="status" class="disconnected">Disconnected</div>
+        </div>
+    </header>
+
+    <main>
+        <div class="column" id="col-source">
+            <div class="column-header" id="header-source">Nederlands (Source)</div>
+            <div class="column-content" id="list-source"></div>
+        </div>
+        <div class="column" id="col-trans1">
+            <div class="column-header" id="header-trans1">English (Translation)</div>
+            <div class="column-content" id="list-trans1"></div>
+        </div>
+        <div class="column" id="col-trans2">
+            <div class="column-header" id="header-trans2">Français (Translation)</div>
+            <div class="column-content" id="list-trans2"></div>
+        </div>
+    </main>
+
+    <script>
+        const wsUrl = `ws://${window.location.host}/ws`;
+        let socket;
+        const statusDiv = document.getElementById('status');
+
+        // Maps to store segment elements by ID to avoid re-querying DOM
+        const segments = {
+            source: {},
+            trans1: {},
+            trans2: {}
+        };
+
+        function connect() {
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = () => {
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'connected';
+                console.log("WebSocket connected");
+            };
+
+            socket.onclose = () => {
+                statusDiv.textContent = 'Disconnected - Reconnecting...';
+                statusDiv.className = 'disconnected';
+                setTimeout(connect, 3000);
+            };
+
+            socket.onerror = (err) => {
+                console.error("WebSocket error:", err);
+                socket.close();
+            };
+
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'volume') {
+                    // Update volume bar (RMS usually 0-32000, but with gain maybe higher)
+                    // Log scale approx: 
+                    const pct = Math.min(100, Math.max(0, (data.rms / 2000) * 100));
+                    document.getElementById('volume-level').style.width = pct + '%';
+                } else {
+                    handleMessage(data);
+                }
+            };
+            // Controls
+            const sourceSelect = document.getElementById('source-lang');
+            const target1Select = document.getElementById('target-lang-1');
+            const target2Select = document.getElementById('target-lang-2');
+            const pauseBtn = document.getElementById('pause-btn');
+
+            let isPaused = false;
+
+            function sendConfig() {
+                if (socket.readyState === WebSocket.OPEN) {
+                    const config = {
+                        action: "update_config",
+                        source_lang: sourceSelect.value,
+                        target_lang_1: target1Select.value,
+                        target_lang_2: target2Select.value,
+                        paused: isPaused
+                    };
+                    socket.send(JSON.stringify(config));
+
+                    // Update Headers (Simple way)
+                    document.getElementById('header-source').innerText = sourceSelect.options[sourceSelect.selectedIndex].text;
+                    document.getElementById('header-trans1').innerText = target1Select.options[target1Select.selectedIndex].text;
+                    document.getElementById('header-trans2').innerText = target2Select.options[target2Select.selectedIndex].text;
+                }
+            }
+
+            sourceSelect.addEventListener('change', sendConfig);
+            target1Select.addEventListener('change', sendConfig);
+            target2Select.addEventListener('change', sendConfig);
+
+            pauseBtn.addEventListener('click', () => {
+                isPaused = !isPaused;
+                pauseBtn.innerText = isPaused ? "Resume" : "Pause";
+                pauseBtn.style.background = isPaused ? "#dc3545" : "#007bff"; // Red when paused
+                sendConfig();
+            });
+
+            // Initial Trigger to sync headers
+            setTimeout(sendConfig, 1000);
+        }
+
+        function handleMessage(data) {
+            if (data.action === 'update_translation') {
+                const listId = `list-${data.col_key}`;
+                // Use 'final' style for async translations as they are stable
+                updateColumn(data.col_key, listId, data.id, 'final', data.text);
+            } else {
+                // Standard STT update
+                updateColumn('source', 'list-source', data.id, data.status, data.col1_text);
+                // Only update if present (legacy/interim might be empty)
+                if (data.col2_text) updateColumn('trans1', 'list-trans1', data.id, data.status, data.col2_text);
+                if (data.col3_text) updateColumn('trans2', 'list-trans2', data.id, data.status, data.col3_text);
+            }
+        }
+
+        function updateColumn(colKey, listId, segId, status, text) {
+            if (!text) return;
+
+            const listEl = document.getElementById(listId);
+            let segEl = segments[colKey][segId];
+
+            if (!segEl) {
+                // Create new segment
+                segEl = document.createElement('div');
+                segEl.className = `segment ${status}`;
+                segEl.id = `${colKey}-${segId}`;
+                listEl.appendChild(segEl);
+                segments[colKey][segId] = segEl;
+
+                // Auto-scroll to bottom
+                requestAnimationFrame(() => {
+                    listEl.scrollTop = listEl.scrollHeight;
+                });
+            }
+
+            // Update content and class
+            segEl.textContent = text;
+            segEl.className = `segment ${status}`;
+
+            // If final, maybe animate or lock?
+            if (status === 'final') {
+                // Ensure scroll happens on finalization too
+                requestAnimationFrame(() => {
+                    listEl.scrollTop = listEl.scrollHeight;
+                });
+            }
+        }
+
+        // Initialize connection
+        connect();
+    </script>
+</body>
+
+</html>

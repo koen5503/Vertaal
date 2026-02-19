@@ -1,0 +1,48 @@
+
+Context:
+We have successfully validated the "Client-Side Segmentation" strategy (prototype_vad_stream.py). We now want to upgrade this into a full live application with a microphone input and a real-time Web User Interface to display the transcriptions and (future) translations.
+
+Objective:
+Create a full-stack Python application (app.py and an index.html) using FastAPI and WebSockets. The app must capture live microphone audio, process it through our VAD+STT logic, and stream the results to a 3-column web interface.
+
+Requirement 1: The Backend (FastAPI & Audio Processing)
+
+Create a FastAPI server with a WebSocket endpoint (e.g., /ws).
+
+Integrate the microphone input using pyaudio. Run the audio capture and the STT/VAD generator in a background thread or async task so it doesn't block the web server.
+
+Message Protocol: The backend must send JSON messages to the frontend via the WebSocket whenever there is a text update. Use a unique ID for each sentence segment.
+
+Interim update: {"id": "seg_123", "status": "interim", "col1_text": "Laten we het..."}
+
+Final update (VAD Triggered): {"id": "seg_123", "status": "final", "col1_text": "Laten we het boek openen."}
+
+Requirement 2: The Frontend (HTML/CSS/JS)
+
+Serve a clean, modern index.html.
+
+Layout: Create a 3-column layout (e.g., Source Language, Translation 1, Translation 2) using CSS Flexbox or Grid.
+
+Scrolling: Each column must have its own independent vertical scrollbar (overflow-y: auto) and should automatically scroll to the bottom when new text arrives.
+
+Block-based UI: * Every segment (based on the unique ID) should be rendered as a distinct visual block (e.g., a div with a subtle border or background card) inside the columns.
+
+If a message with status: "interim" is received, update the text inside the block and style it to look "in progress" (e.g., grayed out or italic).
+
+If a message with status: "final" is received, update the text, lock the block visually (e.g., solid black text), and prepare the UI to create a new block for the next ID.
+
+Requirement 3: Translation Placeholders
+
+For now, the Python backend should just populate col1_text with the real STT output.
+
+Add dummy text for col2_text and col3_text (e.g., "[Translating: " + STT output + "]"). We will connect real translation APIs later.
+
+Deliverables:
+
+app.py (FastAPI backend combining PyAudio, WebRTC VAD, Google STT, and WebSockets).
+
+templates/index.html (The 3-column frontend interface).
+
+Updated requirements.txt (including fastapi, uvicorn, websockets, pyaudio).
+
+Constraint: Keep the frontend Vanilla JS and CSS for simplicity; do not use heavy frameworks like React or Vue for this prototype.

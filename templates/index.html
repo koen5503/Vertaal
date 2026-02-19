@@ -190,6 +190,14 @@
                 </select>
             </label>
 
+            <label>Input:
+                <!-- Hidden by default until scanned? Or just show "Default" -->
+                <select id="audio-device" style="max-width: 150px;">
+                    <option value="default">Default</option>
+                </select>
+            </label>
+            <button id="rescan-btn" title="Rescan Input Devices">🔄</button>
+
             <button id="pause-btn">Pause</button>
         </div>
 
@@ -265,7 +273,9 @@
             const sourceSelect = document.getElementById('source-lang');
             const target1Select = document.getElementById('target-lang-1');
             const target2Select = document.getElementById('target-lang-2');
+            const audioSelect = document.getElementById('audio-device');
             const pauseBtn = document.getElementById('pause-btn');
+            const rescanBtn = document.getElementById('rescan-btn');
 
             let isPaused = false;
 
@@ -276,7 +286,8 @@
                         source_lang: sourceSelect.value,
                         target_lang_1: target1Select.value,
                         target_lang_2: target2Select.value,
-                        paused: isPaused
+                        paused: isPaused,
+                        device_index: audioSelect.value
                     };
                     socket.send(JSON.stringify(config));
 
@@ -290,6 +301,13 @@
             sourceSelect.addEventListener('change', sendConfig);
             target1Select.addEventListener('change', sendConfig);
             target2Select.addEventListener('change', sendConfig);
+            audioSelect.addEventListener('change', sendConfig);
+
+            rescanBtn.addEventListener('click', () => {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ action: "get_devices" }));
+                }
+            });
 
             pauseBtn.addEventListener('click', () => {
                 isPaused = !isPaused;
@@ -303,7 +321,28 @@
         }
 
         function handleMessage(data) {
-            if (data.action === 'update_translation') {
+            if (data.action === 'device_list') {
+                const audioSelect = document.getElementById('audio-device');
+                const currentValue = audioSelect.value;
+                audioSelect.innerHTML = '<option value="default">Default</option>';
+
+                data.devices.forEach(dev => {
+                    const option = document.createElement('option');
+                    option.value = dev.index;
+                    option.text = dev.name;
+                    audioSelect.appendChild(option);
+                });
+
+                if (currentValue !== 'default') {
+                    // Try to keep selection if valid
+                    for (let i = 0; i < audioSelect.options.length; i++) {
+                        if (audioSelect.options[i].value == currentValue) {
+                            audioSelect.value = currentValue;
+                            break;
+                        }
+                    }
+                }
+            } else if (data.action === 'update_translation') {
                 const listId = `list-${data.col_key}`;
                 // Use 'final' style for async translations as they are stable
                 updateColumn(data.col_key, listId, data.id, 'final', data.text);

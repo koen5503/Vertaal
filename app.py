@@ -38,36 +38,67 @@ CHUNK_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000) # 480 samples
 class AudioStream:
     """Captures audio from microphone using PyAudio in a background thread."""
     def __init__(self):
-        self.p = pyaudio.PyAudio()
-        
-        # Debug: List Devices
-        print("Available Audio Devices:")
-        for i in range(self.p.get_device_count()):
-            dev = self.p.get_device_info_by_index(i)
-            if dev['maxInputChannels'] > 0:
-                print(f"  {i}: {dev['name']}")
-        
-        default_device = self.p.get_default_input_device_info()
-        print(f"Using Default Device: {default_device['name']} (Index: {default_device['index']})")
+        self.current_device_index = None
+        self._init_pyaudio()
+        self.vad = webrtcvad.Vad(1) # Mode 1: Standard
+        self.queue = queue.Queue()
+        self.running = False
+        self.thread = None
 
+    def _init_pyaudio(self):
+        self.p = pyaudio.PyAudio()
+        self._open_stream()
+
+    def _open_stream(self):
+        # Close existing if open
+        if hasattr(self, 'stream') and self.stream:
+            self.stream.close()
+            
+        print(f"Opening Stream on Device Index: {self.current_device_index}")
         self.stream = self.p.open(
             format=pyaudio.paInt16,
             channels=CHANNELS,
             rate=SAMPLE_RATE,
             input=True,
-            # input_device_index=None, # Use Default
+            input_device_index=self.current_device_index,
             frames_per_buffer=CHUNK_SIZE,
         )
-        self.vad = webrtcvad.Vad(1) # Mode 1: Standard
+
+    def list_devices(self):
+        """Re-initializes PyAudio to scan for new devices and returns list."""
+        # We don't terminate self.p here to avoid breaking active stream if possible,
+        # but to find NEW devices, we might need to? PyAudio usually sees them if OS sees them.
+        # Let's just iterate current instance.
+        devices = []
+        count = self.p.get_device_count()
+        for i in range(count):
+            try:
+                info = self.p.get_device_info_by_index(i)
+                if info.get('maxInputChannels') > 0:
+                    devices.append({"index": i, "name": info.get('name')})
+            except Exception as e:
+                print(f"Error getting device info {i}: {e}")
+        return devices
+
+    def change_device(self, index):
+        """Switches input device, restarting stream if running."""
+        print(f"Switching to Audio Device Index: {index}")
+        self.current_device_index = index if index is not None else None
         
-        self.queue = queue.Queue()
-        self.running = False
-        self.thread = None
+        was_running = self.running
+        if was_running:
+            self.stop(terminate_pyaudio=False)
+        
+        self._open_stream()
+        
+        if was_running:
+            self.start()
 
     def start(self):
         if self.running: return
         self.running = True
-        self.stream.start_stream()
+        if self.stream.is_stopped():
+            self.stream.start_stream()
         self.thread = threading.Thread(target=self._read_loop, daemon=True)
         self.thread.start()
     
@@ -83,13 +114,17 @@ class AudioStream:
                 break
         print("Audio Background Thread Stopped")
 
-    def stop(self):
+    def stop(self, terminate_pyaudio=True):
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
-        self.stream.stop_stream()
-        self.stream.close()
-        self.p.terminate()
+        
+        if self.stream:
+            self.stream.stop_stream()
+            self.stream.close()
+        
+        if terminate_pyaudio:
+            self.p.terminate()
 
     def read_chunk(self):
         """Blocking get from queue."""
@@ -98,7 +133,6 @@ class AudioStream:
         except queue.Empty:
             print("WARNING: Audio Queue Empty (generating silence)")
             return b'\x00' * (CHUNK_SIZE * 2)
-
 
     def calculate_rms(self, data):
         count = len(data) // 2
@@ -163,6 +197,9 @@ class TranscriptionEngine:
             interim_results=True,
         )
 
+    def get_input_devices(self):
+        return self.audio_stream.list_devices()
+
     def update_config(self, config):
         print(f"Updating Config: {config}")
         
@@ -179,6 +216,14 @@ class TranscriptionEngine:
             
         if "target_lang_2" in config:
             self.target_lang_2 = config["target_lang_2"]
+            
+        if "device_index" in config:
+            idx = config["device_index"]
+            # Convert to int if it's a digit string, else None (Default)
+            if idx == "default" or idx is None:
+                self.audio_stream.change_device(None)
+            else:
+                self.audio_stream.change_device(int(idx))
 
     async def translate_text_async(self, text, target_lang):
         """Async wrapper for Google Translate."""
@@ -378,7 +423,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 msg = json.loads(data)
                 if msg.get("action") == "update_config":
                      engine.update_config(msg)
+                elif msg.get("action") == "get_devices":
+                     devices = engine.get_input_devices()
+                     await websocket.send_json({"action": "device_list", "devices": devices})
             except Exception as e:
                 print(f"WS Handling Error: {e}")
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+

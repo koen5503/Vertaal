@@ -9,6 +9,9 @@ import threading
 import queue
 import sys
 from types import ModuleType
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Mock pkg_resources for webrtcvad (if needed repeatedly)
 if 'pkg_resources' not in sys.modules:
@@ -125,7 +128,7 @@ class AudioStream:
         print("Audio Background Thread Stopped")
 
     def _read_file_loop(self):
-        file_path = "/Users/koen/Ondertitels/2025-12-14-1000.wav"
+        file_path = os.getenv("DEMO_FILE_PATH", "2025-12-14-1000.wav")
         if not os.path.exists(file_path):
             print(f"Error: Demo file not found at {file_path}")
             self.running = False
@@ -216,18 +219,23 @@ class AudioStream:
 class TranscriptionEngine:
     """Manages STT streaming and VAD/Stability logic."""
     def __init__(self, broadcast_callback):
-        self.credentials_path = "/Users/koen/Ondertitels/ondertitels-486017-0ee48ab1ba8d.json"
+        self.credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        self.project_id = os.getenv("GOOGLE_PROJECT_ID")
+        
+        if not self.credentials_path or not os.path.exists(self.credentials_path):
+            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS is not set or file does not exist. Check your .env file.")
+        if not self.project_id:
+            raise ValueError("GOOGLE_PROJECT_ID is not set. Check your .env file.")
         
         # Clients
         self.speech_client = speech.SpeechClient.from_service_account_json(self.credentials_path)
         self.translate_client = translate.TranslationServiceClient.from_service_account_json(self.credentials_path)
-        self.project_id = "ondertitels-486017"
         self.parent = f"projects/{self.project_id}/locations/global"
 
         # State
-        self.source_lang = "nl-NL"
-        self.target_lang_1 = "en"
-        self.target_lang_2 = "fr"
+        self.source_lang = os.getenv("SOURCE_LANG", "nl-NL")
+        self.target_lang_1 = os.getenv("TARGET_LANG_1", "en")
+        self.target_lang_2 = os.getenv("TARGET_LANG_2", "fr")
         self.is_paused = False
         self.restart_required = False
         
@@ -239,6 +247,8 @@ class TranscriptionEngine:
         # State
         self.silence_frames = 0
         self.current_seg_id = f"seg_{int(time.time()*1000)}"
+        self.session_start_time = time.time()
+        self.MAX_DURATION_SECONDS = 30 * 60 # 30 minutes
         
         # Translation Cache (simple)
         self.last_translated_text = ""
@@ -264,7 +274,10 @@ class TranscriptionEngine:
         print(f"Updating Config: {config}")
         
         if "paused" in config:
+            was_paused = self.is_paused
             self.is_paused = config["paused"]
+            if was_paused and not self.is_paused:
+                self.session_start_time = time.time() # Reset cost control timer
 
         if "source_lang" in config and config["source_lang"] != self.source_lang:
             self.source_lang = config["source_lang"]
@@ -352,8 +365,22 @@ class TranscriptionEngine:
         
         def generator():
             chunk_count = 0
+            
+            # Reset timer if we are just starting and not paused
+            if not self.is_paused and chunk_count == 0:
+                self.session_start_time = time.time()
+                
             while not stop_event.is_set():
                 if self.restart_required or self.is_paused:
+                    stop_event.set()
+                    return
+
+                # Cost Control Timeout Check
+                if time.time() - self.session_start_time > self.MAX_DURATION_SECONDS:
+                    print(f"TIMEOUT REACHED ({self.MAX_DURATION_SECONDS}s). Auto-pausing.")
+                    self.is_paused = True
+                    msg = {"action": "auto_paused", "reason": "30_min_limit"}
+                    asyncio.run_coroutine_threadsafe(self.broadcast(msg), loop=loop)
                     stop_event.set()
                     return
 
@@ -472,7 +499,10 @@ def shutdown_event():
 
 @app.get("/", response_class=HTMLResponse)
 async def get():
-    with open("templates/index.html", "r") as f:
+    import os
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    template_path = os.path.join(base_dir, "templates", "index.html")
+    with open(template_path, "r") as f:
         return f.read()
 
 @app.websocket("/ws")

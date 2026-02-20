@@ -194,6 +194,7 @@
                 <!-- Hidden by default until scanned? Or just show "Default" -->
                 <select id="audio-device" style="max-width: 150px;">
                     <option value="default">Default</option>
+                    <option value="demo_file">Demo: 2025-12-14-1000.wav</option>
                 </select>
             </label>
             <button id="rescan-btn" title="Rescan Input Devices">🔄</button>
@@ -324,7 +325,7 @@
             if (data.action === 'device_list') {
                 const audioSelect = document.getElementById('audio-device');
                 const currentValue = audioSelect.value;
-                audioSelect.innerHTML = '<option value="default">Default</option>';
+                audioSelect.innerHTML = '<option value="default">Default</option><option value="demo_file">Demo: 2025-12-14-1000.wav</option>';
 
                 data.devices.forEach(dev => {
                     const option = document.createElement('option');

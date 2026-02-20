@@ -35,8 +35,10 @@ CHANNELS = 1
 CHUNK_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000) # 480 samples
 
 
+import wave
+
 class AudioStream:
-    """Captures audio from microphone using PyAudio in a background thread."""
+    """Captures audio from microphone or file in a background thread."""
     def __init__(self):
         self.current_device_index = None
         self._init_pyaudio()
@@ -53,6 +55,12 @@ class AudioStream:
         # Close existing if open
         if hasattr(self, 'stream') and self.stream:
             self.stream.close()
+            self.stream = None
+            
+        if self.current_device_index == "demo_file":
+            print("Preparing to stream from Demo File")
+            self.stream = None
+            return
             
         print(f"Opening Stream on Device Index: {self.current_device_index}")
         self.stream = self.p.open(
@@ -66,9 +74,6 @@ class AudioStream:
 
     def list_devices(self):
         """Re-initializes PyAudio to scan for new devices and returns list."""
-        # We don't terminate self.p here to avoid breaking active stream if possible,
-        # but to find NEW devices, we might need to? PyAudio usually sees them if OS sees them.
-        # Let's just iterate current instance.
         devices = []
         count = self.p.get_device_count()
         for i in range(count):
@@ -97,7 +102,7 @@ class AudioStream:
     def start(self):
         if self.running: return
         self.running = True
-        if self.stream.is_stopped():
+        if self.stream and self.stream.is_stopped():
             self.stream.start_stream()
         self.thread = threading.Thread(target=self._read_loop, daemon=True)
         self.thread.start()
@@ -105,6 +110,11 @@ class AudioStream:
     def _read_loop(self):
         """Background thread to continuously read audio."""
         print("Audio Background Thread Started")
+        
+        if self.current_device_index == "demo_file":
+            self._read_file_loop()
+            return
+            
         while self.running:
             try:
                 data = self.stream.read(CHUNK_SIZE, exception_on_overflow=False)
@@ -114,6 +124,55 @@ class AudioStream:
                 break
         print("Audio Background Thread Stopped")
 
+    def _read_file_loop(self):
+        file_path = "/Users/koen/Ondertitels/2025-12-14-1000.wav"
+        if not os.path.exists(file_path):
+            print(f"Error: Demo file not found at {file_path}")
+            self.running = False
+            return
+            
+        try:
+            wf = wave.open(file_path, 'rb')
+            
+            # Open an output stream to play the audio
+            out_stream = self.p.open(
+                format=self.p.get_format_from_width(wf.getsampwidth()),
+                channels=wf.getnchannels(),
+                rate=wf.getframerate(),
+                output=True
+            )
+            
+            sleep_time = CHUNK_SIZE / wf.getframerate()
+            
+            data = wf.readframes(CHUNK_SIZE)
+            while self.running and len(data) > 0:
+                start_t = time.time()
+                
+                # Write to output stream for playback
+                out_stream.write(data)
+                
+                # If length is less than expected, pad with zeros (though stream engine might not care)
+                if len(data) < CHUNK_SIZE * wf.getsampwidth():
+                    data += b'\x00' * (CHUNK_SIZE * wf.getsampwidth() - len(data))
+
+                self.queue.put(data)
+                data = wf.readframes(CHUNK_SIZE)
+                
+                # We don't need manual sleep anymore since out_stream.write blocks 
+                # for the duration of the audio chunk when outputting.
+                # Just to be safe if out_stream acts weirdly non-blocking:
+                elapsed = time.time() - start_t
+                if elapsed < sleep_time * 0.9: # Give some margin
+                    time.sleep((sleep_time * 0.9) - elapsed)
+                    
+            out_stream.stop_stream()
+            out_stream.close()
+            wf.close()
+        except Exception as e:
+            print(f"File Read Error: {e}")
+        print("File Demo Finished")
+        self.running = False
+
     def stop(self, terminate_pyaudio=True):
         self.running = False
         if self.thread and self.thread.is_alive():
@@ -122,6 +181,7 @@ class AudioStream:
         if self.stream:
             self.stream.stop_stream()
             self.stream.close()
+            self.stream = None
         
         if terminate_pyaudio:
             self.p.terminate()
@@ -219,8 +279,10 @@ class TranscriptionEngine:
             
         if "device_index" in config:
             idx = config["device_index"]
-            # Convert to int if it's a digit string, else None (Default)
-            if idx == "default" or idx is None:
+            # Convert to int if it's a digit string, else None or special string
+            if idx == "demo_file":
+                self.audio_stream.change_device("demo_file")
+            elif idx == "default" or idx is None:
                 self.audio_stream.change_device(None)
             else:
                 self.audio_stream.change_device(int(idx))

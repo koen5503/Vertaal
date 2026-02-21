@@ -54,30 +54,64 @@ CHUNK_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000) # 480 samples
 import wave
 
 class AudioStream:
-    """Captures audio from microphone or file strictly within a single background thread."""
+    """Captures audio from microphone or file in a background thread."""
     def __init__(self):
-        self.current_device_index = None
-        self.device_changed = False
+        self.p = pyaudio.PyAudio()
         self.vad = webrtcvad.Vad(1) # Mode 1: Standard
         self.queue = queue.Queue()
         self.running = False
         self.playback_paused = False
         self.thread = None
+        
+        # Resolve and use explicit default device index (None can fail on macOS)
+        try:
+            default = self.p.get_default_input_device_info()
+            self.current_device_index = int(default['index'])
+            print(f"Default Input Device: {default['name']} (Index: {self.current_device_index})")
+        except Exception as e:
+            print(f"No default input device found: {e}")
+            self.current_device_index = None
+        
+        # Open stream immediately on initialization (baseline working state)
+        self._open_stream()
+
+    def _open_stream(self):
+        # Close existing if open
+        if hasattr(self, 'stream') and self.stream:
+            self.stream.close()
+            self.stream = None
+            
+        if self.current_device_index == "demo_file":
+            print("Preparing to stream from Demo File")
+            self.stream = None
+            return
+            
+        print(f"Opening Stream on Device Index: {self.current_device_index}")
+        try:
+            self.stream = self.p.open(
+                format=pyaudio.paInt16,
+                channels=CHANNELS,
+                rate=SAMPLE_RATE,
+                input=True,
+                input_device_index=self.current_device_index,
+                frames_per_buffer=CHUNK_SIZE,
+            )
+        except Exception as e:
+            print(f"CRITICAL: Failed to open PyAudio stream on device {self.current_device_index}: {e}")
+            self.stream = None
 
     def list_devices(self):
-        """Creates a temporary PyAudio instance to scan for devices safely."""
+        """Uses existing PyAudio instance to scan for new devices and returns list."""
         devices = []
         try:
-            temp_p = pyaudio.PyAudio()
-            count = temp_p.get_device_count()
+            count = self.p.get_device_count()
             for i in range(count):
                 try:
-                    info = temp_p.get_device_info_by_index(i)
+                    info = self.p.get_device_info_by_index(i)
                     if info.get('maxInputChannels') > 0:
                         devices.append({"index": i, "name": info.get('name')})
                 except Exception as e:
                     pass
-            temp_p.terminate()
         except Exception as e:
             print(f"Error getting device info: {e}")
                 
@@ -90,7 +124,7 @@ class AudioStream:
         return devices
 
     def change_device(self, index):
-        """Signals the background thread to switch devices."""
+        """Switches input device by thoroughly resetting the stream."""
         print(f"Switching to Audio Device Index: {index}")
         normalized_index = index if index is not None else None
         
@@ -98,82 +132,67 @@ class AudioStream:
             return
             
         self.current_device_index = normalized_index
-        self.device_changed = True
         
-        # Flush the old audio queue so we don't hear stale buffer
+        # Stop reading and close streams (but don't terminate PyAudio yet)
+        was_running = self.running
+        self.stop(terminate_pyaudio=False)
+        
+        # Flush the old audio queue
         while not self.queue.empty():
             try:
                 self.queue.get_nowait()
             except queue.Empty:
                 break
-
-    def start(self):
-        if self.running: return
-        self.running = True
-        self.thread = threading.Thread(target=self._main_thread_loop, daemon=True)
-        self.thread.start()
-        
-    def _main_thread_loop(self):
-        """The single isolated thread where PyAudio lives."""
-        print("Audio Background Thread Started")
-        
-        # Initialize PyAudio inside the thread!
-        self.p = pyaudio.PyAudio()
-        
-        while self.running:
-            self.device_changed = False
-            
-            if self.current_device_index == "demo_file":
-                self._read_file_loop()
-            else:
-                self._read_mic_loop()
                 
-            # Loop restarts if device_changed was triggered
-        
-        # Cleanup
+        # Recreate PyAudio to clear macOS CoreAudio sample rate lock
         try:
             self.p.terminate()
         except:
             pass
-        print("Audio Background Thread Stopped")
+        self.p = pyaudio.PyAudio()
+        
+        # Reopen input stream on fresh instance
+        self._open_stream()
+        
+        if was_running:
+            self.start()
 
-    def _read_mic_loop(self):
-        print(f"Opening Stream on Device Index: {self.current_device_index}")
-        try:
-            stream = self.p.open(
-                format=pyaudio.paInt16,
-                channels=CHANNELS,
-                rate=SAMPLE_RATE,
-                input=True,
-                input_device_index=self.current_device_index,
-                frames_per_buffer=CHUNK_SIZE,
-            )
-        except Exception as e:
-            print(f"CRITICAL: Failed to open PyAudio stream on device {self.current_device_index}: {e}")
-            while self.running and not self.device_changed:
-                time.sleep(0.5)
-            return
-
-        while self.running and not self.device_changed:
+    def start(self):
+        if self.running: return
+        self.running = True
+        
+        # Unconditionally call start_stream to wake up frozen Mac CoreAudio units
+        if self.stream:
             try:
-                data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                self.stream.start_stream()
+            except Exception as e:
+                print(f"Failed to start stream: {e}")
+                
+        self.thread = threading.Thread(target=self._read_loop, daemon=True)
+        self.thread.start()
+
+    def _read_loop(self):
+        """Background thread to continuously read audio."""
+        if self.current_device_index == "demo_file":
+            self._read_file_loop()
+            return
+            
+        while self.running:
+            try:
+                if self.stream is None:
+                    time.sleep(0.5)
+                    continue
+                data = self.stream.read(CHUNK_SIZE, exception_on_overflow=False)
                 self.queue.put(data)
             except Exception as e:
                 print(f"Audio Read Error: {e}")
                 break
-                
-        try:
-            stream.stop_stream()
-            stream.close()
-        except:
-            pass
 
     def _read_file_loop(self):
         file_path = resource_path(os.getenv("DEMO_FILE_PATH", "2025-12-14-1000.wav"))
         if not os.path.exists(file_path):
             print(f"Error: Demo file not found at {file_path}")
-            while self.running and not self.device_changed:
-                time.sleep(0.5)
+            self.running = False
             return
             
         try:
@@ -188,7 +207,7 @@ class AudioStream:
             sleep_time = CHUNK_SIZE / wf.getframerate()
             data = wf.readframes(CHUNK_SIZE)
             
-            while self.running and not self.device_changed and len(data) > 0:
+            while self.running and len(data) > 0:
                 if self.playback_paused:
                     time.sleep(0.1)
                     continue
@@ -220,15 +239,25 @@ class AudioStream:
             print(f"File Read Error: {e}")
             
         print("File Demo Finished or Stopped")
-        # If the file finishes, we should stop the loop or allow device change to restart
-        # For now, let's just ensure running is false if file finishes naturally
-        if not self.device_changed: # Only set to false if not changing device
-            self.running = False
+        self.running = False
 
-    def stop(self, terminate_pyaudio=True):
+    def stop(self, terminate_pyaudio=False):
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
+            
+        if hasattr(self, 'stream') and self.stream:
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+            except:
+                pass
+                
+        if terminate_pyaudio and hasattr(self, 'p') and self.p:
+            try:
+                self.p.terminate()
+            except:
+                pass
 
     def read_chunk(self):
         """Blocking get from queue."""
@@ -344,7 +373,12 @@ class TranscriptionEngine:
             elif idx == "demo_file":
                 self.audio_stream.change_device("demo_file")
             elif idx == "default" or idx is None:
-                self.audio_stream.change_device(None)
+                # Resolve actual default device index (None can produce silence on macOS)
+                try:
+                    default = self.audio_stream.p.get_default_input_device_info()
+                    self.audio_stream.change_device(int(default['index']))
+                except:
+                    self.audio_stream.change_device(None)
             else:
                 self.audio_stream.change_device(int(idx))
 
@@ -554,7 +588,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 def shutdown_event():
-    engine.audio_stream.stop()
+    engine.audio_stream.stop(terminate_pyaudio=True)
 
 @app.get("/", response_class=HTMLResponse)
 async def get():

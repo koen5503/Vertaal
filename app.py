@@ -190,6 +190,46 @@ class AudioStream:
                 print(f"Audio Read Error: {e}")
                 break
 
+    def _resample_for_stt(self, data, src_rate, src_channels, src_width):
+        """Convert audio data to 16kHz mono 16-bit LINEAR16 for Google STT."""
+        # Unpack samples to 16-bit signed integers
+        if src_width == 2:
+            n = len(data) // 2
+            samples = list(struct.unpack(f"<{n}h", data))
+        elif src_width == 1:
+            samples = [((b - 128) << 8) for b in data]
+        elif src_width == 4:
+            n = len(data) // 4
+            raw = struct.unpack(f"<{n}i", data)
+            samples = [s >> 16 for s in raw]
+        else:
+            return data
+        
+        # Stereo/multi-channel to mono
+        if src_channels >= 2:
+            mono = []
+            for i in range(0, len(samples), src_channels):
+                mono.append(sum(samples[i:i+src_channels]) // src_channels)
+            samples = mono
+        
+        # Resample to 16kHz using linear interpolation
+        if src_rate != SAMPLE_RATE:
+            ratio = src_rate / SAMPLE_RATE
+            new_len = int(len(samples) / ratio)
+            resampled = []
+            for i in range(new_len):
+                src_pos = i * ratio
+                idx = int(src_pos)
+                frac = src_pos - idx
+                if idx + 1 < len(samples):
+                    val = int(samples[idx] * (1 - frac) + samples[idx + 1] * frac)
+                else:
+                    val = samples[idx] if idx < len(samples) else 0
+                resampled.append(max(-32768, min(32767, val)))
+            samples = resampled
+        
+        return struct.pack(f"<{len(samples)}h", *samples)
+
     def _read_file_loop(self):
         demo_name = os.getenv("DEMO_FILE_PATH", "2025-12-14-1000.wav")
         # Try bundled path first, then CWD for dynamically selected files
@@ -203,14 +243,20 @@ class AudioStream:
             
         try:
             wf = wave.open(file_path, 'rb')
+            src_rate = wf.getframerate()
+            src_channels = wf.getnchannels()
+            src_width = wf.getsampwidth()
+            needs_resample = (src_rate != SAMPLE_RATE or src_channels != CHANNELS)
+            print(f"Playing: {demo_name} (rate={src_rate}, channels={src_channels}, width={src_width}, resample={needs_resample})")
+            
             out_stream = self.p.open(
-                format=self.p.get_format_from_width(wf.getsampwidth()),
-                channels=wf.getnchannels(),
-                rate=wf.getframerate(),
+                format=self.p.get_format_from_width(src_width),
+                channels=src_channels,
+                rate=src_rate,
                 output=True
             )
             
-            sleep_time = CHUNK_SIZE / wf.getframerate()
+            sleep_time = CHUNK_SIZE / src_rate
             data = wf.readframes(CHUNK_SIZE)
             
             while self.running and len(data) > 0:
@@ -225,10 +271,15 @@ class AudioStream:
                     print(f"Write to PyAudio out failed: {e}")
                     break
                 
-                if len(data) < CHUNK_SIZE * wf.getsampwidth():
-                    data += b'\x00' * (CHUNK_SIZE * wf.getsampwidth() - len(data))
+                if len(data) < CHUNK_SIZE * src_width * src_channels:
+                    data += b'\x00' * (CHUNK_SIZE * src_width * src_channels - len(data))
 
-                self.queue.put(data)
+                # Resample for STT if needed, then queue
+                if needs_resample:
+                    stt_data = self._resample_for_stt(data, src_rate, src_channels, src_width)
+                else:
+                    stt_data = data
+                self.queue.put(stt_data)
                 data = wf.readframes(CHUNK_SIZE)
                 
                 elapsed = time.time() - start_t

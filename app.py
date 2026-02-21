@@ -189,7 +189,11 @@ class AudioStream:
                 break
 
     def _read_file_loop(self):
-        file_path = resource_path(os.getenv("DEMO_FILE_PATH", "2025-12-14-1000.wav"))
+        demo_name = os.getenv("DEMO_FILE_PATH", "2025-12-14-1000.wav")
+        # Try bundled path first, then CWD for dynamically selected files
+        file_path = resource_path(demo_name)
+        if not os.path.exists(file_path):
+            file_path = os.path.abspath(demo_name)
         if not os.path.exists(file_path):
             print(f"Error: Demo file not found at {file_path}")
             self.running = False

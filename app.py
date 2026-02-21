@@ -11,7 +11,20 @@ import sys
 from types import ModuleType
 from dotenv import load_dotenv
 
-load_dotenv()
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+# Pass the resolved path to the .env file
+env_path = resource_path(".env")
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+else:
+    load_dotenv()
 
 # Mock pkg_resources for webrtcvad (if needed repeatedly)
 if 'pkg_resources' not in sys.modules:
@@ -128,7 +141,7 @@ class AudioStream:
         print("Audio Background Thread Stopped")
 
     def _read_file_loop(self):
-        file_path = os.getenv("DEMO_FILE_PATH", "2025-12-14-1000.wav")
+        file_path = resource_path(os.getenv("DEMO_FILE_PATH", "2025-12-14-1000.wav"))
         if not os.path.exists(file_path):
             print(f"Error: Demo file not found at {file_path}")
             self.running = False
@@ -219,7 +232,7 @@ class AudioStream:
 class TranscriptionEngine:
     """Manages STT streaming and VAD/Stability logic."""
     def __init__(self, broadcast_callback):
-        self.credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        self.credentials_path = resource_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
         self.project_id = os.getenv("GOOGLE_PROJECT_ID")
         
         if not self.credentials_path or not os.path.exists(self.credentials_path):
@@ -499,10 +512,7 @@ def shutdown_event():
 
 @app.get("/", response_class=HTMLResponse)
 async def get():
-    import os
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    template_path = os.path.join(base_dir, "templates", "index.html")
-    with open(template_path, "r") as f:
+    with open(resource_path("templates/index.html"), "r", encoding="utf-8") as f:
         return f.read()
 
 @app.websocket("/ws")
@@ -523,3 +533,9 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
+if __name__ == "__main__":
+    import uvicorn
+    import multiprocessing
+    multiprocessing.freeze_support()
+    print("Starting server on http://127.0.0.1:8000")
+    uvicorn.run(app, host="127.0.0.1", port=8000)

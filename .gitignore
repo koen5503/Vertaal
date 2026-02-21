@@ -1,3 +1,5 @@
 *.wav
 __pycache__
 *.json
+.env
+.env.*

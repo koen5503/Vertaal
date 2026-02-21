@@ -322,7 +322,14 @@
         }
 
         function handleMessage(data) {
-            if (data.action === 'device_list') {
+            if (data.action === 'auto_paused') {
+                const pauseBtn = document.getElementById('pause-btn');
+                window.isPaused = true;
+                pauseBtn.innerText = "Resume";
+                pauseBtn.style.background = "#dc3545";
+                alert("The demo has been automatically paused after 30 minutes to manage cloud costs.\n\nClick 'Resume' if you wish to continue.");
+                // We don't sendConfig back since the server already knows it's paused
+            } else if (data.action === 'device_list') {
                 const audioSelect = document.getElementById('audio-device');
                 const currentValue = audioSelect.value;
                 audioSelect.innerHTML = '<option value="default">Default</option><option value="demo_file">Demo: 2025-12-14-1000.wav</option>';

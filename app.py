@@ -128,13 +128,16 @@ class AudioStream:
         print(f"Switching to Audio Device Index: {index}")
         normalized_index = index if index is not None else None
         
-        if self.current_device_index == normalized_index:
+        # Allow re-selection of demo_file (actual file may have changed)
+        if self.current_device_index == normalized_index and normalized_index != "demo_file":
             return
             
         self.current_device_index = normalized_index
         
+        # Force running to False in case previous file loop already ended
+        self.running = False
+        
         # Stop reading and close streams (but don't terminate PyAudio yet)
-        was_running = self.running
         self.stop(terminate_pyaudio=False)
         
         # Flush the old audio queue
@@ -154,8 +157,7 @@ class AudioStream:
         # Reopen input stream on fresh instance
         self._open_stream()
         
-        if was_running:
-            self.start()
+        self.start()
 
     def start(self):
         if self.running: return

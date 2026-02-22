@@ -156,8 +156,6 @@ class AudioStream:
         
         # Reopen input stream on fresh instance
         self._open_stream()
-        
-        self.start()
 
     def start(self):
         if self.running: return
@@ -500,22 +498,27 @@ class TranscriptionEngine:
             
             if self.restart_required:
                 print("Restarting stream due to config change...")
+                if not self.audio_stream.running:
+                    self.audio_stream.start()
             
             self.current_seg_id = f"seg_{int(time.time()*1000)}"
 
     def _run_google_stream_sync(self, stop_event, loop):
         """Blocking function to handle one Google Stream session."""
         
+        generator_stop = False
+        
         def generator():
+            nonlocal generator_stop
             chunk_count = 0
             
             # Reset timer if we are just starting and not paused
             if not self.is_paused and chunk_count == 0:
                 self.session_start_time = time.time()
                 
-            while not stop_event.is_set():
+            while not generator_stop:
                 if self.restart_required or self.is_paused:
-                    stop_event.set()
+                    generator_stop = True
                     return
 
                 # Cost Control Timeout Check
@@ -532,7 +535,7 @@ class TranscriptionEngine:
                 chunk = self.audio_stream.read_chunk()
                 if not chunk: 
                     # If queue return None, stream is dead
-                    stop_event.set()
+                    generator_stop = True
                     break
                 
                 # Broadcast Volume
@@ -572,13 +575,11 @@ class TranscriptionEngine:
                 
                 status = "final" if is_final else "interim"
                 
-                # VAD CUT CHECK (Reverted to 400ms)
+                # VAD CUT CHECK: stop feeding audio, but keep listening for Google's real final
                 if silence_ms > 400 and stability > 0.8:
                     if not is_final:
-                        print(f"FORCE FINAL: '{transcript}' (Silence {silence_ms}ms)")
-                        is_final = True
-                        status = "final"
-                        stop_event.set() 
+                        print(f"FORCE FINAL: '{transcript}' (Silence {silence_ms}ms) — waiting for Google final...")
+                        generator_stop = True
                 
                 if is_final:
                     stop_event.set()

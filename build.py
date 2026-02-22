@@ -27,7 +27,7 @@ def main():
     data_files = [
         f"templates{sep}templates",
         f"ondertitels-486017-0ee48ab1ba8d.json{sep}.",
-        f"2025-12-14-1000.wav{sep}.",
+        f"BV.wav{sep}.",
         f".env{sep}."
     ]
 

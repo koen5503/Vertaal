@@ -5,7 +5,7 @@ a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[('templates', 'templates'), ('ondertitels-486017-0ee48ab1ba8d.json', '.'), ('2025-12-14-1000.wav', '.'), ('.env', '.')],
+    datas=[('templates', 'templates'), ('ondertitels-486017-0ee48ab1ba8d.json', '.'), ('BV.wav', '.'), ('.env', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

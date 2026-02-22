@@ -181,9 +181,9 @@
             <label>Right:
                 <select id="target-lang-2">
                     <option value="en">English (English)</option>
-                    <option value="fr" selected>French (Français)</option>
+                    <option value="fr">French (Français)</option>
                     <option value="de">German (Deutsch)</option>
-                    <option value="ru">Russian (Русский)</option>
+                    <option value="ru" selected>Russian (Русский)</option>
                     <option value="uk">Ukrainian (Українська)</option>
                     <option value="fa">Farsi (فارسی)</option>
                     <option value="ar">Arabic (العربية)</option>
@@ -193,13 +193,16 @@
             <label>Input:
                 <!-- Hidden by default until scanned? Or just show "Default" -->
                 <select id="audio-device" style="max-width: 150px;">
-                    <option value="default">Default</option>
-                    <option value="demo_file">Demo: 2025-12-14-1000.wav</option>
+                    <option value="default">Default Mic</option>
+                    <option value="demo_file" selected>Demo: BV.wav</option>
                 </select>
             </label>
             <button id="rescan-btn" title="Rescan Input Devices">🔄</button>
 
             <button id="pause-btn">Pause</button>
+            <button id="stop-btn"
+                style="background:#dc3545;color:white;border:none;padding:5px 15px;border-radius:4px;cursor:pointer;"
+                title="Stop the server">⏹ Stop</button>
         </div>
 
         <div style="display: flex; align-items: center; gap: 10px;">
@@ -246,6 +249,8 @@
                 statusDiv.textContent = 'Connected';
                 statusDiv.className = 'connected';
                 console.log("WebSocket connected");
+                // Immediately scan input devices
+                socket.send(JSON.stringify({ action: "get_devices" }));
             };
 
             socket.onclose = () => {
@@ -317,6 +322,16 @@
                 sendConfig();
             });
 
+            document.getElementById('stop-btn').addEventListener('click', () => {
+                if (confirm('Weet je zeker dat je de server wilt stoppen?')) {
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({ action: "shutdown" }));
+                    }
+                    document.getElementById('status').textContent = 'Server gestopt';
+                    document.getElementById('status').className = 'disconnected';
+                }
+            });
+
             // Initial Trigger to sync headers
             setTimeout(sendConfig, 1000);
         }
@@ -332,7 +347,7 @@
             } else if (data.action === 'device_list') {
                 const audioSelect = document.getElementById('audio-device');
                 const currentValue = audioSelect.value;
-                audioSelect.innerHTML = '<option value="default">Default</option>';
+                audioSelect.innerHTML = '<option value="default">Default Mic</option><option value="demo_file">Demo: BV.wav</option>';
 
                 data.devices.forEach(dev => {
                     const option = document.createElement('option');
@@ -341,13 +356,11 @@
                     audioSelect.appendChild(option);
                 });
 
-                if (currentValue !== 'default') {
-                    // Try to keep selection if valid
-                    for (let i = 0; i < audioSelect.options.length; i++) {
-                        if (audioSelect.options[i].value == currentValue) {
-                            audioSelect.value = currentValue;
-                            break;
-                        }
+                // Restore previous selection
+                for (let i = 0; i < audioSelect.options.length; i++) {
+                    if (audioSelect.options[i].value == currentValue) {
+                        audioSelect.value = currentValue;
+                        break;
                     }
                 }
             } else if (data.action === 'update_translation') {

@@ -63,17 +63,10 @@ class AudioStream:
         self.playback_paused = False
         self.thread = None
         
-        # Resolve and use explicit default device index (None can fail on macOS)
-        try:
-            default = self.p.get_default_input_device_info()
-            self.current_device_index = int(default['index'])
-            print(f"Default Input Device: {default['name']} (Index: {self.current_device_index})")
-        except Exception as e:
-            print(f"No default input device found: {e}")
-            self.current_device_index = None
-        
-        # Open stream immediately on initialization (baseline working state)
-        self._open_stream()
+        # Default to demo file playback on startup
+        self.current_device_index = "demo_file"
+        self.stream = None
+        print(f"Startup mode: Demo File ({os.getenv('DEMO_FILE_PATH', 'BV.wav')})")
 
     def _open_stream(self):
         # Close existing if open
@@ -115,10 +108,13 @@ class AudioStream:
         except Exception as e:
             print(f"Error getting device info: {e}")
                 
-        # Dynamically add all .wav files in current directory
+        # Dynamically add all .wav files from CWD and bundle directory
         import glob
-        wav_files = glob.glob("*.wav")
-        for w in wav_files:
+        wav_files = set(os.path.basename(f) for f in glob.glob("*.wav"))
+        bundle_dir = resource_path(".")
+        if bundle_dir != os.path.abspath("."):
+            wav_files.update(os.path.basename(f) for f in glob.glob(os.path.join(bundle_dir, "*.wav")))
+        for w in sorted(wav_files):
             devices.append({"index": f"file_{w}", "name": f"File: {w}"})
             
         return devices
@@ -666,6 +662,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif msg.get("action") == "get_devices":
                      devices = engine.get_input_devices()
                      await websocket.send_json({"action": "device_list", "devices": devices})
+                elif msg.get("action") == "shutdown":
+                     print("Shutdown requested from UI")
+                     engine.audio_stream.stop(terminate_pyaudio=True)
+                     import os, signal
+                     os.kill(os.getpid(), signal.SIGINT)
             except Exception as e:
                 print(f"WS Handling Error: {e}")
     except WebSocketDisconnect:

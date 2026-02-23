@@ -368,6 +368,12 @@ class TranscriptionEngine:
         # State
         self.silence_frames = 0
         self.current_seg_id = f"seg_{int(time.time()*1000)}"
+        self.last_translate_time = 0
+        self.translate_interval = int(os.getenv("TRANSLATE_INTERVAL_SEC", "10"))
+        self.stability_threshold = float(os.getenv("STABILITY_THRESHOLD", "0.8"))
+        self.silence_threshold_ms = int(os.getenv("SILENCE_THRESHOLD_MS", "400"))
+        self.min_words = int(os.getenv("MIN_WORDS_FOR_STABILITY", "5"))
+        self.translate_count = 0  # Running counter of translated characters
         self.session_start_time = time.time()
         self.MAX_DURATION_SECONDS = 30 * 60 # 30 minutes
         
@@ -570,16 +576,25 @@ class TranscriptionEngine:
                 stability = result.stability
                 is_final = result.is_final
                 
-                print(f"STT: '{transcript}' | Stability: {stability:.2f} | Final: {is_final}")
+                print(f"STT: '{transcript}' | Words: {len(transcript.split())} | Stability: {stability:.2f} | Final: {is_final}")
                 
+                word_count = len(transcript.split())
                 silence_ms = self.silence_frames * FRAME_DURATION_MS
+                
+                # Effective stability threshold: require 1.0 for short segments
+                eff_stability = 1.0 if word_count < self.min_words else self.stability_threshold
+                
+                # Detect sentence-ending punctuation
+                sentence_end = transcript.rstrip().endswith(('.', '!', '?'))
                 
                 status = "final" if is_final else "interim"
                 
                 # VAD CUT CHECK: stop feeding audio, but keep listening for Google's real final
-                if silence_ms > 400 and stability > 0.8:
+                # Trigger on silence OR sentence-ending punctuation
+                if (silence_ms > self.silence_threshold_ms or sentence_end) and stability > eff_stability:
                     if not is_final:
-                        print(f"FORCE FINAL: '{transcript}' (Silence {silence_ms}ms) — waiting for Google final...")
+                        reason = f"Punctuation '{transcript[-1]}'" if sentence_end else f"Silence {silence_ms}ms"
+                        print(f"FORCE FINAL: '{transcript}' ({reason}) — waiting for Google final...")
                         generator_stop = True
                 
                 if is_final:
@@ -593,8 +608,12 @@ class TranscriptionEngine:
                 }
                 asyncio.run_coroutine_threadsafe(self.broadcast(msg), loop=loop)
 
-                # Fire Async Translations
-                if is_final or stability > 0.8:
+                # Fire Async Translations (throttled for interims)
+                now = time.time()
+                if is_final or (stability > eff_stability and now - self.last_translate_time >= self.translate_interval):
+                    self.last_translate_time = now
+                    self.translate_count += len(transcript) * 2  # chars × 2 languages
+                    print(f"Translate ({self.translate_count} chars total): '{transcript[:50]}'..."  if len(transcript) > 50 else f"Translate ({self.translate_count} chars total): '{transcript}'")
                     # Fire and forget tasks
                     asyncio.run_coroutine_threadsafe(
                         self.handle_translation(self.current_seg_id, transcript, self.target_lang_1, "trans1"),
@@ -669,8 +688,16 @@ async def websocket_endpoint(websocket: WebSocket):
                      await websocket.send_json({"action": "device_list", "devices": devices})
                 elif msg.get("action") == "shutdown":
                      print("Shutdown requested from UI")
+                     engine.is_paused = True
+                     engine.restart_required = True
                      engine.audio_stream.stop(terminate_pyaudio=True)
-                     import os, signal
+                     # Force exit after brief delay to let cleanup finish
+                     def force_exit():
+                         time.sleep(1)
+                         print("Forcing exit...")
+                         os._exit(0)
+                     threading.Thread(target=force_exit, daemon=True).start()
+                     import signal
                      os.kill(os.getpid(), signal.SIGINT)
             except Exception as e:
                 print(f"WS Handling Error: {e}")

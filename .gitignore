@@ -3,3 +3,7 @@ __pycache__
 *.json
 .env
 .env.*
+dist/
+build/
+*.pyc
+.DS_Store

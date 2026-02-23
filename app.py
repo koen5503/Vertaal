@@ -414,15 +414,18 @@ class TranscriptionEngine:
             
         if "device_index" in config:
             idx = config["device_index"]
-            self.restart_required = True
             
             # Convert to int if it's a digit string, else None or special string
             if isinstance(idx, str) and idx.startswith("file_"):
                 file_name = idx.replace("file_", "", 1)
                 os.environ["DEMO_FILE_PATH"] = file_name
                 self.audio_stream.change_device("demo_file")
+                self.restart_required = True
             elif idx == "demo_file":
-                self.audio_stream.change_device("demo_file")
+                # Only restart if not already on demo_file (avoid double-play on startup)
+                if self.audio_stream.current_device_index != "demo_file":
+                    self.audio_stream.change_device("demo_file")
+                    self.restart_required = True
             elif idx == "default" or idx is None:
                 # Resolve actual default device index (None can produce silence on macOS)
                 try:
@@ -430,8 +433,10 @@ class TranscriptionEngine:
                     self.audio_stream.change_device(int(default['index']))
                 except:
                     self.audio_stream.change_device(None)
+                self.restart_required = True
             else:
                 self.audio_stream.change_device(int(idx))
+                self.restart_required = True
 
     async def translate_text_async(self, text, target_lang):
         """Async wrapper for Google Translate."""

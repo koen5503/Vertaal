@@ -39,8 +39,9 @@ import pyaudio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-from google.cloud import speech
-from google.cloud import translate
+import mlx_whisper
+import numpy as np
+from ollama import AsyncClient
 
 app = FastAPI()
 
@@ -185,7 +186,7 @@ class AudioStream:
                 break
 
     def _resample_for_stt(self, data, src_rate, src_channels, src_width):
-        """Convert audio data to 16kHz mono 16-bit LINEAR16 for Google STT."""
+        """Convert audio data to 16kHz mono 16-bit LINEAR16 for STT."""
         # Unpack samples to 16-bit signed integers
         if src_width == 2:
             n = len(data) // 2
@@ -337,21 +338,22 @@ class AudioStream:
         return struct.pack(f"<{count}h", *scaled)
 
 
+# --- Language code to full name mapping for Ollama translation prompt ---
+LANG_NAMES = {
+    "en": "English", "fr": "French", "de": "German", "ru": "Russian",
+    "uk": "Ukrainian", "fa": "Farsi", "ar": "Arabic", "nl": "Dutch",
+    "es": "Spanish", "pt": "Portuguese", "it": "Italian", "zh": "Chinese",
+    "ja": "Japanese", "ko": "Korean", "tr": "Turkish", "pl": "Polish",
+}
+
+
 class TranscriptionEngine:
-    """Manages STT streaming and VAD/Stability logic."""
+    """Manages local STT (mlx-whisper) and translation (Ollama) logic."""
     def __init__(self, broadcast_callback):
-        self.credentials_path = resource_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-        self.project_id = os.getenv("GOOGLE_PROJECT_ID")
-        
-        if not self.credentials_path or not os.path.exists(self.credentials_path):
-            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS is not set or file does not exist. Check your .env file.")
-        if not self.project_id:
-            raise ValueError("GOOGLE_PROJECT_ID is not set. Check your .env file.")
-        
-        # Clients
-        self.speech_client = speech.SpeechClient.from_service_account_json(self.credentials_path)
-        self.translate_client = translate.TranslationServiceClient.from_service_account_json(self.credentials_path)
-        self.parent = f"projects/{self.project_id}/locations/global"
+        # Local model config
+        self.whisper_model = os.getenv("WHISPER_MODEL", "mlx-community/whisper-small-mlx")
+        self.ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+        self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
         # State
         self.source_lang = os.getenv("SOURCE_LANG", "nl-NL")
@@ -359,81 +361,64 @@ class TranscriptionEngine:
         self.target_lang_2 = os.getenv("TARGET_LANG_2", "fr")
         self.is_paused = False
         self.restart_required = False
-        
-        self._setup_recognition_config()
 
         self.broadcast = broadcast_callback
         self.audio_stream = AudioStream()
-        
-        # State
+
+        # Timing / VAD state
         self.silence_frames = 0
+        self.speech_frames = 0
         self.current_seg_id = f"seg_{int(time.time()*1000)}"
         self.last_translate_time = 0
         self.translate_interval = int(os.getenv("TRANSLATE_INTERVAL_SEC", "10"))
-        self.stability_threshold = float(os.getenv("STABILITY_THRESHOLD", "0.8"))
         self.silence_threshold_ms = int(os.getenv("SILENCE_THRESHOLD_MS", "400"))
-        self.min_words = int(os.getenv("MIN_WORDS_FOR_STABILITY", "5"))
-        self.translate_count = 0  # Running counter of translated characters
+        self.min_speech_frames = 10  # Minimum speech frames before we bother transcribing (~300ms)
+        self.translate_count = 0
         self.session_start_time = time.time()
-        self.MAX_DURATION_SECONDS = 30 * 60 # 30 minutes
-        
-        # Translation Cache (simple)
-        self.last_translated_text = ""
+        self.MAX_DURATION_SECONDS = 30 * 60  # 30 minutes
 
-    def _setup_recognition_config(self):
-        self.config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=SAMPLE_RATE,
-            language_code=self.source_lang,
-            enable_automatic_punctuation=True,
-            model="default",
-            use_enhanced=True,
-        )
-        self.streaming_config = speech.StreamingRecognitionConfig(
-            config=self.config,
-            interim_results=True,
-        )
+        # Audio accumulation buffer (LINEAR16 bytes)
+        self.audio_buffer = bytearray()
+
+        print(f"Local STT model : {self.whisper_model}")
+        print(f"Ollama model    : {self.ollama_model} @ {self.ollama_url}")
 
     def get_input_devices(self):
         return self.audio_stream.list_devices()
 
     def update_config(self, config):
         print(f"Updating Config: {config}")
-        
+
         if "paused" in config:
             was_paused = self.is_paused
             self.is_paused = config["paused"]
             self.audio_stream.playback_paused = self.is_paused
             if was_paused and not self.is_paused:
-                self.session_start_time = time.time() # Reset cost control timer
+                self.session_start_time = time.time()
 
         if "source_lang" in config and config["source_lang"] != self.source_lang:
             self.source_lang = config["source_lang"]
-            self._setup_recognition_config()
             self.restart_required = True
-        
+
         if "target_lang_1" in config:
             self.target_lang_1 = config["target_lang_1"]
-            
+
         if "target_lang_2" in config:
             self.target_lang_2 = config["target_lang_2"]
-            
+
         if "device_index" in config:
             idx = config["device_index"]
-            
-            # Convert to int if it's a digit string, else None or special string
+
             if isinstance(idx, str) and idx.startswith("file_"):
                 file_name = idx.replace("file_", "", 1)
                 os.environ["DEMO_FILE_PATH"] = file_name
                 self.audio_stream.change_device("demo_file")
                 self.restart_required = True
             elif idx == "demo_file":
-                # Only restart if not already on demo_file (avoid double-play on startup)
                 if self.audio_stream.current_device_index != "demo_file":
                     self.audio_stream.change_device("demo_file")
                     self.restart_required = True
             elif idx == "default" or idx is None:
-                # Resolve actual default device index (None can produce silence on macOS)
                 try:
                     default = self.audio_stream.p.get_default_input_device_info()
                     self.audio_stream.change_device(int(default['index']))
@@ -445,191 +430,169 @@ class TranscriptionEngine:
                 self.restart_required = True
 
     async def translate_text_async(self, text, target_lang):
-        """Async wrapper for Google Translate."""
-        if not text or not target_lang: return ""
-        if target_lang == self.source_lang.split("-")[0]: return text
-        
-        loop = asyncio.get_running_loop()
-        
-        def _call():
-            try:
-                response = self.translate_client.translate_text(
-                    request={
-                        "parent": self.parent,
-                        "contents": [text],
-                        "mime_type": "text/plain",
-                        "source_language_code": self.source_lang.split("-")[0],
-                        "target_language_code": target_lang,
-                    }
-                )
-                return response.translations[0].translated_text
-            except Exception as e:
-                print(f"Translation Error ({target_lang}): {e}")
-                return text
-                
-        return await loop.run_in_executor(None, _call)
+        """Translate text using local Ollama server (fully async)."""
+        if not text or not target_lang:
+            return ""
+        if target_lang == self.source_lang.split("-")[0]:
+            return text
+
+        lang_name = LANG_NAMES.get(target_lang, target_lang)
+        system_prompt = (
+            f"Je bent een professionele, native vertaler. "
+            f"Vertaal de volgende Nederlandse tekst naar het {lang_name}. "
+            f"Behoud de originele toon en betekenis perfect. "
+            f"Geef UITSLUITEND de directe vertaling terug. "
+            f"Geef geen uitleg, geen introductie, geen aanhalingstekens en geen markdown."
+        )
+
+        try:
+            client = AsyncClient(host=self.ollama_url)
+            response = await client.chat(
+                model=self.ollama_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                options={"temperature": 0},
+            )
+            return response["message"]["content"].strip()
+        except Exception as e:
+            print(f"Translation Error ({target_lang}): {e}")
+            return text
 
     async def handle_translation(self, seg_id, text, target_lang, col_key):
         """Background task to translate and update UI."""
-        if not text: return
+        if not text:
+            return
         translated = await self.translate_text_async(text, target_lang)
         msg = {
             "action": "update_translation",
             "id": seg_id,
-            "col_key": col_key, 
-            "text": translated
+            "col_key": col_key,
+            "text": translated,
         }
         await self.broadcast(msg)
 
+    def _transcribe_buffer(self):
+        """Convert accumulated audio buffer to numpy and run mlx-whisper."""
+        if len(self.audio_buffer) < CHUNK_SIZE * 2:
+            return None
+
+        # Convert LINEAR16 (int16) bytes → float32 numpy array normalised to [-1, 1]
+        audio_np = np.frombuffer(bytes(self.audio_buffer), dtype=np.int16).astype(np.float32) / 32768.0
+
+        # Derive whisper language from source_lang (e.g. "nl-NL" → "nl")
+        whisper_lang = self.source_lang.split("-")[0]
+
+        try:
+            result = mlx_whisper.transcribe(
+                audio_np,
+                path_or_hf_repo=self.whisper_model,
+                language=whisper_lang,
+            )
+            text = result.get("text", "").strip()
+            return text if text else None
+        except Exception as e:
+            print(f"Whisper Transcription Error: {e}")
+            return None
+
     async def run(self):
-        """Main loop."""
+        """Main transcription loop — accumulates audio, transcribes on silence."""
         print("Starting Audio Stream...")
         self.audio_stream.start()
-        
+
         loop = asyncio.get_event_loop()
-        
+        chunk_count = 0
+
         while True:
+            # Wait for audio stream to be active
             if not self.audio_stream.running:
                 await asyncio.sleep(0.5)
                 continue
-                
+
             if self.is_paused:
                 await asyncio.sleep(0.1)
                 continue
-                
-            self.restart_required = False
-            stop_event = asyncio.Event()
-            
-            # Blocking Google API call in thread
-            await loop.run_in_executor(None, self._run_google_stream_sync, stop_event, loop)
-            
+
             if self.restart_required:
                 print("Restarting stream due to config change...")
+                self.restart_required = False
+                self.audio_buffer = bytearray()
+                self.silence_frames = 0
+                self.speech_frames = 0
+                self.current_seg_id = f"seg_{int(time.time()*1000)}"
                 if not self.audio_stream.running:
                     self.audio_stream.start()
-            
-            self.current_seg_id = f"seg_{int(time.time()*1000)}"
+                continue
 
-    def _run_google_stream_sync(self, stop_event, loop):
-        """Blocking function to handle one Google Stream session."""
-        
-        generator_stop = False
-        
-        def generator():
-            nonlocal generator_stop
-            chunk_count = 0
-            
-            # Reset timer if we are just starting and not paused
-            if not self.is_paused and chunk_count == 0:
-                self.session_start_time = time.time()
-                
-            while not generator_stop:
-                if self.restart_required or self.is_paused:
-                    generator_stop = True
-                    return
+            # Session timeout check
+            if time.time() - self.session_start_time > self.MAX_DURATION_SECONDS:
+                print(f"TIMEOUT REACHED ({self.MAX_DURATION_SECONDS}s). Auto-pausing.")
+                self.is_paused = True
+                await self.broadcast({"action": "auto_paused", "reason": "30_min_limit"})
+                continue
 
-                # Cost Control Timeout Check
-                if time.time() - self.session_start_time > self.MAX_DURATION_SECONDS:
-                    print(f"TIMEOUT REACHED ({self.MAX_DURATION_SECONDS}s). Auto-pausing.")
-                    self.is_paused = True
-                    msg = {"action": "auto_paused", "reason": "30_min_limit"}
-                    asyncio.run_coroutine_threadsafe(self.broadcast(msg), loop=loop)
-                    stop_event.set()
-                    return
+            # Read one chunk (blocking, run in executor to keep event loop alive)
+            chunk = await loop.run_in_executor(None, self.audio_stream.read_chunk)
+            if not chunk:
+                continue
 
-                chunk_count += 1
-                # Read from Queue (Blocking)
-                chunk = self.audio_stream.read_chunk()
-                if not chunk: 
-                    # If queue return None, stream is dead
-                    generator_stop = True
-                    break
-                
-                # Broadcast Volume
-                if chunk_count % 10 == 0:
-                     rms = self.audio_stream.calculate_rms(chunk)
-                     vol_msg = {"type": "volume", "rms": rms}
-                     asyncio.run_coroutine_threadsafe(self.broadcast(vol_msg), loop=loop)
+            chunk_count += 1
 
-                # VAD Check
-                is_speech = self.audio_stream.vad.is_speech(chunk, SAMPLE_RATE)
-                if is_speech:
-                    self.silence_frames = 0
-                else:
-                    self.silence_frames += 1
-                
-                yield speech.StreamingRecognizeRequest(audio_content=chunk)
+            # Broadcast volume periodically
+            if chunk_count % 10 == 0:
+                rms = self.audio_stream.calculate_rms(chunk)
+                await self.broadcast({"type": "volume", "rms": rms})
 
-        try:
-            # Call Google API
-            responses = self.speech_client.streaming_recognize(
-                config=self.streaming_config,
-                requests=generator()
-            )
-            
-            for response in responses:
-                if not response.results: continue
-                result = response.results[0]
-                if not result.alternatives: continue
-                
-                transcript = result.alternatives[0].transcript
-                stability = result.stability
-                is_final = result.is_final
-                
-                print(f"STT: '{transcript}' | Words: {len(transcript.split())} | Stability: {stability:.2f} | Final: {is_final}")
-                
-                word_count = len(transcript.split())
-                silence_ms = self.silence_frames * FRAME_DURATION_MS
-                
-                # Effective stability threshold: require 1.0 for short segments
-                eff_stability = 1.0 if word_count < self.min_words else self.stability_threshold
-                
-                # Detect sentence-ending punctuation
-                sentence_end = transcript.rstrip().endswith(('.', '!', '?'))
-                
-                status = "final" if is_final else "interim"
-                
-                # VAD CUT CHECK: stop feeding audio, but keep listening for Google's real final
-                # Trigger on silence OR sentence-ending punctuation
-                if (silence_ms > self.silence_threshold_ms or sentence_end) and stability > eff_stability:
-                    if not is_final:
-                        reason = f"Punctuation '{transcript[-1]}'" if sentence_end else f"Silence {silence_ms}ms"
-                        print(f"FORCE FINAL: '{transcript}' ({reason}) — waiting for Google final...")
-                        generator_stop = True
-                
-                if is_final:
-                    stop_event.set()
+            # VAD check
+            is_speech = self.audio_stream.vad.is_speech(chunk, SAMPLE_RATE)
+            if is_speech:
+                self.silence_frames = 0
+                self.speech_frames += 1
+            else:
+                self.silence_frames += 1
 
-                # Basic Broadcast (Source Text)
-                msg = {
-                    "id": self.current_seg_id,
-                    "status": status,
-                    "col1_text": transcript,
-                }
-                asyncio.run_coroutine_threadsafe(self.broadcast(msg), loop=loop)
+            # Always accumulate audio
+            self.audio_buffer.extend(chunk)
 
-                # Fire Async Translations (throttled for interims)
-                now = time.time()
-                if is_final or (stability > eff_stability and now - self.last_translate_time >= self.translate_interval):
-                    self.last_translate_time = now
-                    self.translate_count += len(transcript) * 2  # chars × 2 languages
-                    print(f"Translate ({self.translate_count} chars total): '{transcript[:50]}'..."  if len(transcript) > 50 else f"Translate ({self.translate_count} chars total): '{transcript}'")
-                    # Fire and forget tasks
-                    asyncio.run_coroutine_threadsafe(
-                        self.handle_translation(self.current_seg_id, transcript, self.target_lang_1, "trans1"),
-                        loop=loop
+            silence_ms = self.silence_frames * FRAME_DURATION_MS
+
+            # Trigger transcription on silence boundary (only if we had real speech)
+            if silence_ms >= self.silence_threshold_ms and self.speech_frames >= self.min_speech_frames:
+                buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)  # 2 bytes per sample
+                print(f"Silence detected ({silence_ms}ms) — transcribing {buffer_duration_s:.1f}s of audio...")
+
+                # Run whisper in executor to avoid blocking the event loop
+                transcript = await loop.run_in_executor(None, self._transcribe_buffer)
+
+                if transcript:
+                    print(f"STT: '{transcript}'")
+
+                    # Broadcast source text as final
+                    msg = {
+                        "id": self.current_seg_id,
+                        "status": "final",
+                        "col1_text": transcript,
+                    }
+                    await self.broadcast(msg)
+
+                    # Fire async translations
+                    self.translate_count += len(transcript) * 2
+                    log_text = f"'{transcript[:50]}'..." if len(transcript) > 50 else f"'{transcript}'"
+                    print(f"Translate ({self.translate_count} chars total): {log_text}")
+
+                    asyncio.create_task(
+                        self.handle_translation(self.current_seg_id, transcript, self.target_lang_1, "trans1")
                     )
-                    asyncio.run_coroutine_threadsafe(
-                        self.handle_translation(self.current_seg_id, transcript, self.target_lang_2, "trans2"),
-                        loop=loop
+                    asyncio.create_task(
+                        self.handle_translation(self.current_seg_id, transcript, self.target_lang_2, "trans2")
                     )
-                
-                if stop_event.is_set():
-                    break
 
-        except Exception as e:
-            print(f"Stream Error: {e}")
-            stop_event.set()
+                # Reset for next segment
+                self.audio_buffer = bytearray()
+                self.silence_frames = 0
+                self.speech_frames = 0
+                self.current_seg_id = f"seg_{int(time.time()*1000)}"
 
 
 # --- FastAPI / WebSocket ---

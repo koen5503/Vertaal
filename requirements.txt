@@ -1,10 +1,10 @@
-google-cloud-speech
-google-cloud-texttospeech
+mlx-whisper
+ollama
+numpy
 webrtcvad
 setuptools
 fastapi
 uvicorn[standard]
 pyaudio
 websockets
-google-cloud-translate
 python-dotenv

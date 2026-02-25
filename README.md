@@ -96,15 +96,17 @@ SILENCE_THRESHOLD_MS=300
 
 ## Usage
 
-### Development Server
+### Starting the Server
 
 ```bash
 python3 app.py
 ```
 
-The application starts a local web server at `http://127.0.0.1:8000` and automatically opens your browser. The Whisper model is downloaded automatically on first run.
+The server starts on `http://0.0.0.0:8000` (all network interfaces) and automatically opens your browser. The Whisper model is downloaded automatically on first run.
 
-### Web Interface Controls
+### Admin Interface (`/`)
+
+Full control panel with audio source selection, language settings, and playback controls.
 
 | Control | Function |
 |---|---|
@@ -114,6 +116,16 @@ The application starts a local web server at `http://127.0.0.1:8000` and automat
 | **🔄** | Rescan available audio input devices |
 | **Pause / Resume** | Pause/resume transcription |
 | **⏹ Stop** | Gracefully shut down the server |
+
+### Read-Only Viewer (`/live`)
+
+A stripped-down, read-only page for other devices on the local network. Shows the same 3-column subtitle display without any controls.
+
+```
+http://<your-mac-ip>:8000/live
+```
+
+Find your Mac's IP with: `ipconfig getifaddr en0`
 
 ## Supported Languages
 
@@ -143,7 +155,8 @@ The application starts a local web server at `http://127.0.0.1:8000` and automat
 Vertaal/
 ├── app.py                 # Main application (server, audio, STT, translation)
 ├── templates/
-│   └── index.html         # Web interface (3-column subtitle display)
+│   ├── index.html         # Admin interface (full controls)
+│   └── viewer.html        # Read-only viewer for LAN clients (/live)
 ├── build.py               # PyInstaller build script
 ├── app.spec               # PyInstaller spec file
 ├── requirements.txt       # Python dependencies

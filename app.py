@@ -437,9 +437,11 @@ class TranscriptionEngine:
             return text
 
         lang_name = LANG_NAMES.get(target_lang, target_lang)
+        source_lang_code = self.source_lang.split("-")[0]
+        source_lang_name = LANG_NAMES.get(source_lang_code, source_lang_code)
         system_prompt = (
             f"Je bent een professionele, native vertaler. "
-            f"Vertaal de volgende Nederlandse tekst naar het {lang_name}. "
+            f"Vertaal de volgende {source_lang_name}e tekst naar het {lang_name}. "
             f"Behoud de originele toon en betekenis perfect. "
             f"Geef UITSLUITEND de directe vertaling terug. "
             f"Geef geen uitleg, geen introductie, geen aanhalingstekens en geen markdown."
@@ -505,15 +507,7 @@ class TranscriptionEngine:
         chunk_count = 0
 
         while True:
-            # Wait for audio stream to be active
-            if not self.audio_stream.running:
-                await asyncio.sleep(0.5)
-                continue
-
-            if self.is_paused:
-                await asyncio.sleep(0.1)
-                continue
-
+            # Handle restart FIRST (device/file switch sets running=False)
             if self.restart_required:
                 print("Restarting stream due to config change...")
                 self.restart_required = False
@@ -523,6 +517,15 @@ class TranscriptionEngine:
                 self.current_seg_id = f"seg_{int(time.time()*1000)}"
                 if not self.audio_stream.running:
                     self.audio_stream.start()
+                continue
+
+            # Wait for audio stream to be active
+            if not self.audio_stream.running:
+                await asyncio.sleep(0.5)
+                continue
+
+            if self.is_paused:
+                await asyncio.sleep(0.1)
                 continue
 
             # Session timeout check
@@ -636,6 +639,11 @@ async def get():
     with open(resource_path("templates/index.html"), "r", encoding="utf-8") as f:
         return f.read()
 
+@app.get("/live", response_class=HTMLResponse)
+async def get_viewer():
+    with open(resource_path("templates/viewer.html"), "r", encoding="utf-8") as f:
+        return f.read()
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -671,5 +679,5 @@ if __name__ == "__main__":
     import uvicorn
     import multiprocessing
     multiprocessing.freeze_support()
-    print("Starting server on http://127.0.0.1:8000")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    print("Starting server on http://0.0.0.0:8000")
+    uvicorn.run(app, host="0.0.0.0", port=8000)

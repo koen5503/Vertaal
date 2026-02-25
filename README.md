@@ -1,30 +1,29 @@
 # Live Subtitles & Translation
 
-Real-time speech-to-text subtitling with simultaneous translation into two target languages. Built for live events, meetings, and presentations where multilingual accessibility is needed.
+Real-time speech-to-text subtitling with simultaneous translation into two target languages. Runs **entirely locally** on Apple Silicon using MLX-Whisper for transcription and Ollama for translation — no cloud APIs, no internet required.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
-![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey)
+![Platform](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-lightgrey)
 ![License](https://img.shields.io/badge/License-Private-red)
 
 ## Features
 
-- **Real-time Speech-to-Text** — Google Cloud Speech-to-Text with streaming recognition
-- **Dual Translation** — Simultaneous translation into two configurable target languages (Google Cloud Translate)
+- **Local Speech-to-Text** — MLX-Whisper optimized for Apple Silicon (M1/M2/M3/M4)
+- **Local Translation** — Ollama LLM translation with configurable models (e.g., `aya-expanse:8b`)
+- **Fully Offline** — No cloud APIs, no internet connection needed after initial model download
 - **Voice Activity Detection** — WebRTC VAD with intelligent silence detection for natural sentence segmentation
 - **Multiple Audio Sources** — Live microphone input or WAV file playback
 - **Automatic Resampling** — WAV files in any format (stereo, 44.1kHz, 48kHz, etc.) are automatically converted to 16kHz mono for STT
 - **Web Interface** — Three-column live display (source + 2 translations) with volume indicator
 - **Device Switching** — Switch between microphones and audio files during a session
-- **Cross-Platform** — Runs on macOS and Windows, both as development server and standalone executable
-- **Cost Control** — Automatic pause after 30 minutes to manage cloud API costs
-- **Standalone Build** — PyInstaller packaging for single-file executable distribution
+- **Session Limit** — 30-minute auto-pause safety timer
 
 ## Architecture
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Audio Source    │────▶│  AudioStream     │────▶│  Google STT     │
-│  (Mic / WAV)    │     │  (PyAudio + VAD) │     │  (Streaming)    │
+│  Audio Source    │────▶│  AudioStream     │────▶│  MLX-Whisper    │
+│  (Mic / WAV)    │     │  (PyAudio + VAD) │     │  (Batch STT)    │
 └─────────────────┘     └──────────────────┘     └────────┬────────┘
                                                           │
                         ┌──────────────────┐              │
@@ -35,7 +34,7 @@ Real-time speech-to-text subtitling with simultaneous translation into two targe
               ┌─────────────────┼─────────────────┐
               ▼                 ▼                 ▼
        ┌────────────┐   ┌────────────┐   ┌────────────┐
-       │  Source     │   │  Google    │   │  Google    │
+       │  Source     │   │  Ollama    │   │  Ollama    │
        │  Text (NL)  │   │  Translate │   │  Translate │
        │             │   │  (EN)      │   │  (RU)      │
        └────────────┘   └────────────┘   └────────────┘
@@ -44,13 +43,9 @@ Real-time speech-to-text subtitling with simultaneous translation into two targe
 ## Prerequisites
 
 - Python 3.10+
-- Google Cloud project with enabled APIs:
-  - Cloud Speech-to-Text
-  - Cloud Translation
-- Service account JSON key file
-- PortAudio (for PyAudio):
-  - macOS: `brew install portaudio`
-  - Windows: included with PyAudio wheel
+- Apple Silicon Mac (M1/M2/M3/M4) — required for MLX-Whisper
+- [Ollama](https://ollama.com/download) installed and running
+- PortAudio (for PyAudio): `brew install portaudio`
 
 ## Installation
 
@@ -59,12 +54,17 @@ Real-time speech-to-text subtitling with simultaneous translation into two targe
 git clone https://github.com/koen5503/Vertaal.git
 cd Vertaal
 
-# Install dependencies
-pip install -r requirements.txt
+# Install Python dependencies
+pip3 install -r requirements.txt
+
+# Install and start Ollama
+brew install ollama
+ollama pull aya-expanse:8b
+ollama serve   # keep running in a separate terminal
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your Google Cloud credentials and preferences
+# Edit .env with your preferences
 ```
 
 ## Configuration
@@ -72,22 +72,27 @@ cp .env.example .env
 Create a `.env` file in the project root:
 
 ```env
-GOOGLE_APPLICATION_CREDENTIALS=your-service-account-key.json
-GOOGLE_PROJECT_ID=your-project-id
+WHISPER_MODEL=mlx-community/whisper-small-mlx
+OLLAMA_MODEL=aya-expanse:8b
+OLLAMA_URL=http://localhost:11434
 SOURCE_LANG=nl-NL
 TARGET_LANG_1=en
 TARGET_LANG_2=ru
 DEMO_FILE_PATH=BV.wav
+TRANSLATE_INTERVAL_SEC=15
+SILENCE_THRESHOLD_MS=300
 ```
 
 | Variable | Description | Example |
 |---|---|---|
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to Google Cloud service account JSON | `my-project-key.json` |
-| `GOOGLE_PROJECT_ID` | Google Cloud project ID | `my-project-123` |
+| `WHISPER_MODEL` | MLX-Whisper model (HuggingFace repo) | `mlx-community/whisper-small-mlx`, `mlx-community/whisper-large-v3-turbo` |
+| `OLLAMA_MODEL` | Ollama translation model | `aya-expanse:8b`, `qwen2.5:3b`, `llama3.1:8b` |
+| `OLLAMA_URL` | Ollama server URL | `http://localhost:11434` |
 | `SOURCE_LANG` | Source language (BCP-47 code) | `nl-NL`, `en-US` |
 | `TARGET_LANG_1` | First translation target language | `en`, `fr`, `de` |
 | `TARGET_LANG_2` | Second translation target language | `ru`, `uk`, `ar` |
 | `DEMO_FILE_PATH` | Default WAV file for demo playback | `BV.wav` |
+| `SILENCE_THRESHOLD_MS` | Silence duration to trigger transcription | `300`, `400` |
 
 ## Usage
 
@@ -97,15 +102,7 @@ DEMO_FILE_PATH=BV.wav
 python3 app.py
 ```
 
-The application starts a local web server at `http://127.0.0.1:8000` and automatically opens your browser.
-
-### Standalone Build
-
-```bash
-python build.py
-```
-
-Creates a single executable in `dist/app` (macOS) or `dist/app.exe` (Windows) with all resources bundled.
+The application starts a local web server at `http://127.0.0.1:8000` and automatically opens your browser. The Whisper model is downloaded automatically on first run.
 
 ### Web Interface Controls
 
@@ -121,19 +118,22 @@ Creates a single executable in `dist/app` (macOS) or `dist/app.exe` (Windows) wi
 ## Supported Languages
 
 ### Source (Speech-to-Text)
+
 - Dutch (nl-NL)
 - English (en-US)
 
 ### Target (Translation)
-- English, French, German, Russian, Ukrainian, Farsi, Arabic
+
+- English, French, German, Russian, Ukrainian, Farsi, Arabic, Spanish, Portuguese, Italian, Chinese, Japanese, Korean, Turkish, Polish
 
 ## Technical Details
 
 - **Audio Format**: 16kHz, 16-bit, mono PCM (LINEAR16)
 - **Frame Duration**: 30ms (480 samples per chunk)
 - **VAD**: WebRTC Voice Activity Detection (Mode 1)
-- **Silence Threshold**: 400ms with stability > 0.8 triggers segment finalization
-- **Session Limit**: 30 minutes auto-pause for cost control
+- **STT**: Batch transcription triggered by silence threshold — audio accumulated in-memory as numpy array
+- **Translation**: Async Ollama calls (`AsyncClient`) with `temperature=0` for deterministic output
+- **Session Limit**: 30 minutes auto-pause
 - **WebSocket**: Real-time bidirectional communication between server and browser
 - **Resampling**: Automatic linear interpolation for non-16kHz WAV files
 
@@ -155,13 +155,21 @@ Vertaal/
 ## Troubleshooting
 
 ### Microphone reads silence (RMS=0)
-- **macOS**: Grant microphone permission to your terminal app in *System Settings → Privacy & Security → Microphone*
-- **Windows**: Check microphone access in *Settings → Privacy → Microphone*
 
-### WAV file not found in standalone build
-WAV files placed in the same directory as the executable are automatically found. Bundled files (via `app.spec`) are included in the executable.
+- Grant microphone permission to your terminal app in *System Settings → Privacy & Security → Microphone*
+
+### Ollama connection errors
+
+- Ensure Ollama is running: `ollama serve`
+- Ensure the model is pulled: `ollama pull aya-expanse:8b`
+- Check the URL matches `OLLAMA_URL` in `.env`
+
+### WAV file not found
+
+WAV files placed in the same directory as the application are automatically found.
 
 ### Server won't stop
+
 Use the **⏹ Stop** button in the web interface, or press `Ctrl+C` in the terminal.
 
 ---

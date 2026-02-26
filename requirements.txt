@@ -1,6 +1,4 @@
-mlx-whisper
-ollama
-numpy
+# App
 webrtcvad
 setuptools
 fastapi
@@ -8,3 +6,13 @@ uvicorn[standard]
 pyaudio
 websockets
 python-dotenv
+
+# Local Pipeline (Apple Silicon)
+mlx-whisper
+numpy
+ollama
+
+# Cloud Pipeline (Google Cloud)
+google-cloud-speech
+google-cloud-texttospeech
+google-cloud-translate

@@ -673,6 +673,11 @@ async def get():
     with open(resource_path("templates/index.html"), "r", encoding="utf-8") as f:
         return f.read()
 
+@app.get("/live", response_class=HTMLResponse)
+async def get_viewer():
+    with open(resource_path("templates/viewer.html"), "r", encoding="utf-8") as f:
+        return f.read()
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -708,5 +713,5 @@ if __name__ == "__main__":
     import uvicorn
     import multiprocessing
     multiprocessing.freeze_support()
-    print("Starting server on http://127.0.0.1:8000")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    print("Starting server on http://0.0.0.0:8000")
+    uvicorn.run(app, host="0.0.0.0", port=8000)

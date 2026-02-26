@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Subtitles — Viewer</title>
+    <style>
+        :root {
+            --bg-color: #f4f4f9;
+            --card-bg: #ffffff;
+            --text-color: #333;
+            --interim-color: #888;
+            --border-color: #ddd;
+            --accent-color: #007bff;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background-color: var(--card-bg);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.5rem;
+        }
+
+        #status {
+            font-size: 0.9rem;
+            padding: 0.3rem 0.8rem;
+            border-radius: 1rem;
+            background-color: #eee;
+        }
+
+        #status.connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        #status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1rem;
+            padding: 1rem;
+            overflow: hidden;
+        }
+
+        .column {
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .column-header {
+            padding: 1rem;
+            font-weight: bold;
+            border-bottom: 1px solid var(--border-color);
+            background-color: #f8f9fa;
+        }
+
+        .column-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+            scroll-behavior: smooth;
+        }
+
+        .segment {
+            padding: 0.8rem;
+            border-radius: 6px;
+            background-color: #fff;
+            border: 1px solid #eee;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            transition: all 0.2s ease;
+        }
+
+        .segment.interim {
+            color: var(--interim-color);
+            font-style: italic;
+            border-style: dashed;
+        }
+
+        .segment.final {
+            color: var(--text-color);
+            border-style: solid;
+            border-left: 4px solid var(--accent-color);
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #ccc;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #aaa;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>Live Subtitles — Viewer</h1>
+        <div id="status" class="disconnected">Disconnected</div>
+    </header>
+
+    <main>
+        <div class="column" id="col-source">
+            <div class="column-header" id="header-source">Source</div>
+            <div class="column-content" id="list-source"></div>
+        </div>
+        <div class="column" id="col-trans1">
+            <div class="column-header" id="header-trans1">Translation 1</div>
+            <div class="column-content" id="list-trans1"></div>
+        </div>
+        <div class="column" id="col-trans2">
+            <div class="column-header" id="header-trans2">Translation 2</div>
+            <div class="column-content" id="list-trans2"></div>
+        </div>
+    </main>
+
+    <script>
+        const wsUrl = 'ws://' + window.location.host + '/ws';
+        let socket;
+        const statusDiv = document.getElementById('status');
+
+        const segments = {
+            source: {},
+            trans1: {},
+            trans2: {}
+        };
+
+        function connect() {
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = () => {
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'connected';
+            };
+
+            socket.onclose = () => {
+                statusDiv.textContent = 'Disconnected — Reconnecting...';
+                statusDiv.className = 'disconnected';
+                setTimeout(connect, 3000);
+            };
+
+            socket.onerror = (err) => {
+                console.error("WebSocket error:", err);
+                socket.close();
+            };
+
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                // Ignore volume updates on viewer
+                if (data.type === 'volume') return;
+                handleMessage(data);
+            };
+        }
+
+        function handleMessage(data) {
+            if (data.action === 'device_list' || data.action === 'auto_paused') {
+                // Ignore admin-only messages
+                return;
+            } else if (data.action === 'update_translation') {
+                const listId = `list-${data.col_key}`;
+                updateColumn(data.col_key, listId, data.id, 'final', data.text);
+            } else {
+                updateColumn('source', 'list-source', data.id, data.status, data.col1_text);
+                if (data.col2_text) updateColumn('trans1', 'list-trans1', data.id, data.status, data.col2_text);
+                if (data.col3_text) updateColumn('trans2', 'list-trans2', data.id, data.status, data.col3_text);
+            }
+        }
+
+        function updateColumn(colKey, listId, segId, status, text) {
+            if (!text) return;
+
+            const listEl = document.getElementById(listId);
+            let segEl = segments[colKey][segId];
+
+            if (!segEl) {
+                segEl = document.createElement('div');
+                segEl.className = `segment ${status}`;
+                segEl.id = `${colKey}-${segId}`;
+                listEl.appendChild(segEl);
+                segments[colKey][segId] = segEl;
+
+                requestAnimationFrame(() => {
+                    listEl.scrollTop = listEl.scrollHeight;
+                });
+            }
+
+            segEl.textContent = text;
+            segEl.className = `segment ${status}`;
+
+            if (status === 'final') {
+                requestAnimationFrame(() => {
+                    listEl.scrollTop = listEl.scrollHeight;
+                });
+            }
+        }
+
+        connect();
+    </script>
+</body>
+
+</html>

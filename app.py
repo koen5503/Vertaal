@@ -598,7 +598,7 @@ class TranscriptionEngine:
                 continue
 
             self.restart_required = False
-            stop_event = asyncio.Event()
+            stop_event = threading.Event()
 
             await loop.run_in_executor(None, self._run_google_stream_sync, stop_event, loop)
 

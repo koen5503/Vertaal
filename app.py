@@ -542,9 +542,6 @@ class TranscriptionEngine:
             f"Geef geen uitleg, geen introductie, geen aanhalingstekens en geen markdown."
         )
 
-        if self.glossary_text:
-            system_prompt += f"\n\nBelangrijke context/begrippen (glossary): {self.glossary_text}"
-
         try:
             client = AsyncClient(host=self.ollama_url)
             response = await client.chat(

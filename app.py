@@ -382,6 +382,17 @@ class TranscriptionEngine:
         self.session_start_time = time.time()
         self.MAX_DURATION_SECONDS = 30 * 60  # 30 minutes
 
+        # Load glossary if exists
+        self.glossary_text = ""
+        self.glossary_phrases = []
+        glos_path = resource_path("SpGlos.txt")
+        if os.path.exists(glos_path):
+            with open(glos_path, "r", encoding="utf-8") as f:
+                self.glossary_text = f.read().strip()
+                # Split by comma for Google Cloud phrases
+                self.glossary_phrases = [p.strip() for p in self.glossary_text.split(",") if p.strip()]
+                print(f"Loaded glossary from {glos_path}: {len(self.glossary_phrases)} phrases")
+
         if self.pipeline_mode == "cloud":
             # --- Cloud mode setup ---
             self.credentials_path = resource_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""))
@@ -414,6 +425,10 @@ class TranscriptionEngine:
     # --- Cloud-only helpers ---
 
     def _setup_recognition_config(self):
+        speech_contexts = []
+        if self.glossary_phrases:
+            speech_contexts.append(speech.SpeechContext(phrases=self.glossary_phrases))
+
         self.config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=SAMPLE_RATE,
@@ -421,6 +436,7 @@ class TranscriptionEngine:
             enable_automatic_punctuation=True,
             model="default",
             use_enhanced=True,
+            speech_contexts=speech_contexts,
         )
         self.streaming_config = speech.StreamingRecognitionConfig(
             config=self.config,
@@ -525,6 +541,9 @@ class TranscriptionEngine:
             f"Geef UITSLUITEND de directe vertaling terug. "
             f"Geef geen uitleg, geen introductie, geen aanhalingstekens en geen markdown."
         )
+
+        if self.glossary_text:
+            system_prompt += f"\n\nBelangrijke context/begrippen (glossary): {self.glossary_text}"
 
         try:
             client = AsyncClient(host=self.ollama_url)
@@ -709,11 +728,17 @@ class TranscriptionEngine:
         audio_np = np.frombuffer(bytes(self.audio_buffer), dtype=np.int16).astype(np.float32) / 32768.0
         whisper_lang = self.source_lang.split("-")[0]
 
+        transcribe_kwargs = {
+            "path_or_hf_repo": self.whisper_model,
+            "language": whisper_lang,
+        }
+        if self.glossary_text:
+            transcribe_kwargs["initial_prompt"] = self.glossary_text
+
         try:
             result = mlx_whisper.transcribe(
                 audio_np,
-                path_or_hf_repo=self.whisper_model,
-                language=whisper_lang,
+                **transcribe_kwargs
             )
             text = result.get("text", "").strip()
             return text if text else None

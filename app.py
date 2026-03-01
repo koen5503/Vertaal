@@ -738,6 +738,33 @@ class TranscriptionEngine:
                 **transcribe_kwargs
             )
             text = result.get("text", "").strip()
+
+            # --- Anti-Hallucination Filter ---
+            if text:
+                import string
+                clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower()
+                words = clean_text.split()
+
+                if not words:
+                    return None
+
+                # 1. Repetition filter (e.g., "kerk kerk kerk" or "kerk kerk")
+                if len(words) >= 2 and len(set(words)) == 1:
+                    print(f"Filtered hallucination (repetitive): '{text}'")
+                    return None
+                if len(words) >= 4 and len(set(words)) <= 2:
+                    print(f"Filtered hallucination (repetitive loop): '{text}'")
+                    return None
+
+                # 2. Isolated glossary word filter
+                # When VAD catches a breath/noise, Whisper defaults to outputting 1-2 words from initial_prompt
+                if self.glossary_phrases and len(words) <= 2:
+                    glos_lower = [p.lower() for p in self.glossary_phrases]
+                    # Check if any word exactly matches a glossary term
+                    if any(w in glos_lower for w in words) or clean_text in glos_lower:
+                        print(f"Filtered hallucination (isolated glossary term): '{text}'")
+                        return None
+
             return text if text else None
         except Exception as e:
             print(f"Whisper Transcription Error: {e}")

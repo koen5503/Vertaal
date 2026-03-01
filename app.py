@@ -748,12 +748,29 @@ class TranscriptionEngine:
                 if not words:
                     return None
 
-                # 1. Repetition filter (e.g., "kerk kerk kerk" or "kerk kerk")
+                # 1. Repetition filter
+                # A. Exactly the same word repeated
                 if len(words) >= 2 and len(set(words)) == 1:
-                    print(f"Filtered hallucination (repetitive): '{text}'")
+                    print(f"Filtered hallucination (pure repetitive): '{text}'")
                     return None
-                if len(words) >= 4 and len(set(words)) <= 2:
-                    print(f"Filtered hallucination (repetitive loop): '{text}'")
+
+                # B. Consecutive repeating words OR extremely low unique word count
+                max_consecutive = 1
+                current_consecutive = 1
+                for i in range(1, len(words)):
+                    if words[i] == words[i-1]:
+                        current_consecutive += 1
+                        max_consecutive = max(max_consecutive, current_consecutive)
+                    else:
+                        current_consecutive = 1
+
+                if max_consecutive >= 4:
+                    print(f"Filtered hallucination (consecutive word loop {max_consecutive}x): '{text}'")
+                    return None
+
+                # E.g. 10 words, but only 2 unique
+                if len(words) >= 5 and len(set(words)) / len(words) < 0.3:
+                    print(f"Filtered hallucination (low unique ratio): '{text}'")
                     return None
 
                 # 2. Isolated glossary word filter

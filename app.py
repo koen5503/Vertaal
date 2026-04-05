@@ -380,7 +380,7 @@ class TranscriptionEngine:
         self.silence_threshold_ms = int(os.getenv("SILENCE_THRESHOLD_MS", "400"))
         self.translate_count = 0
         self.session_start_time = time.time()
-        self.MAX_DURATION_SECONDS = 30 * 60  # 30 minutes
+        self.MAX_DURATION_SECONDS = int(os.getenv("MAX_SESSION_MINUTES", "30")) * 60
 
         # Load glossary if exists
         self.glossary_text = ""
@@ -628,7 +628,7 @@ class TranscriptionEngine:
                 if time.time() - self.session_start_time > self.MAX_DURATION_SECONDS:
                     print(f"TIMEOUT REACHED ({self.MAX_DURATION_SECONDS}s). Auto-pausing.")
                     self.is_paused = True
-                    msg = {"action": "auto_paused", "reason": "30_min_limit"}
+                    msg = {"action": "auto_paused", "reason": f"{int(self.MAX_DURATION_SECONDS / 60)}_min_limit"}
                     asyncio.run_coroutine_threadsafe(self.broadcast(msg), loop=loop)
                     stop_event.set()
                     return
@@ -816,7 +816,7 @@ class TranscriptionEngine:
             if time.time() - self.session_start_time > self.MAX_DURATION_SECONDS:
                 print(f"TIMEOUT REACHED ({self.MAX_DURATION_SECONDS}s). Auto-pausing.")
                 self.is_paused = True
-                await self.broadcast({"action": "auto_paused", "reason": "30_min_limit"})
+                await self.broadcast({"action": "auto_paused", "reason": f"{int(self.MAX_DURATION_SECONDS / 60)}_min_limit"})
                 continue
 
             chunk = await loop.run_in_executor(None, self.audio_stream.read_chunk)

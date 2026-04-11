@@ -901,52 +901,60 @@ async def startup_event():
     active_port = int(os.getenv("ACTIVE_PORT", "8000"))
     
     # --- Zeroconf (mDNS) Broadcast ---
-    try:
-        from zeroconf import ServiceInfo, Zeroconf
-        import socket
-        
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    def start_zeroconf():
         try:
-            # doesn't even have to be reachable
-            s.connect(('10.255.255.255', 1))
-            local_ip = s.getsockname()[0]
-        except Exception:
-            local_ip = '127.0.0.1'
-        finally:
-            s.close()
+            from zeroconf import ServiceInfo, Zeroconf
+            import socket
+            import time
+
+            # Wait a tiny bit so Uvicorn bindings settle
+            time.sleep(1)
+
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(('10.255.255.255', 1))
+                local_ip = s.getsockname()[0]
+            except Exception:
+                local_ip = '127.0.0.1'
+            finally:
+                s.close()
+                
+            info = ServiceInfo(
+                "_http._tcp.local.",
+                "Ondertitels._http._tcp.local.",
+                addresses=[socket.inet_aton(local_ip)],
+                port=active_port,
+                properties={'path': '/live'},
+                server="ondertitels.local.",
+            )
             
-        info = ServiceInfo(
-            "_http._tcp.local.",
-            "Ondertitels._http._tcp.local.",
-            addresses=[socket.inet_aton(local_ip)],
-            port=active_port,
-            properties={'path': '/live'},
-            server="ondertitels.local.",
-        )
-        
-        app.state.zeroconf = Zeroconf()
-        app.state.zeroconf.register_service(info)
-        app.state.zeroconf_info = info
-        
-        # Native Mac hostname fallback just in case Zeroconf conflicts with macOS mDNSResponder
-        mac_name = socket.gethostname()
-        if not mac_name.endswith('.local'): mac_name += '.local'
-        
-        print("\n" + "="*60)
-        print("🌍 LIVE VIEWER IS READY! Verbinden vanaf telefoon/tablet:")
-        print("="*60)
-        if active_port == 80:
-            print(f"1. http://ondertitels.local/live   (Directe naam via Zeroconf)")
-            print(f"2. http://{mac_name}/live       (Apple Bonjour / Native)")
-            print(f"3. http://{local_ip}/live            (Direct IP - Als namen niet werken)")
-        else:
-            print(f"1. http://ondertitels.local:{active_port}/live   (Directe naam via Zeroconf)")
-            print(f"2. http://{mac_name}:{active_port}/live       (Apple Bonjour / Native)")
-            print(f"3. http://{local_ip}:{active_port}/live            (Direct IP - Als namen niet werken)")
-        print("="*60 + "\n")
-        
-    except Exception as e:
-        print(f"Zeroconf setup failed: {e}")
+            app.state.zeroconf = Zeroconf()
+            app.state.zeroconf.register_service(info)
+            app.state.zeroconf_info = info
+            
+            mac_name = socket.gethostname()
+            if not mac_name.endswith('.local'): mac_name += '.local'
+            
+            print("\n" + "="*60)
+            print("🌍 LIVE VIEWER IS READY! Verbinden vanaf telefoon/tablet:")
+            print("="*60)
+            if active_port == 80:
+                print(f"1. http://ondertitels.local/live   (Directe naam via Zeroconf)")
+                print(f"2. http://{mac_name}/live       (Apple Bonjour / Native)")
+                print(f"3. http://{local_ip}/live            (Direct IP - Als namen niet werken)")
+            else:
+                print(f"1. http://ondertitels.local:{active_port}/live   (Directe naam via Zeroconf)")
+                print(f"2. http://{mac_name}:{active_port}/live       (Apple Bonjour / Native)")
+                print(f"3. http://{local_ip}:{active_port}/live            (Direct IP - Als namen niet werken)")
+            print("="*60 + "\n")
+            
+        except Exception as e:
+            import traceback
+            err_msg = traceback.format_exc()
+            print(f"Zeroconf setup failed:\n{err_msg}")
+
+    # Start zeroconf safely without blocking the event loop
+    threading.Thread(target=start_zeroconf, daemon=True).start()
 
     # Auto-start browser locally
     import webbrowser

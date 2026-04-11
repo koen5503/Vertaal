@@ -898,15 +898,58 @@ async def startup_event():
     import asyncio
     asyncio.create_task(engine.run())
     
-    # Auto-start browser
+    active_port = int(os.getenv("ACTIVE_PORT", "8000"))
+    
+    # --- Zeroconf (mDNS) Broadcast ---
+    try:
+        from zeroconf import ServiceInfo, Zeroconf
+        import socket
+        
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # doesn't even have to be reachable
+            s.connect(('10.255.255.255', 1))
+            local_ip = s.getsockname()[0]
+        except Exception:
+            local_ip = '127.0.0.1'
+        finally:
+            s.close()
+            
+        info = ServiceInfo(
+            "_http._tcp.local.",
+            "Ondertitels._http._tcp.local.",
+            addresses=[socket.inet_aton(local_ip)],
+            port=active_port,
+            properties={'path': '/live'},
+            server="ondertitels.local.",
+        )
+        
+        app.state.zeroconf = Zeroconf()
+        app.state.zeroconf.register_service(info)
+        app.state.zeroconf_info = info
+        print(f"mDNS Broadcast active! Je kunt nu navigeren naar: http://ondertitels.local (of http://{local_ip}:{active_port}/live)")
+    except Exception as e:
+        print(f"Zeroconf setup failed: {e}")
+
+    # Auto-start browser locally
     import webbrowser
     def open_browser():
         time.sleep(1.5)
-        webbrowser.open("http://127.0.0.1:8000")
+        # Use simple local hostname since we want to view it locally, 
+        # but the presenter might prefer 127.0.0.1 for the host page.
+        webbrowser.open(f"http://127.0.0.1:{active_port}")
     threading.Thread(target=open_browser, daemon=True).start()
 
 @app.on_event("shutdown")
 def shutdown_event():
+    try:
+        if hasattr(app.state, 'zeroconf'):
+            app.state.zeroconf.unregister_service(app.state.zeroconf_info)
+            app.state.zeroconf.close()
+            print("Zeroconf service unregistered.")
+    except Exception as e:
+        pass
+    
     engine.audio_stream.stop(terminate_pyaudio=True)
 
 @app.get("/", response_class=HTMLResponse)
@@ -953,6 +996,22 @@ async def websocket_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     import multiprocessing
+    import socket
+    
     multiprocessing.freeze_support()
-    print("Starting server on http://0.0.0.0:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    # Try binding to port 80 first (for clean URLs like http://ondertitels.local),
+    # but fall back to 8000 if macOS denies permission without sudo.
+    ACTIVE_PORT = 8000
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(('0.0.0.0', 80))
+        s.close()
+        ACTIVE_PORT = 80
+    except OSError:
+        print("Poort 80 vereist beheerdersrechten (sudo). Terugvallen op poort 8000.")
+        pass
+        
+    os.environ["ACTIVE_PORT"] = str(ACTIVE_PORT)
+    print(f"Starting server on http://0.0.0.0:{ACTIVE_PORT}")
+    uvicorn.run(app, host="0.0.0.0", port=ACTIVE_PORT)

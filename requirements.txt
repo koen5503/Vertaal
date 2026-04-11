@@ -6,6 +6,7 @@ uvicorn[standard]
 pyaudio
 websockets
 python-dotenv
+zeroconf
 
 # Local Pipeline (Apple Silicon)
 mlx-whisper

@@ -927,7 +927,24 @@ async def startup_event():
         app.state.zeroconf = Zeroconf()
         app.state.zeroconf.register_service(info)
         app.state.zeroconf_info = info
-        print(f"mDNS Broadcast active! Je kunt nu navigeren naar: http://ondertitels.local (of http://{local_ip}:{active_port}/live)")
+        
+        # Native Mac hostname fallback just in case Zeroconf conflicts with macOS mDNSResponder
+        mac_name = socket.gethostname()
+        if not mac_name.endswith('.local'): mac_name += '.local'
+        
+        print("\n" + "="*60)
+        print("🌍 LIVE VIEWER IS READY! Verbinden vanaf telefoon/tablet:")
+        print("="*60)
+        if active_port == 80:
+            print(f"1. http://ondertitels.local/live   (Directe naam via Zeroconf)")
+            print(f"2. http://{mac_name}/live       (Apple Bonjour / Native)")
+            print(f"3. http://{local_ip}/live            (Direct IP - Als namen niet werken)")
+        else:
+            print(f"1. http://ondertitels.local:{active_port}/live   (Directe naam via Zeroconf)")
+            print(f"2. http://{mac_name}:{active_port}/live       (Apple Bonjour / Native)")
+            print(f"3. http://{local_ip}:{active_port}/live            (Direct IP - Als namen niet werken)")
+        print("="*60 + "\n")
+        
     except Exception as e:
         print(f"Zeroconf setup failed: {e}")
 

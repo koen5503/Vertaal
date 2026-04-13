@@ -80,7 +80,7 @@
         main {
             flex: 1;
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
             gap: 1rem;
             padding: 1rem;
             overflow: hidden;
@@ -166,7 +166,7 @@
                 </select>
             </label>
 
-            <label>Left:
+            <label>Trans 1:
                 <select id="target-lang-1">
                     <option value="en">English (English)</option>
                     <option value="fr">French (Français)</option>
@@ -178,7 +178,16 @@
                 </select>
             </label>
 
-            <label>Right:
+            <label>Trans 3 (NL-Back):
+                <select id="target-lang-3">
+                    <option value="en">English (English)</option>
+                    <option value="nl" selected>Dutch (Nederlands)</option>
+                    <option value="fr">French (Français)</option>
+                    <option value="de">German (Deutsch)</option>
+                </select>
+            </label>
+
+            <label>Trans 2 (Extra):
                 <select id="target-lang-2">
                     <option value="en">English (English)</option>
                     <option value="fr">French (Français)</option>
@@ -224,6 +233,10 @@
             <div class="column-header" id="header-trans1">English (Translation)</div>
             <div class="column-content" id="list-trans1"></div>
         </div>
+        <div class="column" id="col-trans3">
+            <div class="column-header" id="header-trans3">Dutch (Back-Translation)</div>
+            <div class="column-content" id="list-trans3"></div>
+        </div>
         <div class="column" id="col-trans2">
             <div class="column-header" id="header-trans2">Français (Translation)</div>
             <div class="column-content" id="list-trans2"></div>
@@ -239,7 +252,8 @@
         const segments = {
             source: {},
             trans1: {},
-            trans2: {}
+            trans2: {},
+            trans3: {}
         };
 
         function connect() {
@@ -279,6 +293,7 @@
             const sourceSelect = document.getElementById('source-lang');
             const target1Select = document.getElementById('target-lang-1');
             const target2Select = document.getElementById('target-lang-2');
+            const target3Select = document.getElementById('target-lang-3');
             const audioSelect = document.getElementById('audio-device');
             const pauseBtn = document.getElementById('pause-btn');
             const rescanBtn = document.getElementById('rescan-btn');
@@ -292,6 +307,7 @@
                         source_lang: sourceSelect.value,
                         target_lang_1: target1Select.value,
                         target_lang_2: target2Select.value,
+                        target_lang_3: target3Select.value,
                         paused: isPaused,
                         device_index: audioSelect.value
                     };
@@ -300,6 +316,7 @@
                     // Update Headers (Simple way)
                     document.getElementById('header-source').innerText = sourceSelect.options[sourceSelect.selectedIndex].text;
                     document.getElementById('header-trans1').innerText = target1Select.options[target1Select.selectedIndex].text;
+                    document.getElementById('header-trans3').innerText = target3Select.options[target3Select.selectedIndex].text;
                     document.getElementById('header-trans2').innerText = target2Select.options[target2Select.selectedIndex].text;
                 }
             }
@@ -307,6 +324,7 @@
             sourceSelect.addEventListener('change', sendConfig);
             target1Select.addEventListener('change', sendConfig);
             target2Select.addEventListener('change', sendConfig);
+            target3Select.addEventListener('change', sendConfig);
             audioSelect.addEventListener('change', sendConfig);
 
             rescanBtn.addEventListener('click', () => {
@@ -373,6 +391,7 @@
                 // Only update if present (legacy/interim might be empty)
                 if (data.col2_text) updateColumn('trans1', 'list-trans1', data.id, data.status, data.col2_text);
                 if (data.col3_text) updateColumn('trans2', 'list-trans2', data.id, data.status, data.col3_text);
+                if (data.col4_text) updateColumn('trans3', 'list-trans3', data.id, data.status, data.col4_text);
             }
         }
 

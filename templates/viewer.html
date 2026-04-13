@@ -60,7 +60,7 @@
         main {
             flex: 1;
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
             gap: 1rem;
             padding: 1rem;
             overflow: hidden;
@@ -140,15 +140,19 @@
 
     <main>
         <div class="column" id="col-source">
-            <div class="column-header" id="header-source">Source</div>
+            <div class="column-header" id="header-source">Nederlands</div>
             <div class="column-content" id="list-source"></div>
         </div>
         <div class="column" id="col-trans1">
-            <div class="column-header" id="header-trans1">Translation 1</div>
+            <div class="column-header" id="header-trans1">English</div>
             <div class="column-content" id="list-trans1"></div>
         </div>
+        <div class="column" id="col-trans3">
+            <div class="column-header" id="header-trans3">Dutch (Back)</div>
+            <div class="column-content" id="list-trans3"></div>
+        </div>
         <div class="column" id="col-trans2">
-            <div class="column-header" id="header-trans2">Translation 2</div>
+            <div class="column-header" id="header-trans2">Extra</div>
             <div class="column-content" id="list-trans2"></div>
         </div>
     </main>
@@ -161,7 +165,8 @@
         const segments = {
             source: {},
             trans1: {},
-            trans2: {}
+            trans2: {},
+            trans3: {}
         };
 
         function connect() {
@@ -198,10 +203,16 @@
             } else if (data.action === 'update_translation') {
                 const listId = `list-${data.col_key}`;
                 updateColumn(data.col_key, listId, data.id, 'final', data.text);
+            } else if (data.action === 'update_config') {
+                if (data.source_lang) document.getElementById('header-source').innerText = data.source_lang;
+                if (data.target_lang_1) document.getElementById('header-trans1').innerText = data.target_lang_1;
+                if (data.target_lang_3) document.getElementById('header-trans3').innerText = data.target_lang_3;
+                if (data.target_lang_2) document.getElementById('header-trans2').innerText = data.target_lang_2;
             } else {
                 updateColumn('source', 'list-source', data.id, data.status, data.col1_text);
                 if (data.col2_text) updateColumn('trans1', 'list-trans1', data.id, data.status, data.col2_text);
                 if (data.col3_text) updateColumn('trans2', 'list-trans2', data.id, data.status, data.col3_text);
+                if (data.col4_text) updateColumn('trans3', 'list-trans3', data.id, data.status, data.col4_text);
             }
         }
 

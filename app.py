@@ -364,7 +364,8 @@ class TranscriptionEngine:
         # State (shared)
         self.source_lang = os.getenv("SOURCE_LANG", "nl-NL")
         self.target_lang_1 = os.getenv("TARGET_LANG_1", "en")
-        self.target_lang_2 = os.getenv("TARGET_LANG_2", "fr")
+        self.target_lang_2 = os.getenv("TARGET_LANG_2", "ru")
+        self.target_lang_3 = os.getenv("TARGET_LANG_3", "nl-NL")
         self.is_paused = False
         self.restart_required = False
 
@@ -472,6 +473,9 @@ class TranscriptionEngine:
         if "target_lang_2" in config:
             self.target_lang_2 = config["target_lang_2"]
 
+        if "target_lang_3" in config:
+            self.target_lang_3 = config["target_lang_3"]
+
         if "device_index" in config:
             idx = config["device_index"]
 
@@ -559,7 +563,7 @@ class TranscriptionEngine:
             print(f"Translation Error ({target_lang}): {e}")
             return text
 
-    async def handle_translation(self, seg_id, text, target_lang, col_key):
+    async def handle_translation(self, seg_id, text, target_lang, col_key, chain_to=None):
         """Background task to translate and update UI."""
         if not text:
             return
@@ -571,6 +575,12 @@ class TranscriptionEngine:
             "text": translated,
         }
         await self.broadcast(msg)
+
+        if chain_to:
+            for c_lang, c_key in chain_to:
+                asyncio.create_task(
+                    self.handle_translation(seg_id, translated, c_lang, c_key)
+                )
 
     # --- Main run loop (dispatches to cloud or local) ---
 
@@ -702,7 +712,13 @@ class TranscriptionEngine:
                     self.translate_count += len(transcript) * 2
                     print(f"Translate ({self.translate_count} chars total): '{transcript[:50]}'..." if len(transcript) > 50 else f"Translate ({self.translate_count} chars total): '{transcript}'")
                     asyncio.run_coroutine_threadsafe(
-                        self.handle_translation(self.current_seg_id, transcript, self.target_lang_1, "trans1"),
+                        self.handle_translation(
+                            self.current_seg_id, 
+                            transcript, 
+                            self.target_lang_1, 
+                            "trans1",
+                            chain_to=[(self.target_lang_3, "trans3")]
+                        ),
                         loop=loop
                     )
                     asyncio.run_coroutine_threadsafe(
@@ -873,7 +889,13 @@ class TranscriptionEngine:
                     print(f"Translate ({self.translate_count} chars total): {log_text}")
 
                     asyncio.create_task(
-                        self.handle_translation(self.current_seg_id, transcript, self.target_lang_1, "trans1")
+                        self.handle_translation(
+                            self.current_seg_id, 
+                            transcript, 
+                            self.target_lang_1, 
+                            "trans1",
+                            chain_to=[(self.target_lang_3, "trans3")]
+                        )
                     )
                     asyncio.create_task(
                         self.handle_translation(self.current_seg_id, transcript, self.target_lang_2, "trans2")

@@ -381,6 +381,8 @@ class TranscriptionEngine:
         self.translate_count = 0
         self.session_start_time = time.time()
         self.MAX_DURATION_SECONDS = int(os.getenv("MAX_SESSION_MINUTES", "30")) * 60
+        self.min_local_chunk_s = float(os.getenv("MIN_LOCAL_CHUNK_S", "10.0"))
+        self.max_silence_flush_ms = int(os.getenv("MAX_SILENCE_FLUSH_MS", "2000"))
 
         # Load glossary if exists
         self.glossary_text = ""
@@ -842,7 +844,17 @@ class TranscriptionEngine:
 
             if silence_ms >= self.silence_threshold_ms and self.speech_frames >= self.min_speech_frames:
                 buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)
-                print(f"Silence detected ({silence_ms}ms) — transcribing {buffer_duration_s:.1f}s of audio...")
+                
+                # Enforce minimum 10s chunk batching to avoid short fragmented sentences.
+                # If speaker goes completely silent for a long time (max_silence_flush_ms), force flush to screen!
+                force_flush = silence_ms >= self.max_silence_flush_ms
+                
+                if buffer_duration_s < self.min_local_chunk_s and not force_flush:
+                    # Do not reset silence frames! Let them increment so we can eventually force_flush
+                    # if the speaker doesn't start speaking again.
+                    continue
+                    
+                print(f"Silence/Flush detected ({silence_ms}ms) — transcribing {buffer_duration_s:.1f}s of audio...")
 
                 transcript = await loop.run_in_executor(None, self._transcribe_buffer)
 

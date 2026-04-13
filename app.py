@@ -366,6 +366,7 @@ class TranscriptionEngine:
         self.target_lang_1 = os.getenv("TARGET_LANG_1", "en")
         self.target_lang_2 = os.getenv("TARGET_LANG_2", "ru")
         self.target_lang_3 = os.getenv("TARGET_LANG_3", "de")
+        self.target_lang_4 = os.getenv("TARGET_LANG_4", "nl-NL")
         self.is_paused = False
         self.restart_required = False
 
@@ -475,6 +476,9 @@ class TranscriptionEngine:
 
         if "target_lang_3" in config:
             self.target_lang_3 = config["target_lang_3"]
+
+        if "target_lang_4" in config:
+            self.target_lang_4 = config["target_lang_4"]
 
         if "device_index" in config:
             idx = config["device_index"]
@@ -725,7 +729,13 @@ class TranscriptionEngine:
                         loop=loop
                     )
                     asyncio.run_coroutine_threadsafe(
-                        self.handle_translation(self.current_seg_id, transcript, self.target_lang_2, "trans2"),
+                        self.handle_translation(
+                            self.current_seg_id, 
+                            transcript, 
+                            self.target_lang_2, 
+                            "trans2",
+                            chain_to=[(self.target_lang_4, "trans4")]
+                        ),
                         loop=loop
                     )
 
@@ -901,7 +911,13 @@ class TranscriptionEngine:
                         )
                     )
                     asyncio.create_task(
-                        self.handle_translation(self.current_seg_id, transcript, self.target_lang_2, "trans2")
+                        self.handle_translation(
+                            self.current_seg_id, 
+                            transcript, 
+                            self.target_lang_2, 
+                            "trans2",
+                            chain_to=[(self.target_lang_4, "trans4")]
+                        )
                     )
 
                 self.audio_buffer = bytearray()

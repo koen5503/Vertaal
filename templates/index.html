@@ -80,7 +80,7 @@
         main {
             flex: 1;
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
             gap: 1rem;
             padding: 1rem;
             overflow: hidden;
@@ -199,6 +199,15 @@
                 </select>
             </label>
 
+            <label>Trans 4 (Chained):
+                <select id="target-lang-4">
+                    <option value="en">English (English)</option>
+                    <option value="fr">French (Français)</option>
+                    <option value="de">German (Deutsch)</option>
+                    <option value="nl" selected>Dutch (Nederlands)</option>
+                </select>
+            </label>
+
             <label>Input:
                 <!-- Hidden by default until scanned? Or just show "Default" -->
                 <select id="audio-device" style="max-width: 150px;">
@@ -241,6 +250,10 @@
             <div class="column-header" id="header-trans2">Français (Translation)</div>
             <div class="column-content" id="list-trans2"></div>
         </div>
+        <div class="column" id="col-trans4">
+            <div class="column-header" id="header-trans4">Dutch (Nederlands)</div>
+            <div class="column-content" id="list-trans4"></div>
+        </div>
     </main>
 
     <script>
@@ -253,7 +266,8 @@
             source: {},
             trans1: {},
             trans2: {},
-            trans3: {}
+            trans3: {},
+            trans4: {}
         };
 
         function connect() {
@@ -294,6 +308,7 @@
             const target1Select = document.getElementById('target-lang-1');
             const target2Select = document.getElementById('target-lang-2');
             const target3Select = document.getElementById('target-lang-3');
+            const target4Select = document.getElementById('target-lang-4');
             const audioSelect = document.getElementById('audio-device');
             const pauseBtn = document.getElementById('pause-btn');
             const rescanBtn = document.getElementById('rescan-btn');
@@ -308,6 +323,7 @@
                         target_lang_1: target1Select.value,
                         target_lang_2: target2Select.value,
                         target_lang_3: target3Select.value,
+                        target_lang_4: target4Select.value,
                         paused: isPaused,
                         device_index: audioSelect.value
                     };
@@ -318,6 +334,7 @@
                     document.getElementById('header-trans1').innerText = target1Select.options[target1Select.selectedIndex].text;
                     document.getElementById('header-trans3').innerText = target3Select.options[target3Select.selectedIndex].text;
                     document.getElementById('header-trans2').innerText = target2Select.options[target2Select.selectedIndex].text;
+                    document.getElementById('header-trans4').innerText = target4Select.options[target4Select.selectedIndex].text;
                 }
             }
 

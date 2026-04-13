@@ -60,7 +60,7 @@
         main {
             flex: 1;
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
             gap: 1rem;
             padding: 1rem;
             overflow: hidden;
@@ -155,6 +155,10 @@
             <div class="column-header" id="header-trans2">Extra</div>
             <div class="column-content" id="list-trans2"></div>
         </div>
+        <div class="column" id="col-trans4">
+            <div class="column-header" id="header-trans4">Extra Translation</div>
+            <div class="column-content" id="list-trans4"></div>
+        </div>
     </main>
 
     <script>
@@ -166,7 +170,8 @@
             source: {},
             trans1: {},
             trans2: {},
-            trans3: {}
+            trans3: {},
+            trans4: {}
         };
 
         function connect() {

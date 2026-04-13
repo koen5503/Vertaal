@@ -505,7 +505,8 @@ class TranscriptionEngine:
         """Translate text using cloud or local backend."""
         if not text or not target_lang:
             return ""
-        if target_lang == self.source_lang.split("-")[0]:
+        source_code = source_lang.split("-")[0] if source_lang else self.source_lang.split("-")[0]
+        if target_lang == source_code:
             return text
 
         if self.pipeline_mode == "cloud":
@@ -543,11 +544,11 @@ class TranscriptionEngine:
         source_lang_name = LANG_NAMES.get(source_code, source_code)
         
         system_prompt = (
-            f"Je bent een professionele, native vertaler. "
-            f"Vertaal de volgende {source_lang_name}e tekst naar het {lang_name}. "
-            f"Behoud de originele toon en betekenis perfect. "
-            f"Geef UITSLUITEND de directe vertaling terug. "
-            f"Geef geen uitleg, geen introductie, geen aanhalingstekens en geen markdown."
+            f"You are a professional, native translator. "
+            f"Translate the provided {source_lang_name} text into {lang_name}. "
+            f"Retain the original tone and meaning perfectly. "
+            f"Provide ONLY the direct translation. "
+            f"Do not provide explanations, introductions, quotes, or markdown."
         )
 
         try:

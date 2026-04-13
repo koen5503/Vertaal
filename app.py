@@ -501,7 +501,7 @@ class TranscriptionEngine:
 
     # --- Translation ---
 
-    async def translate_text_async(self, text, target_lang):
+    async def translate_text_async(self, text, target_lang, source_lang=None):
         """Translate text using cloud or local backend."""
         if not text or not target_lang:
             return ""
@@ -509,9 +509,9 @@ class TranscriptionEngine:
             return text
 
         if self.pipeline_mode == "cloud":
-            return await self._translate_cloud(text, target_lang)
+            return await self._translate_cloud(text, target_lang, source_lang)
         else:
-            return await self._translate_local(text, target_lang)
+            return await self._translate_local(text, target_lang, source_lang)
 
     async def _translate_cloud(self, text, target_lang, source_lang=None):
         """Google Cloud Translate."""

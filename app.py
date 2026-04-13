@@ -886,8 +886,18 @@ class ConnectionManager:
         self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
+        dead_connections = []
         for connection in self.active_connections:
-            await connection.send_json(message)
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead_connections.append(connection)
+                
+        for dead in dead_connections:
+            try:
+                self.active_connections.remove(dead)
+            except ValueError:
+                pass
 
 manager = ConnectionManager()
 engine = TranscriptionEngine(manager.broadcast)

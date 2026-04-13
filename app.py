@@ -365,7 +365,7 @@ class TranscriptionEngine:
         self.source_lang = os.getenv("SOURCE_LANG", "nl-NL")
         self.target_lang_1 = os.getenv("TARGET_LANG_1", "en")
         self.target_lang_2 = os.getenv("TARGET_LANG_2", "ru")
-        self.target_lang_3 = os.getenv("TARGET_LANG_3", "nl-NL")
+        self.target_lang_3 = os.getenv("TARGET_LANG_3", "de")
         self.is_paused = False
         self.restart_required = False
 
@@ -513,9 +513,10 @@ class TranscriptionEngine:
         else:
             return await self._translate_local(text, target_lang)
 
-    async def _translate_cloud(self, text, target_lang):
+    async def _translate_cloud(self, text, target_lang, source_lang=None):
         """Google Cloud Translate."""
         loop = asyncio.get_running_loop()
+        source_code = source_lang.split("-")[0] if source_lang else self.source_lang.split("-")[0]
 
         def _call():
             try:
@@ -524,7 +525,7 @@ class TranscriptionEngine:
                         "parent": self.parent,
                         "contents": [text],
                         "mime_type": "text/plain",
-                        "source_language_code": self.source_lang.split("-")[0],
+                        "source_language_code": source_code,
                         "target_language_code": target_lang,
                     }
                 )
@@ -535,11 +536,12 @@ class TranscriptionEngine:
 
         return await loop.run_in_executor(None, _call)
 
-    async def _translate_local(self, text, target_lang):
+    async def _translate_local(self, text, target_lang, source_lang=None):
         """Ollama AsyncClient translation."""
-        lang_name = LANG_NAMES.get(target_lang, target_lang)
-        source_lang_code = self.source_lang.split("-")[0]
-        source_lang_name = LANG_NAMES.get(source_lang_code, source_lang_code)
+        lang_name = LANG_NAMES.get(target_lang.split("-")[0], target_lang)
+        source_code = source_lang.split("-")[0] if source_lang else self.source_lang.split("-")[0]
+        source_lang_name = LANG_NAMES.get(source_code, source_code)
+        
         system_prompt = (
             f"Je bent een professionele, native vertaler. "
             f"Vertaal de volgende {source_lang_name}e tekst naar het {lang_name}. "
@@ -563,11 +565,11 @@ class TranscriptionEngine:
             print(f"Translation Error ({target_lang}): {e}")
             return text
 
-    async def handle_translation(self, seg_id, text, target_lang, col_key, chain_to=None):
+    async def handle_translation(self, seg_id, text, target_lang, col_key, chain_to=None, source_override=None):
         """Background task to translate and update UI."""
         if not text:
             return
-        translated = await self.translate_text_async(text, target_lang)
+        translated = await self.translate_text_async(text, target_lang, source_lang=source_override)
         msg = {
             "action": "update_translation",
             "id": seg_id,
@@ -579,7 +581,7 @@ class TranscriptionEngine:
         if chain_to:
             for c_lang, c_key in chain_to:
                 asyncio.create_task(
-                    self.handle_translation(seg_id, translated, c_lang, c_key)
+                    self.handle_translation(seg_id, translated, c_lang, c_key, source_override=target_lang)
                 )
 
     # --- Main run loop (dispatches to cloud or local) ---

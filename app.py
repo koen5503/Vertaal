@@ -367,6 +367,8 @@ class TranscriptionEngine:
         self.target_lang_2 = os.getenv("TARGET_LANG_2", "ru")
         self.target_lang_3 = os.getenv("TARGET_LANG_3", "de")
         self.target_lang_4 = os.getenv("TARGET_LANG_4", "nl-NL")
+        self.enable_trans_3 = os.getenv("ENABLE_TRANS_3", "true").lower() in ("true", "1", "yes")
+        self.enable_trans_4 = os.getenv("ENABLE_TRANS_4", "true").lower() in ("true", "1", "yes")
         self.is_paused = False
         self.restart_required = False
 
@@ -479,6 +481,12 @@ class TranscriptionEngine:
 
         if "target_lang_4" in config:
             self.target_lang_4 = config["target_lang_4"]
+
+        if "enable_trans_3" in config:
+            self.enable_trans_3 = config["enable_trans_3"]
+
+        if "enable_trans_4" in config:
+            self.enable_trans_4 = config["enable_trans_4"]
 
         if "device_index" in config:
             idx = config["device_index"]
@@ -718,23 +726,25 @@ class TranscriptionEngine:
                     self.last_translate_time = now
                     self.translate_count += len(transcript) * 2
                     print(f"Translate ({self.translate_count} chars total): '{transcript[:50]}'..." if len(transcript) > 50 else f"Translate ({self.translate_count} chars total): '{transcript}'")
+                    chain_3 = [(self.target_lang_3, "trans3")] if getattr(self, "enable_trans_3", True) else []
                     asyncio.run_coroutine_threadsafe(
                         self.handle_translation(
                             self.current_seg_id, 
                             transcript, 
                             self.target_lang_1, 
                             "trans1",
-                            chain_to=[(self.target_lang_3, "trans3")]
+                            chain_to=chain_3
                         ),
                         loop=loop
                     )
+                    chain_4 = [(self.target_lang_4, "trans4")] if getattr(self, "enable_trans_4", True) else []
                     asyncio.run_coroutine_threadsafe(
                         self.handle_translation(
                             self.current_seg_id, 
                             transcript, 
                             self.target_lang_2, 
                             "trans2",
-                            chain_to=[(self.target_lang_4, "trans4")]
+                            chain_to=chain_4
                         ),
                         loop=loop
                     )
@@ -901,22 +911,24 @@ class TranscriptionEngine:
                     log_text = f"'{transcript[:50]}'..." if len(transcript) > 50 else f"'{transcript}'"
                     print(f"Translate ({self.translate_count} chars total): {log_text}")
 
+                    chain_3 = [(self.target_lang_3, "trans3")] if getattr(self, "enable_trans_3", True) else []
                     asyncio.create_task(
                         self.handle_translation(
                             self.current_seg_id, 
                             transcript, 
                             self.target_lang_1, 
                             "trans1",
-                            chain_to=[(self.target_lang_3, "trans3")]
+                            chain_to=chain_3
                         )
                     )
+                    chain_4 = [(self.target_lang_4, "trans4")] if getattr(self, "enable_trans_4", True) else []
                     asyncio.create_task(
                         self.handle_translation(
                             self.current_seg_id, 
                             transcript, 
                             self.target_lang_2, 
                             "trans2",
-                            chain_to=[(self.target_lang_4, "trans4")]
+                            chain_to=chain_4
                         )
                     )
 
@@ -1054,12 +1066,22 @@ async def get_viewer():
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
+        await websocket.send_json({
+            "action": "init_config",
+            "enable_trans_3": getattr(engine, 'enable_trans_3', True),
+            "enable_trans_4": getattr(engine, 'enable_trans_4', True)
+        })
         while True:
             data = await websocket.receive_text()
             try:
                 msg = json.loads(data)
                 if msg.get("action") == "update_config":
                      engine.update_config(msg)
+                     await manager.broadcast({
+                         "action": "init_config",
+                         "enable_trans_3": getattr(engine, 'enable_trans_3', True),
+                         "enable_trans_4": getattr(engine, 'enable_trans_4', True)
+                     })
                 elif msg.get("action") == "get_devices":
                      devices = engine.get_input_devices()
                      await websocket.send_json({"action": "device_list", "devices": devices})

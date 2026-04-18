@@ -178,7 +178,7 @@
                 </select>
             </label>
 
-            <label>Trans 2 (Chained):
+            <label><input type="checkbox" id="enable-trans-3" checked> Trans 2 (Chained):
                 <select id="target-lang-3">
                     <option value="en">English (English)</option>
                     <option value="nl" selected>Dutch (Nederlands)</option>
@@ -199,7 +199,7 @@
                 </select>
             </label>
 
-            <label>Trans 4 (Chained):
+            <label><input type="checkbox" id="enable-trans-4" checked> Trans 4 (Chained):
                 <select id="target-lang-4">
                     <option value="en">English (English)</option>
                     <option value="fr">French (Français)</option>
@@ -324,6 +324,8 @@
                         target_lang_2: target2Select.value,
                         target_lang_3: target3Select.value,
                         target_lang_4: target4Select.value,
+                        enable_trans_3: document.getElementById('enable-trans-3').checked,
+                        enable_trans_4: document.getElementById('enable-trans-4').checked,
                         paused: isPaused,
                         device_index: audioSelect.value
                     };
@@ -342,6 +344,9 @@
             target1Select.addEventListener('change', sendConfig);
             target2Select.addEventListener('change', sendConfig);
             target3Select.addEventListener('change', sendConfig);
+            target4Select.addEventListener('change', sendConfig);
+            document.getElementById('enable-trans-3').addEventListener('change', sendConfig);
+            document.getElementById('enable-trans-4').addEventListener('change', sendConfig);
             audioSelect.addEventListener('change', sendConfig);
 
             rescanBtn.addEventListener('click', () => {
@@ -371,7 +376,20 @@
             setTimeout(sendConfig, 1000);
         }
 
+        function updateColumnVisibility(e3, e4) {
+            document.getElementById('col-trans3').style.display = e3 ? 'flex' : 'none';
+            document.getElementById('col-trans4').style.display = e4 ? 'flex' : 'none';
+            let cols = 3 + (e3 ? 1 : 0) + (e4 ? 1 : 0);
+            document.querySelector('main').style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+        }
+
         function handleMessage(data) {
+            if (data.action === 'init_config') {
+                document.getElementById('enable-trans-3').checked = data.enable_trans_3;
+                document.getElementById('enable-trans-4').checked = data.enable_trans_4;
+                updateColumnVisibility(data.enable_trans_3, data.enable_trans_4);
+                return;
+            }
             if (data.action === 'auto_paused') {
                 const pauseBtn = document.getElementById('pause-btn');
                 window.isPaused = true;

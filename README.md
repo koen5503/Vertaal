@@ -12,8 +12,9 @@ Real-time speech-to-text subtitling with simultaneous translation into two targe
 - **Local Translation** — Ollama LLM translation with configurable models (e.g., `aya-expanse:8b`)
 - **Fully Offline** — No cloud APIs, no internet connection needed after initial model download
 - **Voice Activity Detection** — WebRTC VAD with intelligent silence detection for natural sentence segmentation
-- **Multiple Audio Sources** — Live microphone input or WAV file playback
-- **Automatic Resampling** — WAV files in any format (stereo, 44.1kHz, 48kHz, etc.) are automatically converted to 16kHz mono for STT
+- **Multiple Audio Sources** — Live microphone input, WAV file playback, or Direct Network Audio
+- **Native Network Receiver** — Built-in Python UDP receiver seamlessly integrates Voicemeeter VBAN audio streams directly into the pipeline without reliance on unreliable virtual audio cables (e.g., BlackHole).
+- **Automatic Resampling** — WAV files and VBAN Streams (stereo, 44.1kHz, 48kHz, etc.) are automatically converted to 16kHz mono for STT
 - **Web Interface** — Three-column live display (source + 2 translations) with volume indicator
 - **Device Switching** — Switch between microphones and audio files during a session
 - **Session Limit** — 30-minute auto-pause safety timer

@@ -261,6 +261,8 @@ class AudioStream:
 
         print(f"VBAN Listener started on UDP 6980. Waiting for stream: '{vban_target}'")
 
+        vban_pcm_accumulator = bytearray()
+
         while self.running:
             try:
                 data, addr = sock.recvfrom(2048)
@@ -282,15 +284,21 @@ class AudioStream:
                 sample_rate = SR_LIST[sr_index] if sr_index < len(SR_LIST) else 48000
                 nb_channels = chans + 1
                 
-                # Wait: DataFormat (fmt=1 is INT16, fmt=4 is FLOAT32). Voicemeeter defaults to INT16
                 payload = data[28:]
                 
                 # Push uncompressed VBAN UDP chunk straight to audioop core resampler -> audio Queue
                 resampled = self._resample_for_stt(payload, sample_rate, nb_channels, 2)
                 
                 if resampled:
+                    vban_pcm_accumulator.extend(resampled)
                     # Small chunks of VBAN natively flow right into the VAD module precisely as the mic
-                    self.queue.put(resampled)
+                    # WebRTC VAD requires exact 10, 20 or 30ms.
+                    # At 16kHz 16-bit mono: 30ms = 480 frames = 960 bytes.
+                    TARGET_BYTES = 960
+                    while len(vban_pcm_accumulator) >= TARGET_BYTES:
+                        exact_chunk = bytes(vban_pcm_accumulator[:TARGET_BYTES])
+                        vban_pcm_accumulator = vban_pcm_accumulator[TARGET_BYTES:]
+                        self.queue.put(exact_chunk)
             except socket.timeout:
                 continue
             except Exception as e:

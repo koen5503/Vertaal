@@ -770,8 +770,17 @@ class TranscriptionEngine:
             "path_or_hf_repo": self.whisper_model,
             "language": whisper_lang,
         }
+        
+        prompt_parts = []
         if self.glossary_text:
-            transcribe_kwargs["initial_prompt"] = self.glossary_text
+            prompt_parts.append(self.glossary_text)
+            
+        last_trans = getattr(self, "last_transcript", "")
+        if last_trans:
+            prompt_parts.append(last_trans)
+            
+        if prompt_parts:
+            transcribe_kwargs["initial_prompt"] = " ".join(prompt_parts).strip()
 
         try:
             result = mlx_whisper.transcribe(
@@ -882,19 +891,21 @@ class TranscriptionEngine:
             silence_ms = self.silence_frames * FRAME_DURATION_MS
             buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)
 
+            silence_ms = self.silence_frames * FRAME_DURATION_MS
+            buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)
+
             hard_cap = buffer_duration_s >= 25.0
-            eager_flush = buffer_duration_s >= self.min_local_chunk_s and silence_ms >= (self.silence_threshold_ms / 2)
             force_flush = silence_ms >= self.max_silence_flush_ms
 
-            if (eager_flush or hard_cap or force_flush or silence_ms >= self.silence_threshold_ms) and self.speech_frames > 0:
-                if force_flush and self.speech_frames < 5:
-                    # Discard trapped noise: if we waited way too long but merely caught a microphone pop
+            if (hard_cap or force_flush or silence_ms >= self.silence_threshold_ms) and self.speech_frames > 0:
+                # Discard trapped pure mic clicks (under 90ms)
+                if force_flush and self.speech_frames < 3:
                     self.audio_buffer = bytearray()
                     self.speech_frames = 0
                     self.silence_frames = 0
                     continue
 
-                met_speech_req = self.speech_frames >= self.min_speech_frames or ((force_flush or hard_cap) and self.speech_frames >= 5)
+                met_speech_req = self.speech_frames >= self.min_speech_frames or ((force_flush or hard_cap) and self.speech_frames >= 3)
 
                 if met_speech_req:
                     if buffer_duration_s < self.min_local_chunk_s and not force_flush and not hard_cap:
@@ -902,12 +913,13 @@ class TranscriptionEngine:
                         # if the speaker doesn't start speaking again.
                         continue
                         
-                    print(f"Silence/Flush detected ({silence_ms}ms) — transcribing {buffer_duration_s:.1f}s of audio...")
+                    print(f"Silence/Flush ({silence_ms}ms) — transcribing {buffer_duration_s:.1f}s of audio with {self.speech_frames} speech frames...")
 
                     transcript = await loop.run_in_executor(None, self._transcribe_buffer)
 
                 if transcript:
                     print(f"STT: '{transcript}'")
+                    self.last_transcript = transcript[-200:]
 
                     msg = {
                         "id": self.current_seg_id,

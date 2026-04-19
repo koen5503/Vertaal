@@ -201,7 +201,18 @@
             };
         }
 
+        function updateColumnVisibility(e3, e4) {
+            document.getElementById('col-trans3').style.display = e3 ? 'flex' : 'none';
+            document.getElementById('col-trans4').style.display = e4 ? 'flex' : 'none';
+            let cols = 3 + (e3 ? 1 : 0) + (e4 ? 1 : 0);
+            document.querySelector('main').style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+        }
+
         function handleMessage(data) {
+            if (data.action === 'init_config') {
+                updateColumnVisibility(data.enable_trans_3, data.enable_trans_4);
+                return;
+            }
             if (data.action === 'device_list' || data.action === 'auto_paused') {
                 // Ignore admin-only messages
                 return;

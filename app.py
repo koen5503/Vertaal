@@ -798,6 +798,17 @@ class TranscriptionEngine:
                 if not words:
                     return None
 
+                # Prompt Leakage Filter (Whisper Hallucination)
+                last_trans = getattr(self, "last_transcript", "")
+                if last_trans:
+                    clean_last = last_trans.translate(str.maketrans('', '', string.punctuation)).lower()
+                    if clean_text == clean_last:
+                        print(f"Filtered hallucination (Exact Prompt Leakage): '{text}'")
+                        return None
+                    if len(words) >= 3 and clean_text in clean_last:
+                        print(f"Filtered hallucination (Partial Prompt Leakage): '{text}'")
+                        return None
+
                 # 1. Repetition filter
                 # A. Exactly the same word repeated
                 if len(words) >= 2 and len(set(words)) == 1:

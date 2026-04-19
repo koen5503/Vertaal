@@ -880,22 +880,31 @@ class TranscriptionEngine:
             self.audio_buffer.extend(chunk)
 
             silence_ms = self.silence_frames * FRAME_DURATION_MS
+            buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)
 
-            if silence_ms >= self.silence_threshold_ms and self.speech_frames >= self.min_speech_frames:
-                buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)
-                
-                # Enforce minimum 10s chunk batching to avoid short fragmented sentences.
-                # If speaker goes completely silent for a long time (max_silence_flush_ms), force flush to screen!
-                force_flush = silence_ms >= self.max_silence_flush_ms
-                
-                if buffer_duration_s < self.min_local_chunk_s and not force_flush:
-                    # Do not reset silence frames! Let them increment so we can eventually force_flush
-                    # if the speaker doesn't start speaking again.
+            hard_cap = buffer_duration_s >= 25.0
+            eager_flush = buffer_duration_s >= self.min_local_chunk_s and silence_ms >= (self.silence_threshold_ms / 2)
+            force_flush = silence_ms >= self.max_silence_flush_ms
+
+            if (eager_flush or hard_cap or force_flush or silence_ms >= self.silence_threshold_ms) and self.speech_frames > 0:
+                if force_flush and self.speech_frames < 5:
+                    # Discard trapped noise: if we waited way too long but merely caught a microphone pop
+                    self.audio_buffer = bytearray()
+                    self.speech_frames = 0
+                    self.silence_frames = 0
                     continue
-                    
-                print(f"Silence/Flush detected ({silence_ms}ms) — transcribing {buffer_duration_s:.1f}s of audio...")
 
-                transcript = await loop.run_in_executor(None, self._transcribe_buffer)
+                met_speech_req = self.speech_frames >= self.min_speech_frames or ((force_flush or hard_cap) and self.speech_frames >= 5)
+
+                if met_speech_req:
+                    if buffer_duration_s < self.min_local_chunk_s and not force_flush and not hard_cap:
+                        # Do not reset silence frames! Let them increment so we can eventually force_flush
+                        # if the speaker doesn't start speaking again.
+                        continue
+                        
+                    print(f"Silence/Flush detected ({silence_ms}ms) — transcribing {buffer_duration_s:.1f}s of audio...")
+
+                    transcript = await loop.run_in_executor(None, self._transcribe_buffer)
 
                 if transcript:
                     print(f"STT: '{transcript}'")

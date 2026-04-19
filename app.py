@@ -40,12 +40,16 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 # --- Pipeline Mode ---
-PIPELINE_MODE = os.getenv("PIPELINE_MODE", "local").lower()  # "local" or "cloud"
+PIPELINE_MODE = os.getenv("PIPELINE_MODE", "local").lower()  # "local", "cloud", or "runpod"
 
 if PIPELINE_MODE == "cloud":
     from google.cloud import speech
     from google.cloud import translate
     print("Pipeline mode: CLOUD (Google Cloud STT + Translate)")
+elif PIPELINE_MODE == "runpod":
+    import websockets
+    import numpy as np
+    print("Pipeline mode: RUNPOD (Faster-Whisper + Ollama Remote WS)")
 else:
     import mlx_whisper
     import numpy as np
@@ -681,8 +685,127 @@ class TranscriptionEngine:
 
         if self.pipeline_mode == "cloud":
             await self._run_cloud()
+        elif self.pipeline_mode == "runpod":
+            await self._run_runpod()
         else:
             await self._run_local()
+
+    # --- RunPod Streaming ---
+    
+    async def _run_runpod(self):
+        """Streaming mode: stream VAD-segmented audio to remote NVIDIA RunPod engine."""
+        import websockets
+        wss_url = os.getenv("RUNPOD_WSS_URL", "ws://127.0.0.1:8888/stream")
+        loop = asyncio.get_event_loop()
+
+        while True:
+            try:
+                print(f"Connecting to RunPod Server: {wss_url}")
+                async with websockets.connect(wss_url) as ws:
+                    print("Connected to RunPod.")
+                    
+                    # 1. Provide Config
+                    await ws.send(json.dumps({
+                        "action": "config",
+                        "source_lang": self.source_lang,
+                        "target_lang_1": self.target_lang_1,
+                        "target_lang_2": self.target_lang_2,
+                        "target_lang_3": self.target_lang_3,
+                        "target_lang_4": self.target_lang_4,
+                        "enable_trans_3": getattr(self, 'enable_trans_3', True),
+                        "enable_trans_4": getattr(self, 'enable_trans_4', True)
+                    }))
+                    
+                    # 2. Spawn continuous receiving task
+                    async def ws_receiver():
+                        try:
+                            async for msg in ws:
+                                data = json.loads(msg)
+                                # The RunPod server crafts the exact UI payloads
+                                await self.broadcast(data)
+                        except Exception as e:
+                            print(f"RunPod WS Recv Error: {e}")
+                    
+                    recv_task = asyncio.create_task(ws_receiver())
+                    
+                    # 3. Audio Loop (Identical VAD buffer constraints as Local Mode)
+                    chunk_count = 0
+                    self.audio_buffer = bytearray()
+                    self.silence_frames = 0
+                    self.speech_frames = 0
+
+                    while not self.restart_required:
+                        if not self.audio_stream.running:
+                            await asyncio.sleep(0.5)
+                            continue
+
+                        if self.is_paused:
+                            await asyncio.sleep(0.1)
+                            continue
+
+                        if time.time() - self.session_start_time > self.MAX_DURATION_SECONDS:
+                            self.is_paused = True
+                            await self.broadcast({"action": "auto_paused", "reason": f"{int(self.MAX_DURATION_SECONDS / 60)}_min_limit"})
+                            continue
+
+                        chunk = await loop.run_in_executor(None, self.audio_stream.read_chunk)
+                        if not chunk:
+                            continue
+
+                        chunk_count += 1
+                        if chunk_count % 10 == 0:
+                            rms = self.audio_stream.calculate_rms(chunk)
+                            await self.broadcast({"type": "volume", "rms": rms})
+
+                        is_speech = self.audio_stream.vad.is_speech(chunk, SAMPLE_RATE)
+                        if is_speech:
+                            self.silence_frames = 0
+                            self.speech_frames += 1
+                        else:
+                            self.silence_frames += 1
+
+                        self.audio_buffer.extend(chunk)
+
+                        silence_ms = self.silence_frames * FRAME_DURATION_MS
+                        buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)
+
+                        hard_cap = buffer_duration_s >= 25.0
+                        force_flush = silence_ms >= self.max_silence_flush_ms
+
+                        if (hard_cap or force_flush or silence_ms >= self.silence_threshold_ms) and self.speech_frames > 0:
+                            if force_flush and self.speech_frames < 3:
+                                self.audio_buffer = bytearray()
+                                self.speech_frames = 0
+                                self.silence_frames = 0
+                                continue
+
+                            met_speech_req = self.speech_frames >= self.min_speech_frames or ((force_flush or hard_cap) and self.speech_frames >= 3)
+                            if not met_speech_req:
+                                continue
+
+                            if buffer_duration_s < self.min_local_chunk_s and not force_flush and not hard_cap:
+                                continue
+                                
+                            print(f"[RunPod] Sending {buffer_duration_s:.1f}s of audio with {self.speech_frames} speech frames...")
+                            audio_np = np.frombuffer(self.audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+                            
+                            # Push Binary to RunPod
+                            await ws.send(audio_np.tobytes())
+                            
+                            self.audio_buffer = bytearray()
+                            self.silence_frames = 0
+                            self.speech_frames = 0
+                            
+                    # Restart required
+                    recv_task.cancel()
+                    self.restart_required = False
+                    if not self.audio_stream.running:
+                        self.audio_stream.start()
+
+            except Exception as e:
+                print(f"RunPod Server Connection Error. Retrying in 3s... ({e})")
+                await asyncio.sleep(3)
+
 
     # --- Cloud STT (Google Streaming) ---
 

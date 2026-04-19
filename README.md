@@ -149,6 +149,20 @@ Find your Mac's IP with: `ipconfig getifaddr en0`
 - **WebSocket**: Real-time bidirectional communication between server and browser
 - **Resampling**: Automatic linear interpolation for non-16kHz WAV files
 
+## Advanced Audio Processing
+
+The app incorporates several intelligent safeguards to ensure stable subtitles and prevent Whisper AI from structurally omitting sentences or crashing into loops:
+
+- **Silence Detection & Dynamic Chunking**:  
+  Audio is continuously collected as long as the speaker talks. Under the hood, WebRTC Voice Activity Detection (VAD) constantly monitors for micro-pauses. The engine ideally waits to hit a fragment length of `10.0s`. Once reached, it aggressively capitalizes on any minor breath (≥ 400ms) to safely split and translate the audio without cutting words in half. 
+
+- **Force-Flushing & Short Fragments**:  
+  If a speaker provides an exceptionally short phrase (e.g. *amen*) and then remains perfectly quiet, the buffer will not infinitely lock up. A failsafe (`MAX_SILENCE_FLUSH_MS`, commonly 2.0s) eventually forces a transcription. Extremely short microphone clicks (< 90ms) that accidentally trip the VAD are automatically dropped as noise, keeping the buffer pure and preventing meaningless GPU cycles.
+
+- **Anti-Hallucination & Prompt Sliding Trim**:  
+  Because Whisper can suffer from "amnesia" between chunks, the backend employs **Prompt Context Sliding** — injecting the final 200 characters of the preceding audio chunk as a direct memory cue to the AI models. This natively prevents Whisper from dropping overlapping sentence-halves. 
+  To combat the reverse side-effect (where Whisper sometimes "leaks" or hallucinates that memory cue out loud during absolute silence), a real-time sliding-window filter surgically detects repeated exact-text loops and strips hallucinated prefixes out of the final text before translation.
+
 ## Project Structure
 
 ```

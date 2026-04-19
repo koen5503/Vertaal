@@ -563,6 +563,10 @@ class TranscriptionEngine:
                 if self.audio_stream.current_device_index != "demo_file":
                     self.audio_stream.change_device("demo_file")
                     self.restart_required = True
+            elif idx == "vban":
+                if self.audio_stream.current_device_index != "vban":
+                    self.audio_stream.change_device("vban")
+                    self.restart_required = True
             elif idx == "default" or idx is None:
                 try:
                     default = self.audio_stream.p.get_default_input_device_info()

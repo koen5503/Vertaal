@@ -84,8 +84,8 @@ class AudioStream:
             self.stream.close()
             self.stream = None
             
-        if self.current_device_index == "demo_file":
-            print("Preparing to stream from Demo File")
+        if self.current_device_index == "demo_file" or str(self.current_device_index).startswith("file_") or self.current_device_index == "vban":
+            print(f"Preparing to stream from Virtual Endpoint: {self.current_device_index}")
             self.stream = None
             return
             
@@ -127,6 +127,8 @@ class AudioStream:
         for w in sorted(wav_files):
             devices.append({"index": f"file_{w}", "name": f"File: {w}"})
             
+        devices.append({"index": "vban", "name": "Direct Network (VBAN)"})
+            
         return devices
 
     def change_device(self, index):
@@ -135,7 +137,7 @@ class AudioStream:
         normalized_index = index if index is not None else None
         
         # Allow re-selection of demo_file (actual file may have changed)
-        if self.current_device_index == normalized_index and normalized_index != "demo_file":
+        if self.current_device_index == normalized_index and not str(normalized_index).startswith("file_") and normalized_index not in ("demo_file", "vban"):
             return
             
         self.current_device_index = normalized_index
@@ -179,8 +181,11 @@ class AudioStream:
 
     def _read_loop(self):
         """Background thread to continuously read audio."""
-        if self.current_device_index == "demo_file":
+        if self.current_device_index == "demo_file" or str(self.current_device_index).startswith("file_"):
             self._read_file_loop()
+            return
+        elif self.current_device_index == "vban":
+            self._read_vban_loop()
             return
             
         while self.running:
@@ -233,6 +238,64 @@ class AudioStream:
             samples = resampled
         
         return struct.pack(f"<{len(samples)}h", *samples)
+
+    def _read_vban_loop(self):
+        """Background thread to natively listen to VBAN UDP Audio from Windows."""
+        import socket
+        import struct
+        import os
+
+        vban_target = os.getenv("VBAN_STREAM_NAME", "ringleiding").lower()
+        
+        SR_LIST = [
+            6000, 12000, 24000, 48000, 96000, 192000, 384000,
+            8000, 16000, 32000, 64000, 128000, 256000, 512000,
+            11025, 22050, 44100, 88200, 176400, 352800,
+            7110, 14220, 28440, 56880, 113760, 227520
+        ]
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", 6980))
+        sock.settimeout(0.5)
+
+        print(f"VBAN Listener started on UDP 6980. Waiting for stream: '{vban_target}'")
+
+        while self.running:
+            try:
+                data, addr = sock.recvfrom(2048)
+                
+                if len(data) <= 28:
+                    continue
+                    
+                vban_header = data[:28]
+                tag, sp_sr, sams, chans, fmt, stream_name, frame = struct.unpack("<4sBBBB16sI", vban_header)
+                
+                if tag != b'VBAN':
+                    continue
+                    
+                stream_name_str = stream_name.decode('ascii', 'replace').strip('\x00').strip().lower()
+                if stream_name_str != vban_target:
+                    continue
+
+                sr_index = sp_sr & 0x1F
+                sample_rate = SR_LIST[sr_index] if sr_index < len(SR_LIST) else 48000
+                nb_channels = chans + 1
+                
+                # Wait: DataFormat (fmt=1 is INT16, fmt=4 is FLOAT32). Voicemeeter defaults to INT16
+                payload = data[28:]
+                
+                # Push uncompressed VBAN UDP chunk straight to audioop core resampler -> audio Queue
+                resampled = self._resample_for_stt(payload, sample_rate, nb_channels, 2)
+                
+                if resampled:
+                    # Small chunks of VBAN natively flow right into the VAD module precisely as the mic
+                    self.queue.put(resampled)
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"VBAN read error: {e}")
+                time.sleep(1)
 
     def _read_file_loop(self):
         demo_name = os.getenv("DEMO_FILE_PATH", "2025-12-14-1000.wav")

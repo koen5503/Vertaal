@@ -802,12 +802,35 @@ class TranscriptionEngine:
                 last_trans = getattr(self, "last_transcript", "")
                 if last_trans:
                     clean_last = last_trans.translate(str.maketrans('', '', string.punctuation)).lower()
+                    last_words = clean_last.split()
+                    
                     if clean_text == clean_last:
                         print(f"Filtered hallucination (Exact Prompt Leakage): '{text}'")
                         return None
                     if len(words) >= 3 and clean_text in clean_last:
                         print(f"Filtered hallucination (Partial Prompt Leakage): '{text}'")
                         return None
+
+                    # Overlapping sliding-window prefix trimmer
+                    max_overlap = min(len(last_words), len(words))
+                    best_overlap = 0
+                    for i in range(max_overlap, 0, -1):
+                        if last_words[-i:] == words[:i]:
+                            best_overlap = i
+                            break
+                            
+                    if best_overlap > 0:
+                        original_words = text.split()
+                        text = " ".join(original_words[best_overlap:])
+                        if not text:
+                            print(f"Filtered hallucination (100% Leaked Prefix Drop)")
+                            return None
+                        print(f"Trimmed {best_overlap} leaked prefix words. Kept: '{text}'")
+                        
+                        clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower()
+                        words = clean_text.split()
+                        if not words:
+                            return None
 
                 # 1. Repetition filter
                 # A. Exactly the same word repeated

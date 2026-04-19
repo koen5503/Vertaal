@@ -941,15 +941,17 @@ class TranscriptionEngine:
 
                 met_speech_req = self.speech_frames >= self.min_speech_frames or ((force_flush or hard_cap) and self.speech_frames >= 3)
 
-                if met_speech_req:
-                    if buffer_duration_s < self.min_local_chunk_s and not force_flush and not hard_cap:
-                        # Do not reset silence frames! Let them increment so we can eventually force_flush
-                        # if the speaker doesn't start speaking again.
-                        continue
-                        
-                    print(f"Silence/Flush ({silence_ms}ms) — transcribing {buffer_duration_s:.1f}s of audio with {self.speech_frames} speech frames...")
+                if not met_speech_req:
+                    continue
 
-                    transcript = await loop.run_in_executor(None, self._transcribe_buffer)
+                if buffer_duration_s < self.min_local_chunk_s and not force_flush and not hard_cap:
+                    # Do not reset silence frames! Let them increment so we can eventually force_flush
+                    # if the speaker doesn't start speaking again.
+                    continue
+                    
+                print(f"Silence/Flush ({silence_ms}ms) — transcribing {buffer_duration_s:.1f}s of audio with {self.speech_frames} speech frames...")
+
+                transcript = await loop.run_in_executor(None, self._transcribe_buffer)
 
                 if transcript:
                     print(f"STT: '{transcript}'")

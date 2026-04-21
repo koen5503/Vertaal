@@ -133,29 +133,39 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Save context 
                     last_transcript = text[-200:]
                     
+                    import time
+                    seg_id = f"seg_{int(time.time()*1000)}"
+                    
                     # Dispatch to websocket
                     await websocket.send_json({
-                        "action": "update_source",
-                        "text": text,
-                        "is_final": True
+                        "id": seg_id,
+                        "status": "final",
+                        "col1_text": text
                     })
                     
                     # Dispatch parallel translation tasks
-                    async def process_translation(col_key, target_lang):
+                    async def process_translation(col_key, target_lang, segment_id):
                         res = await translate_text(text, target_lang, config["source_lang"])
-                        await websocket.send_json({
-                            "action": "update_translation",
-                            "col_key": col_key,
-                            "text": res
-                        })
+                        col_index = ""
+                        if col_key == "trans1": col_index = "col2_text"
+                        elif col_key == "trans2": col_index = "col3_text"
+                        elif col_key == "trans3": col_index = "col4_text"
+                        elif col_key == "trans4": col_index = "col5_text"
+                        
+                        if col_index:
+                            await websocket.send_json({
+                                "id": segment_id,
+                                "status": "final",
+                                col_index: res
+                            })
 
                     tasks = []
-                    tasks.append(process_translation("trans1", config["target_lang_1"]))
-                    tasks.append(process_translation("trans2", config["target_lang_2"]))
+                    tasks.append(process_translation("trans1", config["target_lang_1"], seg_id))
+                    tasks.append(process_translation("trans2", config["target_lang_2"], seg_id))
                     if config["enable_trans_3"]:
-                        tasks.append(process_translation("trans3", config["target_lang_3"]))
+                        tasks.append(process_translation("trans3", config["target_lang_3"], seg_id))
                     if config["enable_trans_4"]:
-                        tasks.append(process_translation("trans4", config["target_lang_4"]))
+                        tasks.append(process_translation("trans4", config["target_lang_4"], seg_id))
                         
                     await asyncio.gather(*tasks)
 

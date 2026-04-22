@@ -692,10 +692,93 @@ class TranscriptionEngine:
 
     # --- RunPod Streaming ---
     
+    def _discover_runpod_url(self) -> str:
+        api_key = os.getenv("RUNPOD_API_KEY")
+        if not api_key:
+            return None
+            
+        import urllib.request
+        import json
+        
+        api_key = api_key.strip().strip('\'" ')
+        masked_key = api_key[:4] + "***" + api_key[-4:] if len(api_key) > 8 else "INVALID_LENGTH"
+        print(f"[RunPod Auto-Discovery] Booting with API Key {masked_key} (len: {len(api_key)})")
+        
+        url = f"https://api.runpod.io/graphql?api_key={api_key}"
+        query = '''
+        query Pods {
+          myself {
+            pods {
+              id
+              name
+              desiredStatus
+              runtime {
+                ports {
+                  ip
+                  isIpPublic
+                  privatePort
+                  publicPort
+                  type
+                }
+              }
+            }
+          }
+        }
+        '''
+        
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        data = json.dumps({"query": query}).encode('utf-8')
+        
+        try:
+            req = urllib.request.Request(url, data=data, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                result = json.loads(response.read())
+                
+            pods = result.get('data', {}).get('myself', {}).get('pods', [])
+            for pod in pods:
+                if pod.get('desiredStatus') != 'RUNNING':
+                    continue
+                    
+                # Find ports mapping
+                runtime = pod.get('runtime')
+                if not runtime: continue
+                
+                ports = runtime.get('ports', [])
+                for port_map in ports:
+                    if port_map.get('privatePort') == 8000:
+                        ip = port_map.get('ip')
+                        public_port = port_map.get('publicPort')
+                        
+                        if ip and port_map.get('isIpPublic') and public_port:
+                            link = f"ws://{ip}:{public_port}/stream"
+                            print(f"[RunPod Auto-Discovery] Found TCP Link: {link}")
+                            return link
+                        else:
+                            # Fallback to WSS Proxy
+                            pod_id = pod.get('id')
+                            link = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
+                            print(f"[RunPod Auto-Discovery] Found WSS HTTP Proxy Link: {link}")
+                            return link
+                            
+            print("[RunPod Auto-Discovery] No running pod with port 8000 found.")
+        except Exception as e:
+            print(f"[RunPod Auto-Discovery] Error fetching API: {e}")
+            
+        return None
+
     async def _run_runpod(self):
         """Streaming mode: stream VAD-segmented audio to remote NVIDIA RunPod engine."""
         import websockets
-        wss_url = os.getenv("RUNPOD_WSS_URL", "ws://127.0.0.1:8888/stream")
+        wss_url = self._discover_runpod_url()
+        if not wss_url:
+            wss_url = os.getenv("RUNPOD_WSS_URL")
+            if not wss_url:
+                wss_url = "ws://127.0.0.1:8888/stream"
+                print("No RUNPOD_API_KEY or RUNPOD_WSS_URL found. Defaulting to local.")
+                
         loop = asyncio.get_event_loop()
 
         while True:

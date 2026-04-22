@@ -3,13 +3,18 @@ FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
+# Route large AI model downloads to the /workspace directory (for Network Volume persistence)
+ENV OLLAMA_MODELS=/workspace/ollama
+ENV HF_HOME=/workspace/huggingface
+
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     curl \
     git \
+    zstd \
  && rm -rf /var/lib/apt/lists/*
-
+ 
 # Install Ollama (Native Linux installation to run inside container)
 RUN curl -fsSL https://ollama.com/install.sh | sh
 

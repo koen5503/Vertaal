@@ -26,6 +26,56 @@ logging.basicConfig(level=logging.INFO)
 # Global Client for Ollama
 client = ollama.AsyncClient(host=OLLAMA_URL)
 
+# --- Automatic Shutdown Timer ---
+# Default to 90 minutes (5400 seconds) to prevent runaway costs
+MAX_RUN_TIME = int(os.getenv("MAX_RUN_TIME_SEC", "5400"))
+
+def auto_shutdown():
+    import time
+    import os
+    import json
+    import urllib.request
+    
+    print(f"SHUTDOWN TIMER: Server will automatically shut down in {MAX_RUN_TIME/60:.1f} minutes.")
+    time.sleep(MAX_RUN_TIME)
+    print(f"SHUTDOWN TIMER: Time limit reached ({MAX_RUN_TIME}s). Attempting to stop pod...")
+    
+    # RunPod injects RUNPOD_POD_ID automatically. 
+    # The user must provide RUNPOD_API_KEY in the environment variables.
+    api_key = os.getenv("RUNPOD_API_KEY", "").strip()
+    pod_id = os.getenv("RUNPOD_POD_ID", "").strip()
+    
+    if api_key and pod_id:
+        try:
+            url = "https://api.runpod.io/graphql"
+            mutation = f"""
+            mutation {{
+                podStop(input: {{podId: "{pod_id}"}}) {{
+                    id
+                    desiredStatus
+                }}
+            }}
+            """
+            data = json.dumps({"query": mutation}).encode("utf-8")
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            req = urllib.request.Request(url, data=data, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                print("RunPod Stop API Response:", response.read().decode())
+        except Exception as e:
+            print(f"Failed to call RunPod API: {e}")
+    else:
+        print("WARNING: RUNPOD_API_KEY or RUNPOD_POD_ID not found in environment.")
+        print("The server will exit, but RunPod might restart it automatically. Please add RUNPOD_API_KEY to your template.")
+        
+    os._exit(0) # Forcefully exit the process as a fallback
+
+import threading
+threading.Thread(target=auto_shutdown, daemon=True).start()
+
 async def translate_text(text: str, target_lang: str, source_lang: str):
     if not text or not target_lang:
         return ""
@@ -143,29 +193,39 @@ async def websocket_endpoint(websocket: WebSocket):
                         "col1_text": text
                     })
                     
-                    # Dispatch parallel translation tasks
-                    async def process_translation(col_key, target_lang, segment_id):
-                        res = await translate_text(text, target_lang, config["source_lang"])
-                        col_index = ""
-                        if col_key == "trans1": col_index = "col2_text"
-                        elif col_key == "trans2": col_index = "col3_text"
-                        elif col_key == "trans3": col_index = "col4_text"
-                        elif col_key == "trans4": col_index = "col5_text"
+                    # Dispatch parallel translation chains
+                    async def process_translation_chain(col_key_1, lang_1, col_key_2, lang_2, segment_id):
+                        # First translation (e.g. NL -> EN)
+                        text_1 = await translate_text(text, lang_1, config["source_lang"])
+                        col_idx_1 = "col2_text" if col_key_1 == "trans1" else "col3_text"
                         
-                        if col_index:
+                        await websocket.send_json({
+                            "id": segment_id,
+                            "status": "final",
+                            col_idx_1: text_1
+                        })
+                        
+                        # Second translation (Back-translation: EN -> NL)
+                        if col_key_2 and lang_2:
+                            text_2 = await translate_text(text_1, lang_2, lang_1)
+                            col_idx_2 = "col4_text" if col_key_2 == "trans3" else "col5_text"
                             await websocket.send_json({
                                 "id": segment_id,
                                 "status": "final",
-                                col_index: res
+                                col_idx_2: text_2
                             })
 
                     tasks = []
-                    tasks.append(process_translation("trans1", config["target_lang_1"], seg_id))
-                    tasks.append(process_translation("trans2", config["target_lang_2"], seg_id))
-                    if config["enable_trans_3"]:
-                        tasks.append(process_translation("trans3", config["target_lang_3"], seg_id))
-                    if config["enable_trans_4"]:
-                        tasks.append(process_translation("trans4", config["target_lang_4"], seg_id))
+                    
+                    # Chain 1: trans1 -> trans3 (Back-translation 1)
+                    c3_key = "trans3" if config.get("enable_trans_3") else None
+                    c3_lang = config.get("target_lang_3") if config.get("enable_trans_3") else None
+                    tasks.append(process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id))
+                    
+                    # Chain 2: trans2 -> trans4 (Back-translation 2)
+                    c4_key = "trans4" if config.get("enable_trans_4") else None
+                    c4_lang = config.get("target_lang_4") if config.get("enable_trans_4") else None
+                    tasks.append(process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id))
                         
                     await asyncio.gather(*tasks)
 

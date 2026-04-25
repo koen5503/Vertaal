@@ -1,30 +1,26 @@
 # Live Subtitles & Translation
 
-Real-time speech-to-text subtitling with simultaneous translation into two target languages. Runs **entirely locally** on Apple Silicon using MLX-Whisper for transcription and Ollama for translation — no cloud APIs, no internet required.
+Real-time speech-to-text subtitling with simultaneous translation into two target languages and two chained back-translations. This application supports a hybrid architecture: it can run **entirely locally** on Apple Silicon using MLX-Whisper, or on **Windows** leveraging **RunPod Cloud** for high-performance GPU acceleration.
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue)
-![Platform](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-lightgrey)
+![Python](https://img.shields.io/badge/Python-3.12-blue)
+![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey)
 ![License](https://img.shields.io/badge/License-Private-red)
 
-## Features
+## 🌟 Features
 
-- **Local Speech-to-Text** — MLX-Whisper optimized for Apple Silicon (M1/M2/M3/M4)
-- **Local Translation** — Ollama LLM translation with configurable models (e.g., `aya-expanse:8b`)
-- **Fully Offline** — No cloud APIs, no internet connection needed after initial model download
-- **Voice Activity Detection** — WebRTC VAD with intelligent silence detection for natural sentence segmentation
-- **Multiple Audio Sources** — Live microphone input, WAV file playback, or Direct Network Audio
-- **Native Network Receiver** — Built-in Python UDP receiver seamlessly integrates Voicemeeter VBAN audio streams directly into the pipeline without reliance on unreliable virtual audio cables (e.g., BlackHole).
-- **Automatic Resampling** — WAV files and VBAN Streams (stereo, 44.1kHz, 48kHz, etc.) are automatically converted to 16kHz mono for STT
-- **Web Interface** — Three-column live display (source + 2 translations) with volume indicator
-- **Device Switching** — Switch between microphones and audio files during a session
-- **Session Limit** — 30-minute auto-pause safety timer
+- **Cross-Platform Support** — Optimized for both macOS (Local MLX) and Windows (Cloud RunPod).
+- **5-Column Display** — Source audio, two direct translations, and two chained back-translations.
+- **Intelligent Pod Management** — Fully automated, cost-saving lifecycle management for RunPod cloud servers.
+- **Advanced Audio Processing** — WebRTC VAD with smart silence detection, force-flushing, and anti-hallucination filters.
 
-## Architecture
+---
 
-```
+## 🏗 Architecture
+
+```text
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Audio Source    │────▶│  AudioStream     │────▶│  MLX-Whisper    │
-│  (Mic / WAV)    │     │  (PyAudio + VAD) │     │  (Batch STT)    │
+│  Audio Source    │────▶│  AudioStream     │────▶│  STT Engine     │
+│  (Mic / B1)     │     │  (PyAudio/ASIO)  │     │ (MLX or Faster) │
 └─────────────────┘     └──────────────────┘     └────────┬────────┘
                                                           │
                         ┌──────────────────┐              │
@@ -41,167 +37,166 @@ Real-time speech-to-text subtitling with simultaneous translation into two targe
        └────────────┘   └────────────┘   └────────────┘
 ```
 
-## Prerequisites
+---
 
-- Python 3.10+
-- Apple Silicon Mac (M1/M2/M3/M4) — required for MLX-Whisper
-- [Ollama](https://ollama.com/download) installed and running
-- PortAudio (for PyAudio): `brew install portaudio`
+## 🚀 Windows & RunPod Setup (Cloud STT)
 
-## Installation
+This pipeline is optimized for Windows machines connected to professional mixers (like the Behringer X-32) using **VoiceMeeter**.
 
+### 1. Prerequisites (Windows)
+- **Python 3.12**
+- **VoiceMeeter** (Standard, Banana, or Potato)
+- **RunPod Account** with an active API Key
+
+### 2. Windows Firewall Configuration
+Run these commands in **PowerShell (as Administrator)** to ensure your local viewer and connections work flawlessly:
+
+```powershell
+# Allow Connection to RunPod (Outbound) - Note: WSS Proxy traverse firewalls automatically
+New-NetFirewallRule -DisplayName "RunPod Outbound" -Direction Outbound -Action Allow -Protocol TCP -RemotePort 443,30000-65535
+
+# Allow Viewer Access (Inbound) - So tablets/phones can access the web UI
+New-NetFirewallRule -DisplayName "Ondertitels Viewer" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 80,8000
+```
+
+### 3. Audio Routing & Start
+- In **VoiceMeeter**, route your mixer input to **BUS B1**.
+- Start the server: `python app.py` (or use the standalone `app.exe`)
+- The Python script will automatically detect and select `Voicemeeter Out B1` on startup.
+
+---
+
+## 🍎 macOS Setup (Local STT)
+
+Run the entire pipeline locally without internet requirements, optimized for M1/M2/M3/M4 chips.
+
+### 1. Prerequisites (Mac)
+- **Python 3.10+**
+- **Ollama** installed and running
+- **PortAudio**: `brew install portaudio`
+
+### 2. Installation
 ```bash
-# Clone the repository
-git clone https://github.com/koen5503/Vertaal.git
-cd Vertaal
-
-# Install Python dependencies
 pip3 install -r requirements.txt
-
-# Install and start Ollama
 brew install ollama
 ollama pull aya-expanse:8b
-ollama serve   # keep running in a separate terminal
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your preferences
+ollama serve
 ```
 
-## Configuration
-
-Create a `.env` file in the project root:
-
-```env
-WHISPER_MODEL=mlx-community/whisper-small-mlx
-OLLAMA_MODEL=aya-expanse:8b
-OLLAMA_URL=http://localhost:11434
-SOURCE_LANG=nl-NL
-TARGET_LANG_1=en
-TARGET_LANG_2=ru
-DEMO_FILE_PATH=BV.wav
-TRANSLATE_INTERVAL_SEC=15
-SILENCE_THRESHOLD_MS=300
-```
-
-| Variable | Description | Example |
-|---|---|---|
-| `WHISPER_MODEL` | MLX-Whisper model (HuggingFace repo) | `mlx-community/whisper-small-mlx`, `mlx-community/whisper-large-v3-turbo` |
-| `OLLAMA_MODEL` | Ollama translation model | `aya-expanse:8b`, `qwen2.5:3b`, `llama3.1:8b` |
-| `OLLAMA_URL` | Ollama server URL | `http://localhost:11434` |
-| `SOURCE_LANG` | Source language (BCP-47 code) | `nl-NL`, `en-US` |
-| `TARGET_LANG_1` | First translation target language | `en`, `fr`, `de` |
-| `TARGET_LANG_2` | Second translation target language | `ru`, `uk`, `ar` |
-| `DEMO_FILE_PATH` | Default WAV file for demo playback | `BV.wav` |
-| `SILENCE_THRESHOLD_MS` | Silence duration to trigger transcription | `300`, `400` |
-
-## Usage
-
-### Starting the Server
-
+### 3. Start
 ```bash
 python3 app.py
 ```
 
-The server starts on `http://0.0.0.0:8000` (all network interfaces) and automatically opens your browser. The Whisper model is downloaded automatically on first run.
+---
 
-### Admin Interface (`/`)
+## 🤖 Intelligent Pod Lifecycle (RunPod)
 
-Full control panel with audio source selection, language settings, and playback controls.
+To prevent runaway costs and keep your account clean, the backend uses a smart deployment sequence when `AUTO_DEPLOY_RUNPOD=true`:
 
-| Control | Function |
-|---|---|
-| **Source** | Select source speech language |
-| **Left / Right** | Select target translation languages |
-| **Input** | Switch between microphone, demo file, or WAV files |
-| **🔄** | Rescan available audio input devices |
-| **Pause / Resume** | Pause/resume transcription |
-| **⏹ Stop** | Gracefully shut down the server |
+1. **Auto-Resume**: The script first searches for any paused (`EXITED`) pods in your account. If found, it attempts to wake them up.
+2. **Auto-Terminate**: If waking up fails (e.g., the RTX 4090 is out of stock in that specific datacenter), the script *terminates* the dead pod to keep your dashboard tidy.
+3. **Auto-Deploy**: If no pods can be resumed, it automatically rents a fresh, brand new pod and waits for it to boot.
+4. **Auto-Shutdown**: The RunPod server monitors its own uptime. After the configured `MAX_RUN_TIME_SEC` (default 90 mins), it executes a self-termination command to RunPod's GraphQL API, saving your wallet.
 
-### Read-Only Viewer (`/live`)
+---
 
-A stripped-down, read-only page for other devices on the local network. Shows the same 3-column subtitle display without any controls.
+## 🐳 Docker & RunPod Deployment
 
+To run the backend on RunPod, build and push the Docker image.
+
+### 1. Build and Push the Image
+```bash
+docker build --platform linux/amd64 -t koenhu/runpod-vertaal:v9 .
+docker push koenhu/runpod-vertaal:v9
 ```
-http://<your-mac-ip>:8000/live
-```
 
-Find your Mac's IP with: `ipconfig getifaddr en0`
+### 2. RunPod Template Configuration
+- **Container Image**: `koenhu/runpod-vertaal:v9`
+- **Expose Port**: `8000` (HTTP/WS)
+- **Environment Variables**:
+  - `WHISPER_MODEL`: `large-v3` (CRITICAL for high quality)
+  - `MAX_RUN_TIME_SEC`: `5400` (Auto-shutdown after 90 mins)
 
-## Supported Languages
+---
 
-### Source (Speech-to-Text)
+## 🛠 Configuration (.env)
 
-- Dutch (nl-NL)
-- English (en-US)
+Create a `.env` file in the project root:
 
-### Target (Translation)
+| Variable | Description | Default |
+|---|---|---|
+| `PIPELINE_MODE` | `local` (Mac) or `runpod` (Windows) | `local` |
+| `AUTO_DEPLOY_RUNPOD` | Enable intelligent pod resume/deploy | `true` |
+| `RUNPOD_API_KEY` | Your RunPod API key | *(required for runpod mode)* |
+| `DEFAULT_DEVICE_NAME` | Audio device to auto-select on startup | `Voicemeeter Out B1` |
+| `MAX_RUN_TIME_SEC` | Auto-shutdown RunPod after X seconds | `5400` |
+| `WHISPER_MODEL` | Local MLX model or RunPod model | `mlx-community/whisper-small-mlx` |
+| `SOURCE_LANG` | Speech language | `nl-NL` |
+| `TARGET_LANG_1` | First translation target | `en` |
+| `TARGET_LANG_2` | Second translation target | `ru` |
+| `ENABLE_TRANS_3` | Enable 3rd chained translation | `false` |
+| `ENABLE_TRANS_4` | Enable 4th chained translation | `false` |
 
-- English, French, German, Russian, Ukrainian, Farsi, Arabic, Spanish, Portuguese, Italian, Chinese, Japanese, Korean, Turkish, Polish
+---
 
-## Technical Details
+## 🌐 URLs & Access
 
-- **Audio Format**: 16kHz, 16-bit, mono PCM (LINEAR16)
-- **Frame Duration**: 30ms (480 samples per chunk)
-- **VAD**: WebRTC Voice Activity Detection (Mode 1)
-- **STT**: Batch transcription triggered by silence threshold — audio accumulated in-memory as numpy array
-- **Translation**: Async Ollama calls (`AsyncClient`) with `temperature=0` for deterministic output
-- **Session Limit**: 30 minutes auto-pause
-- **WebSocket**: Real-time bidirectional communication between server and browser
-- **Resampling**: Automatic linear interpolation for non-16kHz WAV files
+Once the script is running, the interface is accessible via the local network. 
+*Note: If the server cannot bind to port `80`, it will fall back to port `8000`.*
 
-## Advanced Audio Processing
+| Interface | URL | Purpose |
+|---|---|---|
+| **Admin Panel** | `http://localhost/` | Full control: Select audio source, change languages, pause/stop. |
+| **Live Viewer** | `http://ondertitels.local/live` | Read-only, clean subtitles for tablets, smartphones, or projectors. |
+
+---
+
+## 🧠 Advanced Audio Processing
 
 The app incorporates several intelligent safeguards to ensure stable subtitles and prevent Whisper AI from structurally omitting sentences or crashing into loops:
 
 - **Silence Detection & Dynamic Chunking**:  
-  Audio is continuously collected as long as the speaker talks. Under the hood, WebRTC Voice Activity Detection (VAD) constantly monitors for micro-pauses. The engine ideally waits to hit a fragment length of `10.0s`. Once reached, it aggressively capitalizes on any minor breath (≥ 400ms) to safely split and translate the audio without cutting words in half. 
+  Audio is continuously collected as long as the speaker talks. Under the hood, WebRTC Voice Activity Detection (VAD) monitors for micro-pauses. The engine aggressively capitalizes on any minor breath (≥ 400ms) to safely split and translate the audio without cutting words in half. 
 
 - **Force-Flushing & Short Fragments**:  
-  If a speaker provides an exceptionally short phrase (e.g. *amen*) and then remains perfectly quiet, the buffer will not infinitely lock up. A failsafe (`MAX_SILENCE_FLUSH_MS`, commonly 2.0s) eventually forces a transcription. Extremely short microphone clicks (< 90ms) that accidentally trip the VAD are automatically dropped as noise, keeping the buffer pure and preventing meaningless GPU cycles.
+  If a speaker provides an exceptionally short phrase (e.g. *"amen"*) and then remains perfectly quiet, a failsafe eventually forces a transcription. Extremely short microphone clicks (< 90ms) that accidentally trip the VAD are automatically dropped as noise, keeping the GPU buffer pure.
 
 - **Anti-Hallucination & Prompt Sliding Trim**:  
-  Because Whisper can suffer from "amnesia" between chunks, the backend employs **Prompt Context Sliding** — injecting the final 200 characters of the preceding audio chunk as a direct memory cue to the AI models. This natively prevents Whisper from dropping overlapping sentence-halves. 
-  To combat the reverse side-effect (where Whisper sometimes "leaks" or hallucinates that memory cue out loud during absolute silence), a real-time sliding-window filter surgically detects repeated exact-text loops and strips hallucinated prefixes out of the final text before translation.
+  Because Whisper can suffer from "amnesia" between chunks, the backend employs **Prompt Context Sliding** — injecting the final 200 characters of the preceding audio chunk as a direct memory cue to the AI models. To combat the reverse side-effect (where Whisper sometimes hallucinate that memory cue out loud during absolute silence), a real-time sliding-window filter surgically detects repeated exact-text loops and strips hallucinated prefixes out of the final text before translation.
 
-## Project Structure
+---
 
-```
-Vertaal/
-├── app.py                 # Main application (server, audio, STT, translation)
-├── templates/
-│   ├── index.html         # Admin interface (full controls)
-│   └── viewer.html        # Read-only viewer for LAN clients (/live)
-├── build.py               # PyInstaller build script
-├── app.spec               # PyInstaller spec file
-├── requirements.txt       # Python dependencies
-├── .env                   # Configuration (not in git)
-├── .env.example           # Example configuration
-└── *.wav                  # Demo audio files
-```
+## 📦 Standalone Build (Windows EXE)
 
-## Troubleshooting
+The standalone build system is fully operational. If you prefer to run the application as a standalone executable (`.exe`) without needing to invoke Python directly, you can compile it using the included build script. This bundles the entire Python environment into one file.
+
+1. Install PyInstaller:
+   ```bash
+   pip install pyinstaller
+   ```
+2. Run the custom build script:
+   ```bash
+   python build.py
+   ```
+3. The newly compiled `app.exe` will appear in the `dist` folder.
+   *Note: Always keep your `.env` file in the same directory as `app.exe` so it can load your API keys and preferred devices.*
+
+---
+
+## 🔧 Troubleshooting
 
 ### Microphone reads silence (RMS=0)
-
-- Grant microphone permission to your terminal app in *System Settings → Privacy & Security → Microphone*
-
-### Ollama connection errors
-
-- Ensure Ollama is running: `ollama serve`
-- Ensure the model is pulled: `ollama pull aya-expanse:8b`
-- Check the URL matches `OLLAMA_URL` in `.env`
-
-### WAV file not found
-
-WAV files placed in the same directory as the application are automatically found.
+- **Mac**: Grant microphone permission to your terminal app in *System Settings → Privacy & Security → Microphone*.
+- **Windows**: Check if VoiceMeeter is running and BUS B1 is actively receiving audio.
 
 ### Server won't stop
-
 Use the **⏹ Stop** button in the web interface, or press `Ctrl+C` in the terminal.
+
+### RunPod Connection Refused
+Check your Windows Firewall rules. Ensure your network profile is set to **Private** and that Outbound port `443` and `30000-65535` are allowed.
 
 ---
 
 ## Credits
-
-This software was entirely written with **AI Google Antigravity**, using the models **Claude Opus 4.6** and **Gemini 3.1 Pro**.
+This software was developed with **AI Google Antigravity**, utilizing **Claude 3.5 Sonnet** and **Gemini 1.5 Pro** for cross-platform migration and low-latency audio engineering.

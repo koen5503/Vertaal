@@ -1,0 +1,16 @@
+ 1102  python3 app.py
+ 1103  nano .env
+ 1104  python3 app.py
+ 1105  python3 app.py
+ 1106  docker build -t your-docker-user/runpod-whisper:v1.0.0 .
+ 1107  docker push your-docker-user/runpod-whisper:v1.0.0
+ 1108  docker login
+ 1109  docker push your-docker-user/runpod-whisper:v1.0.0
+ 1110  docker build -t koen5503/runpod-whisper:v1.0.0 .
+ 1111  docker push koen5503/runpod-whisper:v1.0.0
+ 1112  docker login
+ 1113  docker push koen5503/runpod-whisper:v1.0.0
+ 1114  docker logout
+ 1115  docker login
+ 1116  docker push koen5503/runpod-whisper:v1.0.0
+ 1117  history | grep docker

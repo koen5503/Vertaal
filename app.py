@@ -34,8 +34,20 @@ if 'pkg_resources' not in sys.modules:
         def get_distribution(name): return MockDistribution()
     sys.modules['pkg_resources'] = MockPkgResources()
 
-import webrtcvad
-import pyaudio
+try:
+    import webrtcvad
+except ImportError:
+    webrtcvad = None
+
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None
+
+try:
+    import sounddevice as sd
+except ImportError:
+    sd = None
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
@@ -51,10 +63,13 @@ elif PIPELINE_MODE == "runpod":
     import numpy as np
     print("Pipeline mode: RUNPOD (Faster-Whisper + Ollama Remote WS)")
 else:
-    import mlx_whisper
-    import numpy as np
-    from ollama import AsyncClient
-    print("Pipeline mode: LOCAL (MLX-Whisper + Ollama)")
+    try:
+        import mlx_whisper
+        import numpy as np
+        from ollama import AsyncClient
+        print("Pipeline mode: LOCAL (MLX-Whisper + Ollama)")
+    except ImportError:
+        print("Pipeline mode: LOCAL (Warning: MLX/Whisper not found, local mode may not work on this platform)")
 
 app = FastAPI()
 
@@ -70,17 +85,57 @@ import wave
 class AudioStream:
     """Captures audio from microphone or file in a background thread."""
     def __init__(self):
-        self.p = pyaudio.PyAudio()
+        self.p = pyaudio.PyAudio() if pyaudio else None
         self.vad = webrtcvad.Vad(1) # Mode 1: Standard
         self.queue = queue.Queue()
         self.running = False
         self.playback_paused = False
         self.thread = None
+        self.sd_stream = None # For sounddevice (Windows/ASIO)
         
-        # Default to demo file playback on startup
+        # Default to VoiceMeeter if available, else demo file
         self.current_device_index = "demo_file"
         self.stream = None
-        print(f"Startup mode: Demo File ({os.getenv('DEMO_FILE_PATH', 'BV.wav')})")
+        
+        # Auto-discovery of VoiceMeeter or other preferred device
+        preferred = os.getenv("DEFAULT_DEVICE_NAME", "Voicemeeter Out B1")
+        devs = self.list_devices()
+        
+        # Debug: Print all devices to terminal on startup
+        print("--- Detected Audio Devices ---")
+        for d in devs:
+            print(f"  [{d['index']}] {d['name']}")
+        print("-------------------------------")
+
+        # First pass: try to find an EXACT match (ignoring case and "Mic:" prefix)
+        for d in devs:
+            clean_name = d['name'].lower().replace("mic:", "").strip()
+            if preferred.lower() == clean_name or preferred.lower() in clean_name:
+                # If we find B1, we stop immediately
+                if "b1" in clean_name and "b1" in preferred.lower():
+                    self.current_device_index = d['index']
+                    print(f"Startup: Auto-selected device '{d['name']}' (Index: {d['index']})")
+                    break
+        
+        if self.current_device_index == "demo_file":
+            # Second pass: loose match if B1 specifically wasn't found
+            for d in devs:
+                if preferred.lower() in d['name'].lower():
+                    self.current_device_index = d['index']
+                    print(f"Startup: Auto-selected device (Loose Match) '{d['name']}' (Index: {d['index']})")
+                    break
+        
+        if self.current_device_index == "demo_file":
+            print(f"Startup mode: Demo File ({os.getenv('DEMO_FILE_PATH', 'BV.wav')})")
+        
+        self._open_stream()
+
+    def is_speech(self, chunk: bytes) -> bool:
+        """Unified VAD check. Uses WebRTC VAD (identical to Mac)."""
+        try:
+            return self.vad.is_speech(chunk, SAMPLE_RATE)
+        except:
+            return False
 
     def _open_stream(self):
         # Close existing if open
@@ -88,11 +143,16 @@ class AudioStream:
             self.stream.close()
             self.stream = None
             
-        if self.current_device_index == "demo_file" or str(self.current_device_index).startswith("file_") or self.current_device_index == "vban":
-            print(f"Preparing to stream from Virtual Endpoint: {self.current_device_index}")
+        if self.current_device_index == "demo_file" or str(self.current_device_index).startswith("file_") or self.current_device_index == "vban" or str(self.current_device_index).startswith("sd_"):
+            print(f"Preparing to stream from Virtual/SoundDevice Endpoint: {self.current_device_index}")
             self.stream = None
             return
             
+        if not pyaudio or not self.p:
+            print("PyAudio not available. Skipping PyAudio stream open.")
+            self.stream = None
+            return
+
         print(f"Opening Stream on Device Index: {self.current_device_index}")
         try:
             self.stream = self.p.open(
@@ -108,31 +168,37 @@ class AudioStream:
             self.stream = None
 
     def list_devices(self):
-        """Uses existing PyAudio instance to scan for new devices and returns list."""
-        devices = []
-        try:
-            count = self.p.get_device_count()
-            for i in range(count):
-                try:
+        """Uses existing PyAudio and SoundDevice instances to scan for devices and returns list."""
+        devices = [{"index": "demo_file", "name": "Demo Loop (Bert.wav)"}]
+        
+        # 1. PyAudio (Mac / standard)
+        if pyaudio and self.p:
+            try:
+                for i in range(self.p.get_device_count()):
                     info = self.p.get_device_info_by_index(i)
                     if info.get('maxInputChannels') > 0:
-                        devices.append({"index": i, "name": info.get('name')})
-                except Exception as e:
-                    pass
-        except Exception as e:
-            print(f"Error getting device info: {e}")
+                        devices.append({"index": i, "name": f"Mic: {info.get('name')}"})
+            except Exception as e:
+                print(f"Error getting PyAudio devices: {e}")
+
+        # 2. SoundDevice (Windows / ASIO / Pro Audio)
+        if sd:
+            try:
+                sd_devs = sd.query_devices()
+                for i, dev in enumerate(sd_devs):
+                    if dev['max_input_channels'] > 0:
+                        host_api = sd.query_hostapis(dev['hostapi'])['name']
+                        devices.append({"index": f"sd_{i}", "name": f"SD: {dev['name']} ({host_api})"})
+            except Exception as e:
+                print(f"Error getting SoundDevice devices: {e}")
                 
-        # Dynamically add all .wav files from CWD and bundle directory
+        # 3. Virtual files & VBAN
         import glob
         wav_files = set(os.path.basename(f) for f in glob.glob("*.wav"))
-        bundle_dir = resource_path(".")
-        if bundle_dir != os.path.abspath("."):
-            wav_files.update(os.path.basename(f) for f in glob.glob(os.path.join(bundle_dir, "*.wav")))
         for w in sorted(wav_files):
             devices.append({"index": f"file_{w}", "name": f"File: {w}"})
             
         devices.append({"index": "vban", "name": "Direct Network (VBAN)"})
-            
         return devices
 
     def change_device(self, index):
@@ -160,11 +226,12 @@ class AudioStream:
                 break
                 
         # Recreate PyAudio to clear macOS CoreAudio sample rate lock
-        try:
-            self.p.terminate()
-        except:
-            pass
-        self.p = pyaudio.PyAudio()
+        if pyaudio and self.p:
+            try:
+                self.p.terminate()
+            except:
+                pass
+            self.p = pyaudio.PyAudio()
         
         # Reopen input stream on fresh instance
         self._open_stream()
@@ -191,6 +258,9 @@ class AudioStream:
         elif self.current_device_index == "vban":
             self._read_vban_loop()
             return
+        elif str(self.current_device_index).startswith("sd_"):
+            self._read_sounddevice_loop()
+            return
             
         while self.running:
             try:
@@ -202,6 +272,37 @@ class AudioStream:
             except Exception as e:
                 print(f"Audio Read Error: {e}")
                 break
+
+    def _read_sounddevice_loop(self):
+        """Background thread for sounddevice capture (Windows ASIO)."""
+        import numpy as np
+        try:
+            dev_idx = int(str(self.current_device_index).split("_")[1])
+            print(f"Starting SoundDevice loop on index {dev_idx} (16kHz Mono)")
+            
+            # WebRTC VAD needs exactly 10, 20 or 30ms. 
+            # At 16000Hz, 30ms is 480 frames.
+            VAD_FRAMES = 480 
+            
+            def callback(indata, frames, time, status):
+                if status:
+                    print(f"SD Status: {status}")
+                # indata is float32 [-1.0, 1.0], convert to int16
+                pcm = (indata[:, 0] * 32767).astype(np.int16).tobytes()
+                self.queue.put(pcm)
+
+            with sd.InputStream(
+                device=dev_idx, 
+                channels=CHANNELS, 
+                samplerate=SAMPLE_RATE, 
+                dtype='float32',
+                blocksize=VAD_FRAMES,
+                callback=callback
+            ):
+                while self.running:
+                    time.sleep(0.1)
+        except Exception as e:
+            print(f"SoundDevice Stream Error: {e}")
 
     def _resample_for_stt(self, data, src_rate, src_channels, src_width):
         """Convert audio data to 16kHz mono 16-bit LINEAR16 for STT."""
@@ -260,10 +361,10 @@ class AudioStream:
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", 6980))
+        sock.bind(("0.0.0.0", 6981))
         sock.settimeout(0.5)
 
-        print(f"VBAN Listener started on UDP 6980. Waiting for stream: '{vban_target}'")
+        print(f"VBAN Listener started on UDP 6981. Waiting for stream: '{vban_target}'")
 
         vban_pcm_accumulator = bytearray()
 
@@ -442,8 +543,8 @@ class TranscriptionEngine:
         self.target_lang_2 = os.getenv("TARGET_LANG_2", "ru")
         self.target_lang_3 = os.getenv("TARGET_LANG_3", "de")
         self.target_lang_4 = os.getenv("TARGET_LANG_4", "nl-NL")
-        self.enable_trans_3 = os.getenv("ENABLE_TRANS_3", "true").lower() in ("true", "1", "yes")
-        self.enable_trans_4 = os.getenv("ENABLE_TRANS_4", "true").lower() in ("true", "1", "yes")
+        self.enable_trans_3 = os.getenv("ENABLE_TRANS_3", "false").lower() in ("true", "1", "yes")
+        self.enable_trans_4 = os.getenv("ENABLE_TRANS_4", "false").lower() in ("true", "1", "yes")
         self.is_paused = False
         self.restart_required = False
 
@@ -579,6 +680,10 @@ class TranscriptionEngine:
                 if self.audio_stream.current_device_index != "vban":
                     self.audio_stream.change_device("vban")
                     self.restart_required = True
+            elif isinstance(idx, str) and idx.startswith("sd_"):
+                if self.audio_stream.current_device_index != idx:
+                    self.audio_stream.change_device(idx)
+                    self.restart_required = True
             elif idx == "default" or idx is None:
                 try:
                     default = self.audio_stream.p.get_default_input_device_info()
@@ -587,8 +692,13 @@ class TranscriptionEngine:
                     self.audio_stream.change_device(None)
                 self.restart_required = True
             else:
-                self.audio_stream.change_device(int(idx))
-                self.restart_required = True
+                try:
+                    self.audio_stream.change_device(int(idx))
+                    self.restart_required = True
+                except (ValueError, TypeError):
+                    # Fallback for any other string indices
+                    self.audio_stream.change_device(idx)
+                    self.restart_required = True
 
     # --- Translation ---
 
@@ -738,8 +848,15 @@ class TranscriptionEngine:
                 result = json.loads(response.read())
                 
             pods = result.get('data', {}).get('myself', {}).get('pods', [])
+            print(f"[RunPod Auto-Discovery] Found {len(pods)} pods in your account.")
+            
             for pod in pods:
-                if pod.get('desiredStatus') != 'RUNNING':
+                pod_id = pod.get('id')
+                pod_name = pod.get('name')
+                desired = pod.get('desiredStatus')
+                print(f"  - Checking Pod: {pod_name} (ID: {pod_id}) | desiredStatus: {desired}")
+                
+                if desired != 'RUNNING':
                     continue
                     
                 # Find ports mapping
@@ -769,10 +886,164 @@ class TranscriptionEngine:
             
         return None
 
+    async def _deploy_runpod_pod(self) -> bool:
+        """Sends a podFindAndDeployOnDemand mutation to RunPod. Tries multiple GPU types if stock is low."""
+        api_key = os.getenv("RUNPOD_API_KEY")
+        template_id = os.getenv("RUNPOD_TEMPLATE_ID")
+        volume_id = os.getenv("RUNPOD_VOLUME_ID")
+        dc_id = os.getenv("RUNPOD_DATA_CENTER_ID", "EU-RO-1")
+        whisper_model = os.getenv("RUNPOD_WHISPER_MODEL", "large-v3")
+        
+        # Priority list of GPUs to try
+        gpu_fallbacks = [
+            os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 3090"),
+            "NVIDIA GeForce RTX 4090",
+            "NVIDIA RTX A4000",
+            "NVIDIA RTX A5000",
+            "NVIDIA RTX 6000 Ada Generation"
+        ]
+        
+        if not api_key or not template_id:
+            print("[RunPod Deploy] Error: Missing API_KEY or TEMPLATE_ID in .env")
+            return False
+
+        import urllib.request
+        import json
+        
+        url = f"https://api.runpod.io/graphql?api_key={api_key}"
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+
+        for gpu_id in gpu_fallbacks:
+            print(f"[RunPod Deploy] Attempting to rent {gpu_id} in {dc_id}...")
+            mutation = f'''
+            mutation {{
+              podFindAndDeployOnDemand(input: {{
+                gpuTypeId: "{gpu_id}",
+                templateId: "{template_id}",
+                networkVolumeId: "{volume_id}",
+                dataCenterId: "{dc_id}",
+                gpuCount: 1,
+                env: [
+                    {{ key: "WHISPER_MODEL", value: "{whisper_model}" }}
+                ]
+              }}) {{
+                id
+                desiredStatus
+              }}
+            }}
+            '''
+            data = json.dumps({"query": mutation}).encode('utf-8')
+            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            
+            try:
+                with urllib.request.urlopen(req, timeout=15) as f:
+                    res = json.loads(f.read().decode('utf-8'))
+                    if "errors" in res:
+                        err_msg = res["errors"][0].get("message", "")
+                        if "SUPPLY_CONSTRAINT" in str(res) or "no longer any instances available" in err_msg:
+                            print(f"[RunPod Deploy] {gpu_id} out of stock, trying next...")
+                            continue
+                        else:
+                            print(f"[RunPod Deploy] API Error for {gpu_id}: {res['errors']}")
+                            return False
+                    
+                    pod_id = res.get("data", {}).get("podFindAndDeployOnDemand", {}).get("id")
+                    print(f"[RunPod Deploy] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
+                    return True
+            except Exception as e:
+                print(f"[RunPod Deploy] System Error trying {gpu_id}: {e}")
+                continue
+                
+        print("[RunPod Deploy] All attempted GPU types are currently unavailable.")
+        return False
+
+    async def _manage_runpod_deployment(self) -> bool:
+        """Attempts to resume paused pods, terminates them if unavailable, and deploys a new one if needed."""
+        api_key = os.getenv("RUNPOD_API_KEY")
+        if not api_key: return False
+        api_key = api_key.strip().strip('\'" ')
+        
+        import urllib.request
+        import json
+        
+        url = f"https://api.runpod.io/graphql?api_key={api_key}"
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        # 1. Get all EXITED pods
+        query = '{ myself { pods { id name desiredStatus } } }'
+        req = urllib.request.Request(url, data=json.dumps({"query": query}).encode('utf-8'), headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                pods = json.loads(response.read()).get('data', {}).get('myself', {}).get('pods', [])
+        except Exception as e:
+            print(f"[RunPod Deploy] Error fetching pods for resume check: {e}")
+            pods = []
+            
+        exited_pods = [p for p in pods if p.get('desiredStatus') == 'EXITED']
+        
+        for pod in exited_pods:
+            pod_id = pod['id']
+            print(f"[RunPod Deploy] Attempting to resume paused pod {pod_id}...")
+            
+            # Try to resume
+            resume_query = f'mutation {{ podResume(input: {{ podId: "{pod_id}", gpuCount: 1 }}) {{ id desiredStatus }} }}'
+            req_resume = urllib.request.Request(url, data=json.dumps({"query": resume_query}).encode('utf-8'), headers=headers)
+            try:
+                with urllib.request.urlopen(req_resume, timeout=15) as f:
+                    res = json.loads(f.read().decode('utf-8'))
+                    if "errors" not in res:
+                        print(f"[RunPod Deploy] Successfully resumed pod {pod_id}!")
+                        return True
+                    else:
+                        err_msg = res["errors"][0].get("message", "")
+                        print(f"[RunPod Deploy] Failed to resume {pod_id} (Reason: {err_msg}). Terminating it to keep account clean...")
+                        
+                        # Terminate the pod since we can't resume it
+                        term_query = f'mutation {{ podTerminate(input: {{ podId: "{pod_id}" }}) }}'
+                        req_term = urllib.request.Request(url, data=json.dumps({"query": term_query}).encode('utf-8'), headers=headers)
+                        urllib.request.urlopen(req_term, timeout=10)
+                        print(f"[RunPod Deploy] Pod {pod_id} terminated.")
+            except Exception as e:
+                print(f"[RunPod Deploy] System error while managing pod {pod_id}: {e}")
+                continue
+                
+        # If we reach here, we either had no EXITED pods, or all of them failed to resume and were terminated.
+        print("[RunPod Deploy] No available paused pods could be resumed. Falling back to renting a fresh pod...")
+        return await self._deploy_runpod_pod()
+
     async def _run_runpod(self):
         """Streaming mode: stream VAD-segmented audio to remote NVIDIA RunPod engine."""
         import websockets
         wss_url = self._discover_runpod_url()
+        
+        # 1. Auto-deploy if enabled and no pod found
+        auto_deploy_val = os.getenv("AUTO_DEPLOY_RUNPOD", "false").lower()
+        if not wss_url and auto_deploy_val == "true":
+            print("[RunPod] No active pod found. Attempting Auto-Deployment/Resume...")
+            if await self._manage_runpod_deployment():
+                print("[RunPod] Deployment successful. Waiting for pod to initialize (this can take 1-3 minutes)...")
+                # Wait in a loop for up to 5 minutes
+                for i in range(30): # 30 * 10s = 300s
+                    await asyncio.sleep(10)
+                    wss_url = self._discover_runpod_url()
+                    if wss_url:
+                        print(f"[RunPod] Pod network is ready. Waiting 20s extra for Whisper models to load...")
+                        await asyncio.sleep(20) # Extra buffer for large-v3 loading
+                        print(f"[RunPod] Ready to connect after { (i+1)*10 + 20 }s!")
+                        break
+                    print(f"  ...still waiting for network ({ (i+1)*10 }s)...")
+                
+                if not wss_url:
+                    print("[RunPod] Timeout: Pod did not become ready in time.")
+            else:
+                print("[RunPod] Auto-Deployment failed.")
+
         if not wss_url:
             wss_url = os.getenv("RUNPOD_WSS_URL")
             if not wss_url:
@@ -840,7 +1111,7 @@ class TranscriptionEngine:
                             rms = self.audio_stream.calculate_rms(chunk)
                             await self.broadcast({"type": "volume", "rms": rms})
 
-                        is_speech = self.audio_stream.vad.is_speech(chunk, SAMPLE_RATE)
+                        is_speech = self.audio_stream.is_speech(chunk)
                         if is_speech:
                             self.silence_frames = 0
                             self.speech_frames += 1
@@ -952,7 +1223,7 @@ class TranscriptionEngine:
                     vol_msg = {"type": "volume", "rms": rms}
                     asyncio.run_coroutine_threadsafe(self.broadcast(vol_msg), loop=loop)
 
-                is_speech = self.audio_stream.vad.is_speech(chunk, SAMPLE_RATE)
+                is_speech = self.audio_stream.is_speech(chunk)
                 if is_speech:
                     self.silence_frames = 0
                 else:
@@ -1194,7 +1465,7 @@ class TranscriptionEngine:
                 rms = self.audio_stream.calculate_rms(chunk)
                 await self.broadcast({"type": "volume", "rms": rms})
 
-            is_speech = self.audio_stream.vad.is_speech(chunk, SAMPLE_RATE)
+            is_speech = self.audio_stream.is_speech(chunk)
             if is_speech:
                 self.silence_frames = 0
                 self.speech_frames += 1
@@ -1406,8 +1677,9 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         await websocket.send_json({
             "action": "init_config",
-            "enable_trans_3": getattr(engine, 'enable_trans_3', True),
-            "enable_trans_4": getattr(engine, 'enable_trans_4', True)
+            "enable_trans_3": getattr(engine, 'enable_trans_3', False),
+            "enable_trans_4": getattr(engine, 'enable_trans_4', False),
+            "device_index": engine.audio_stream.current_device_index
         })
         while True:
             data = await websocket.receive_text()

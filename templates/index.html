@@ -372,8 +372,7 @@
                 }
             });
 
-            // Initial Trigger to sync headers
-            setTimeout(sendConfig, 1000);
+            // Removed initial Trigger to allow server-side auto-selection to stick
         }
 
         function updateColumnVisibility(e3, e4) {
@@ -387,6 +386,29 @@
             if (data.action === 'init_config') {
                 document.getElementById('enable-trans-3').checked = data.enable_trans_3;
                 document.getElementById('enable-trans-4').checked = data.enable_trans_4;
+                
+                // Sync device selection if provided by server
+                if (data.device_index) {
+                    const audioSelect = document.getElementById('audio-device');
+                    // We might need to add the option if it's not in the hardcoded list yet
+                    let found = false;
+                    for (let i = 0; i < audioSelect.options.length; i++) {
+                        if (audioSelect.options[i].value == data.device_index) {
+                            audioSelect.value = data.device_index;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found && data.device_index !== "demo_file") {
+                        // Temporary option until rescan fills the list
+                        const opt = document.createElement('option');
+                        opt.value = data.device_index;
+                        opt.text = "Selected Device (" + data.device_index + ")";
+                        audioSelect.appendChild(opt);
+                        audioSelect.value = data.device_index;
+                    }
+                }
+                
                 updateColumnVisibility(data.enable_trans_3, data.enable_trans_4);
                 return;
             }
@@ -427,6 +449,7 @@
                 if (data.col2_text) updateColumn('trans1', 'list-trans1', data.id, data.status, data.col2_text);
                 if (data.col3_text) updateColumn('trans2', 'list-trans2', data.id, data.status, data.col3_text);
                 if (data.col4_text) updateColumn('trans3', 'list-trans3', data.id, data.status, data.col4_text);
+                if (data.col5_text) updateColumn('trans4', 'list-trans4', data.id, data.status, data.col5_text);
             }
         }
 

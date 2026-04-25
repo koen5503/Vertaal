@@ -1,0 +1,9 @@
+Please implement the following, but step by step. And please keep the cross-platform aspect intact.
+Step 1.
+Add the code you mentioned to automatically start the browser.
+Step 2.
+When the demo is playing, if I hit resume, it restarts the file, but does not pause the playback.
+Step 3.
+I do not see any reaction when I switch to the microphone. Is that part simply not working?
+Step 4.
+I would like the option to select another wav file for testing.

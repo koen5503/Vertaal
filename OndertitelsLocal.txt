@@ -1,0 +1,31 @@
+
+**Copy and paste the text below to your agent:**
+
+> **Context:** > You previously built my existing Speech-to-Text (STT) and Translation pipeline using Google Cloud APIs (`google-cloud-speech` and `google-cloud-translate`) in Python. We are now pivoting this architecture to run entirely locally and offline on an Apple Silicon M3 machine.
+> **Task 1: Version Control**
+> Before making any code changes, please create and check out a new git branch called `feature/local-mac-ai-pipeline`. Leave the main branch untouched.
+> **Task 2: Swap STT for Local MLX-Whisper**
+> * Remove all Google Cloud Speech authentication and API calls.
+> * Replace them with the `mlx-whisper` library, which is optimized for Apple Silicon.
+> * Set up the transcription function to use the `mlx-community/whisper-small-mlx` model by default (so it runs safely on my M3's memory), but set it up as a variable so I can easily swap it to `whisper-large-v3-turbo` later.
+> 
+> 
+> **Task 3: Swap Translation for Local Ollama**
+> * Remove all Google Cloud Translate authentication and API calls.
+> * Replace them with the `ollama` Python package.
+> * Configure the translation to send the transcribed text to a local Ollama server (`http://localhost:11434`).
+> * Write a strict system prompt for the LLM instructing it to act purely as a translator (e.g., "Translate the following text to [Target Language]. Output ONLY the translation without any conversational filler or markdown.").
+> * Default the model to `qwen2.5:3b` or `llama3.1:8b`.
+> 
+> 
+> **Task 4: Preserve the Plumbing**
+> * **Strict constraint:** Do not modify the existing audio capture logic, user interface, triggers, or downstream data routing. Only swap out the transcription and translation engine blocks.
+> 
+> 
+> **Output Requirements:**
+> 1. Provide the terminal commands I need to run to install the new dependencies.
+> 2. Provide the updated Python code.
+> 
+> 
+
+---

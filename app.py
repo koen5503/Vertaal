@@ -1667,9 +1667,15 @@ async def get():
         return f.read()
 
 @app.get("/live", response_class=HTMLResponse)
+@app.get("/live/", response_class=HTMLResponse)
+@app.get("/viewer", response_class=HTMLResponse)
 async def get_viewer():
-    with open(resource_path("templates/viewer.html"), "r", encoding="utf-8") as f:
-        return f.read()
+    try:
+        path = resource_path("templates/viewer.html")
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        return HTMLResponse(content=f"Error loading viewer.html: {e}", status_code=500)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -1679,6 +1685,11 @@ async def websocket_endpoint(websocket: WebSocket):
             "action": "init_config",
             "enable_trans_3": getattr(engine, 'enable_trans_3', False),
             "enable_trans_4": getattr(engine, 'enable_trans_4', False),
+            "source_lang": engine.source_lang,
+            "target_lang_1": engine.target_lang_1,
+            "target_lang_2": engine.target_lang_2,
+            "target_lang_3": engine.target_lang_3,
+            "target_lang_4": engine.target_lang_4,
             "device_index": engine.audio_stream.current_device_index
         })
         while True:

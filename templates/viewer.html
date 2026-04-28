@@ -28,21 +28,28 @@
 
         header {
             background-color: var(--card-bg);
-            padding: 1rem 2rem;
+            padding: 0.5rem 1.5rem;
             border-bottom: 1px solid var(--border-color);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            z-index: 100;
         }
 
         h1 {
             margin: 0;
-            font-size: 1.5rem;
+            font-size: 1.2rem;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
         }
 
         #status {
-            font-size: 0.9rem;
-            padding: 0.3rem 0.8rem;
+            font-size: 0.8rem;
+            padding: 0.2rem 0.7rem;
             border-radius: 1rem;
             background-color: #eee;
         }
@@ -57,10 +64,55 @@
             color: #721c24;
         }
 
+        .settings-btn {
+            background: none;
+            border: none;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 5px;
+            border-radius: 50%;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .settings-btn:hover {
+            background: #eee;
+        }
+
+        #settings-panel {
+            position: absolute;
+            top: 50px;
+            right: 20px;
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            padding: 1rem;
+            display: none;
+            flex-direction: column;
+            gap: 0.5rem;
+            z-index: 1000;
+        }
+
+        #settings-panel.active {
+            display: flex;
+        }
+
+        .toggle-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
         main {
             flex: 1;
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
+            grid-template-columns: 1fr;
             gap: 1rem;
             padding: 1rem;
             overflow: hidden;
@@ -76,10 +128,11 @@
         }
 
         .column-header {
-            padding: 1rem;
+            padding: 0.8rem;
             font-weight: bold;
             border-bottom: 1px solid var(--border-color);
             background-color: #f8f9fa;
+            font-size: 0.9rem;
         }
 
         .column-content {
@@ -99,6 +152,8 @@
             border: 1px solid #eee;
             box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
             transition: all 0.2s ease;
+            font-size: 1.1rem;
+            line-height: 1.4;
         }
 
         .segment.interim {
@@ -129,16 +184,38 @@
         ::-webkit-scrollbar-thumb:hover {
             background: #aaa;
         }
+
+        @media (max-width: 800px) {
+            main {
+                grid-template-columns: 1fr !important;
+                overflow-y: auto;
+            }
+            .column {
+                min-height: 300px;
+            }
+        }
     </style>
 </head>
 
 <body>
     <header>
-        <h1>Live Subtitles — Viewer</h1>
-        <div id="status" class="disconnected">Disconnected</div>
+        <h1>Live Subtitles</h1>
+        <div class="header-right">
+            <div id="status" class="disconnected">Disconnected</div>
+            <button class="settings-btn" id="toggle-settings" title="Column Settings">⚙️</button>
+        </div>
     </header>
 
-    <main>
+    <div id="settings-panel">
+        <div style="font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #eee; padding-bottom: 5px;">Show Columns</div>
+        <label class="toggle-item"><input type="checkbox" data-col="source" checked> <span id="label-source">Original</span></label>
+        <label class="toggle-item"><input type="checkbox" data-col="trans1" checked> <span id="label-trans1">Translation 1</span></label>
+        <label class="toggle-item" id="toggle-3-container"><input type="checkbox" data-col="trans3" checked> <span id="label-trans3">Translation 1 (Back)</span></label>
+        <label class="toggle-item"><input type="checkbox" data-col="trans2" checked> <span id="label-trans2">Translation 2</span></label>
+        <label class="toggle-item" id="toggle-4-container"><input type="checkbox" data-col="trans4" checked> <span id="label-trans4">Translation 2 (Back)</span></label>
+    </div>
+
+    <main id="main-grid">
         <div class="column" id="col-source">
             <div class="column-header" id="header-source">Nederlands</div>
             <div class="column-content" id="list-source"></div>
@@ -148,7 +225,7 @@
             <div class="column-content" id="list-trans1"></div>
         </div>
         <div class="column" id="col-trans3">
-            <div class="column-header" id="header-trans3">Chained Translation</div>
+            <div class="column-header" id="header-trans3">T1 Back</div>
             <div class="column-content" id="list-trans3"></div>
         </div>
         <div class="column" id="col-trans2">
@@ -156,7 +233,7 @@
             <div class="column-content" id="list-trans2"></div>
         </div>
         <div class="column" id="col-trans4">
-            <div class="column-header" id="header-trans4">Extra Translation</div>
+            <div class="column-header" id="header-trans4">T2 Back</div>
             <div class="column-content" id="list-trans4"></div>
         </div>
     </main>
@@ -165,104 +242,145 @@
         const wsUrl = 'ws://' + window.location.host + '/ws';
         let socket;
         const statusDiv = document.getElementById('status');
+        const mainGrid = document.getElementById('main-grid');
+        const settingsPanel = document.getElementById('settings-panel');
+        
+        let serverEnabled = { trans3: true, trans4: true };
+        let userVisibility = JSON.parse(localStorage.getItem('viewer_visibility') || '{"source":true,"trans1":true,"trans2":true,"trans3":true,"trans4":true}');
 
-        const segments = {
-            source: {},
-            trans1: {},
-            trans2: {},
-            trans3: {},
-            trans4: {}
+        const segments = { source: {}, trans1: {}, trans2: {}, trans3: {}, trans4: {} };
+
+        // Initialize checkboxes
+        document.querySelectorAll('#settings-panel input').forEach(cb => {
+            const col = cb.dataset.col;
+            cb.checked = userVisibility[col];
+            cb.onchange = () => {
+                userVisibility[col] = cb.checked;
+                localStorage.setItem('viewer_visibility', JSON.stringify(userVisibility));
+                applyVisibility();
+            };
+        });
+
+        document.getElementById('toggle-settings').onclick = (e) => {
+            e.stopPropagation();
+            settingsPanel.classList.toggle('active');
         };
+
+        document.body.onclick = () => settingsPanel.classList.remove('active');
+        settingsPanel.onclick = (e) => e.stopPropagation();
+
+        function updateLabels(data) {
+            const mapping = {
+                'source_lang': ['header-source', 'label-source'],
+                'target_lang_1': ['header-trans1', 'label-trans1'],
+                'target_lang_2': ['header-trans2', 'label-trans2'],
+                'target_lang_3': ['header-trans3', 'label-trans3'],
+                'target_lang_4': ['header-trans4', 'label-trans4']
+            };
+            for (const [key, ids] of Object.entries(mapping)) {
+                if (data[key]) {
+                    ids.forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.innerText = data[key];
+                    });
+                }
+            }
+        }
+
+        function applyVisibility() {
+            const cols = ['source', 'trans1', 'trans3', 'trans2', 'trans4'];
+            let visibleCount = 0;
+            
+            cols.forEach(c => {
+                const el = document.getElementById(`col-${c}`);
+                const toggleContainer = document.getElementById(`toggle-${c.replace("trans","")}-container`);
+                
+                // Server must enable it AND user must want to see it
+                let shouldShow = userVisibility[c];
+                if (c === 'trans3' && !serverEnabled.trans3) shouldShow = false;
+                if (c === 'trans4' && !serverEnabled.trans4) shouldShow = false;
+                
+                el.style.display = shouldShow ? 'flex' : 'none';
+                if (shouldShow) visibleCount++;
+                
+                // Hide toggles if server disabled them
+                if (c === 'trans3' && toggleContainer) toggleContainer.style.display = serverEnabled.trans3 ? 'flex' : 'none';
+                if (c === 'trans4' && toggleContainer) toggleContainer.style.display = serverEnabled.trans4 ? 'flex' : 'none';
+            });
+            
+            mainGrid.style.gridTemplateColumns = `repeat(${visibleCount}, 1fr)`;
+        }
 
         function connect() {
             socket = new WebSocket(wsUrl);
-
             socket.onopen = () => {
                 statusDiv.textContent = 'Connected';
                 statusDiv.className = 'connected';
             };
-
             socket.onclose = () => {
-                statusDiv.textContent = 'Disconnected — Reconnecting...';
+                statusDiv.textContent = 'Disconnected';
                 statusDiv.className = 'disconnected';
                 setTimeout(connect, 3000);
             };
-
-            socket.onerror = (err) => {
-                console.error("WebSocket error:", err);
-                socket.close();
-            };
-
             socket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                // Ignore volume updates on viewer
                 if (data.type === 'volume') return;
                 handleMessage(data);
             };
         }
 
-        function updateColumnVisibility(e3, e4) {
-            document.getElementById('col-trans3').style.display = e3 ? 'flex' : 'none';
-            document.getElementById('col-trans4').style.display = e4 ? 'flex' : 'none';
-            let cols = 3 + (e3 ? 1 : 0) + (e4 ? 1 : 0);
-            document.querySelector('main').style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-        }
-
         function handleMessage(data) {
             if (data.action === 'init_config') {
-                updateColumnVisibility(data.enable_trans_3, data.enable_trans_4);
+                serverEnabled.trans3 = data.enable_trans_3;
+                serverEnabled.trans4 = data.enable_trans_4;
+                
+                updateLabels(data);
+                
+                applyVisibility();
                 return;
+            } else if (data.action === 'update_config') {
+                updateLabels(data);
             }
-            if (data.action === 'device_list' || data.action === 'auto_paused') {
-                // Ignore admin-only messages
-                return;
-            } else if (data.action === 'update_translation') {
-                const listId = `list-${data.col_key}`;
-                updateColumn(data.col_key, listId, data.id, 'final', data.text);
+            if (data.action === 'update_translation') {
+                updateColumn(data.col_key, `list-${data.col_key}`, data.id, 'final', data.text);
             } else if (data.action === 'update_config') {
                 if (data.source_lang) document.getElementById('header-source').innerText = data.source_lang;
                 if (data.target_lang_1) document.getElementById('header-trans1').innerText = data.target_lang_1;
                 if (data.target_lang_3) document.getElementById('header-trans3').innerText = data.target_lang_3;
                 if (data.target_lang_2) document.getElementById('header-trans2').innerText = data.target_lang_2;
-            } else {
-                updateColumn('source', 'list-source', data.id, data.status, data.col1_text);
-                if (data.col2_text) updateColumn('trans1', 'list-trans1', data.id, data.status, data.col2_text);
-                if (data.col3_text) updateColumn('trans2', 'list-trans2', data.id, data.status, data.col3_text);
-                if (data.col4_text) updateColumn('trans3', 'list-trans3', data.id, data.status, data.col4_text);
-                if (data.col5_text) updateColumn('trans4', 'list-trans4', data.id, data.status, data.col5_text);
+                if (data.target_lang_4) document.getElementById('header-trans4').innerText = data.target_lang_4;
+            } else if (data.id) {
+                // Standard STT or Cloud update
+                if (data.col1_text !== undefined) updateColumn('source', 'list-source', data.id, data.status, data.col1_text);
+                if (data.col2_text !== undefined) updateColumn('trans1', 'list-trans1', data.id, data.status, data.col2_text);
+                if (data.col3_text !== undefined) updateColumn('trans2', 'list-trans2', data.id, data.status, data.col3_text);
+                if (data.col4_text !== undefined) updateColumn('trans3', 'list-trans3', data.id, data.status, data.col4_text);
+                if (data.col5_text !== undefined) updateColumn('trans4', 'list-trans4', data.id, data.status, data.col5_text);
             }
         }
 
         function updateColumn(colKey, listId, segId, status, text) {
             if (!text) return;
-
             const listEl = document.getElementById(listId);
+            if (!listEl) return;
             let segEl = segments[colKey][segId];
-
             if (!segEl) {
                 segEl = document.createElement('div');
                 segEl.className = `segment ${status}`;
                 segEl.id = `${colKey}-${segId}`;
                 listEl.appendChild(segEl);
                 segments[colKey][segId] = segEl;
-
-                requestAnimationFrame(() => {
-                    listEl.scrollTop = listEl.scrollHeight;
-                });
+                requestAnimationFrame(() => listEl.scrollTop = listEl.scrollHeight);
             }
-
             segEl.textContent = text;
             segEl.className = `segment ${status}`;
-
             if (status === 'final') {
-                requestAnimationFrame(() => {
-                    listEl.scrollTop = listEl.scrollHeight;
-                });
+                requestAnimationFrame(() => listEl.scrollTop = listEl.scrollHeight);
             }
         }
 
+        applyVisibility();
         connect();
     </script>
 </body>
-
 </html>

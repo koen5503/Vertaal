@@ -157,6 +157,9 @@
 <body>
     <header>
         <h1>Live Subtitles</h1>
+        <div style="margin-left: 20px;">
+            <a href="/live" target="_blank" style="color: var(--accent-color); text-decoration: none; font-weight: bold; font-size: 0.9rem; background: #e7f3ff; padding: 5px 12px; border-radius: 4px; border: 1px solid var(--accent-color);">👁 Open Viewer</a>
+        </div>
 
         <div class="controls">
             <label>Source:
@@ -442,14 +445,13 @@
                 const listId = `list-${data.col_key}`;
                 // Use 'final' style for async translations as they are stable
                 updateColumn(data.col_key, listId, data.id, 'final', data.text);
-            } else {
+            } else if (data.id) {
                 // Standard STT update
-                updateColumn('source', 'list-source', data.id, data.status, data.col1_text);
-                // Only update if present (legacy/interim might be empty)
-                if (data.col2_text) updateColumn('trans1', 'list-trans1', data.id, data.status, data.col2_text);
-                if (data.col3_text) updateColumn('trans2', 'list-trans2', data.id, data.status, data.col3_text);
-                if (data.col4_text) updateColumn('trans3', 'list-trans3', data.id, data.status, data.col4_text);
-                if (data.col5_text) updateColumn('trans4', 'list-trans4', data.id, data.status, data.col5_text);
+                if (data.col1_text !== undefined) updateColumn('source', 'list-source', data.id, data.status, data.col1_text);
+                if (data.col2_text !== undefined) updateColumn('trans1', 'list-trans1', data.id, data.status, data.col2_text);
+                if (data.col3_text !== undefined) updateColumn('trans2', 'list-trans2', data.id, data.status, data.col3_text);
+                if (data.col4_text !== undefined) updateColumn('trans3', 'list-trans3', data.id, data.status, data.col4_text);
+                if (data.col5_text !== undefined) updateColumn('trans4', 'list-trans4', data.id, data.status, data.col5_text);
             }
         }
 

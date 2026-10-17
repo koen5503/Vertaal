@@ -1,9 +1,12 @@
-*.wav
-__pycache__
-*.json
 .env
 .env.*
+!.env.example
+dotenv*
+puntenv
+*.wav
+__pycache__
+*.pyc
+*.json
 dist/
 build/
-*.pyc
 .DS_Store

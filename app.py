@@ -562,6 +562,7 @@ class TranscriptionEngine:
         self.session_start_time = time.time()
         self.MAX_DURATION_SECONDS = int(os.getenv("MAX_SESSION_MINUTES", "30")) * 60
         self.min_local_chunk_s = float(os.getenv("MIN_LOCAL_CHUNK_S", "10.0"))
+        self.max_local_chunk_s = float(os.getenv("MAX_LOCAL_CHUNK_S", "25.0"))
         self.max_silence_flush_ms = int(os.getenv("MAX_SILENCE_FLUSH_MS", "2000"))
 
         # Load glossary if exists
@@ -704,7 +705,9 @@ class TranscriptionEngine:
 
     async def translate_text_async(self, text, target_lang, source_lang=None):
         """Translate text using cloud or local backend."""
-        if not text or not target_lang:
+        if not text or "***" in text:
+            return text
+        if not target_lang:
             return ""
         source_code = source_lang.split("-")[0] if source_lang else self.source_lang.split("-")[0]
         if target_lang == source_code:
@@ -887,76 +890,126 @@ class TranscriptionEngine:
         return None
 
     async def _deploy_runpod_pod(self) -> bool:
-        """Sends a podFindAndDeployOnDemand mutation to RunPod. Tries multiple GPU types if stock is low."""
+        """Deploys a RunPod pod using REST API v2 (for Global Volumes) or legacy GraphQL mutation."""
         api_key = os.getenv("RUNPOD_API_KEY")
         template_id = os.getenv("RUNPOD_TEMPLATE_ID")
         volume_id = os.getenv("RUNPOD_VOLUME_ID")
-        dc_id = os.getenv("RUNPOD_DATA_CENTER_ID", "EU-RO-1")
+        dc_id = os.getenv("RUNPOD_DATA_CENTER_ID", "").strip()
         whisper_model = os.getenv("RUNPOD_WHISPER_MODEL", "large-v3")
         
-        # Priority list of GPUs to try
-        gpu_fallbacks = [
-            os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 3090"),
+        # Priority list of GPUs to try (deduplicated while preserving order)
+        preferred_gpu = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+        candidate_gpus = [
+            preferred_gpu,
             "NVIDIA GeForce RTX 4090",
-            "NVIDIA RTX A4000",
+            "NVIDIA GeForce RTX 3090",
             "NVIDIA RTX A5000",
-            "NVIDIA RTX 6000 Ada Generation"
+            "NVIDIA RTX A4000",
+            "NVIDIA RTX A4500",
+            "NVIDIA GeForce RTX 4080",
+            "NVIDIA L4",
+            "NVIDIA RTX 6000 Ada Generation",
         ]
+        gpu_fallbacks = list(dict.fromkeys(candidate_gpus))
         
         if not api_key or not template_id:
             print("[RunPod Deploy] Error: Missing API_KEY or TEMPLATE_ID in .env")
             return False
 
         import urllib.request
+        import urllib.error
         import json
-        
-        url = f"https://api.runpod.io/graphql?api_key={api_key}"
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+
+        region_display = dc_id if dc_id else "Any Region"
+        is_global_volume = bool(volume_id and (volume_id.startswith("cmu") or "global" in volume_id.lower()))
 
         for gpu_id in gpu_fallbacks:
-            print(f"[RunPod Deploy] Attempting to rent {gpu_id} in {dc_id}...")
-            mutation = f'''
-            mutation {{
-              podFindAndDeployOnDemand(input: {{
-                gpuTypeId: "{gpu_id}",
-                templateId: "{template_id}",
-                networkVolumeId: "{volume_id}",
-                dataCenterId: "{dc_id}",
-                gpuCount: 1,
-                env: [
-                    {{ key: "WHISPER_MODEL", value: "{whisper_model}" }}
-                ]
-              }}) {{
-                id
-                desiredStatus
-              }}
-            }}
-            '''
-            data = json.dumps({"query": mutation}).encode('utf-8')
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-            
-            try:
-                with urllib.request.urlopen(req, timeout=15) as f:
-                    res = json.loads(f.read().decode('utf-8'))
-                    if "errors" in res:
-                        err_msg = res["errors"][0].get("message", "")
-                        if "SUPPLY_CONSTRAINT" in str(res) or "no longer any instances available" in err_msg:
-                            print(f"[RunPod Deploy] {gpu_id} out of stock, trying next...")
-                            continue
-                        else:
-                            print(f"[RunPod Deploy] API Error for {gpu_id}: {res['errors']}")
-                            return False
-                    
-                    pod_id = res.get("data", {}).get("podFindAndDeployOnDemand", {}).get("id")
-                    print(f"[RunPod Deploy] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
-                    return True
-            except Exception as e:
-                print(f"[RunPod Deploy] System Error trying {gpu_id}: {e}")
-                continue
+            if is_global_volume:
+                print(f"[RunPod Deploy v2] Attempting to rent {gpu_id} with Global Volume {volume_id}...")
+                v2_url = "https://api.runpod.io/v2/pods"
+                v2_headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+                payload = {
+                    "name": "ondertitels-gpu",
+                    "templateId": template_id,
+                    "gpu": {"id": gpu_id, "count": 1},
+                    "mounts": {
+                        "global": [{"volumeId": volume_id, "path": "/workspace"}]
+                    },
+                    "entrypoint": ["/bin/bash", "-c"],
+                    "cmd": ["rm -rf /workspace/huggingface/hub/models--Systran--faster-whisper* && exec /app/start.sh"]
+                }
+                data = json.dumps(payload).encode('utf-8')
+                req = urllib.request.Request(v2_url, data=data, headers=v2_headers, method="POST")
+
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as f:
+                        res = json.loads(f.read().decode('utf-8'))
+                        pod_id = res.get("id") or (res.get("data", {}).get("id") if isinstance(res.get("data"), dict) else None)
+                        print(f"[RunPod Deploy v2] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
+                        return True
+                except urllib.error.HTTPError as he:
+                    err_body = he.read().decode('utf-8', errors='ignore')
+                    print(f"[RunPod Deploy v2] HTTP {he.code} for {gpu_id}: {err_body}")
+                    if "stock" in err_body.lower() or "supply" in err_body.lower() or "unavailable" in err_body.lower() or he.code == 400:
+                        continue
+                    return False
+                except Exception as e:
+                    print(f"[RunPod Deploy v2] System Error trying {gpu_id}: {e}")
+                    continue
+            else:
+                # Fallback to legacy GraphQL mutation
+                print(f"[RunPod Deploy GraphQL] Attempting to rent {gpu_id} in {region_display}...")
+                url = f"https://api.runpod.io/graphql?api_key={api_key}"
+                headers = {
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+                vol_clause = f'networkVolumeId: "{volume_id}",' if volume_id else ''
+                dc_clause = f'dataCenterId: "{dc_id}",' if dc_id else ''
+
+                mutation = f'''
+                mutation {{
+                  podFindAndDeployOnDemand(input: {{
+                    gpuTypeId: "{gpu_id}",
+                    templateId: "{template_id}",
+                    {vol_clause}
+                    {dc_clause}
+                    gpuCount: 1,
+                    env: [
+                        {{ key: "WHISPER_MODEL", value: "{whisper_model}" }}
+                    ]
+                  }}) {{
+                    id
+                    desiredStatus
+                  }}
+                }}
+                '''
+                data = json.dumps({"query": mutation}).encode('utf-8')
+                req = urllib.request.Request(url, data=data, headers=headers, method="POST")
                 
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as f:
+                        res = json.loads(f.read().decode('utf-8'))
+                        if "errors" in res:
+                            err_msg = res["errors"][0].get("message", "")
+                            if "SUPPLY_CONSTRAINT" in str(res) or "no longer any instances available" in err_msg:
+                                print(f"[RunPod Deploy GraphQL] {gpu_id} out of stock, trying next...")
+                                continue
+                            else:
+                                print(f"[RunPod Deploy GraphQL] API Error for {gpu_id}: {res['errors']}")
+                                return False
+                        
+                        pod_id = res.get("data", {}).get("podFindAndDeployOnDemand", {}).get("id")
+                        print(f"[RunPod Deploy GraphQL] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
+                        return True
+                except Exception as e:
+                    print(f"[RunPod Deploy GraphQL] System Error trying {gpu_id}: {e}")
+                    continue
+                    
         print("[RunPod Deploy] All attempted GPU types are currently unavailable.")
         return False
 
@@ -1002,25 +1055,21 @@ class TranscriptionEngine:
                         return True
                     else:
                         err_msg = res["errors"][0].get("message", "")
-                        print(f"[RunPod Deploy] Failed to resume {pod_id} (Reason: {err_msg}). Terminating it to keep account clean...")
-                        
-                        # Terminate the pod since we can't resume it
-                        term_query = f'mutation {{ podTerminate(input: {{ podId: "{pod_id}" }}) }}'
-                        req_term = urllib.request.Request(url, data=json.dumps({"query": term_query}).encode('utf-8'), headers=headers)
-                        urllib.request.urlopen(req_term, timeout=10)
-                        print(f"[RunPod Deploy] Pod {pod_id} terminated.")
+                        print(f"[RunPod Deploy] Notice: Could not resume {pod_id} (Reason: {err_msg}). Leaving pod intact.")
             except Exception as e:
                 print(f"[RunPod Deploy] System error while managing pod {pod_id}: {e}")
                 continue
                 
-        # If we reach here, we either had no EXITED pods, or all of them failed to resume and were terminated.
-        print("[RunPod Deploy] No available paused pods could be resumed. Falling back to renting a fresh pod...")
+        # If we reach here, we had no EXITED pods that could be resumed immediately.
+        print("[RunPod Deploy] No paused pods could be resumed. Falling back to renting a fresh pod...")
         return await self._deploy_runpod_pod()
 
     async def _run_runpod(self):
         """Streaming mode: stream VAD-segmented audio to remote NVIDIA RunPod engine."""
         import websockets
-        wss_url = self._discover_runpod_url()
+        wss_url = os.getenv("RUNPOD_WSS_URL")
+        if not wss_url:
+            wss_url = self._discover_runpod_url()
         
         # 1. Auto-deploy if enabled and no pod found
         auto_deploy_val = os.getenv("AUTO_DEPLOY_RUNPOD", "false").lower()
@@ -1045,11 +1094,9 @@ class TranscriptionEngine:
                 print("[RunPod] Auto-Deployment failed.")
 
         if not wss_url:
-            wss_url = os.getenv("RUNPOD_WSS_URL")
-            if not wss_url:
-                wss_url = "ws://127.0.0.1:8888/stream"
-                print("No RUNPOD_API_KEY or RUNPOD_WSS_URL found. Defaulting to local.")
-                
+            wss_url = "ws://127.0.0.1:8888/stream"
+            print("No RUNPOD_API_KEY or RUNPOD_WSS_URL found. Defaulting to local.")
+            
         loop = asyncio.get_event_loop()
 
         while True:
@@ -1058,9 +1105,11 @@ class TranscriptionEngine:
                 async with websockets.connect(wss_url) as ws:
                     print("Connected to RunPod.")
                     
-                    # 1. Provide Config
+                    # 1. Provide Config & Reset Server Session Timer
+                    self.session_start_time = time.time()
                     await ws.send(json.dumps({
                         "action": "config",
+                        "reset_timer": True,
                         "source_lang": self.source_lang,
                         "target_lang_1": self.target_lang_1,
                         "target_lang_2": self.target_lang_2,
@@ -1069,6 +1118,7 @@ class TranscriptionEngine:
                         "enable_trans_3": getattr(self, 'enable_trans_3', True),
                         "enable_trans_4": getattr(self, 'enable_trans_4', True)
                     }))
+                    print("[RunPod] Connected & Session timer reset (full 2-hour window started).")
                     
                     # 2. Spawn continuous receiving task
                     async def ws_receiver():
@@ -1120,10 +1170,16 @@ class TranscriptionEngine:
 
                         self.audio_buffer.extend(chunk)
 
+                        # Keep max 1.0s pre-roll silence while waiting for speech
+                        if self.speech_frames == 0:
+                            PRE_ROLL_BYTES = 32000
+                            if len(self.audio_buffer) > PRE_ROLL_BYTES:
+                                self.audio_buffer = self.audio_buffer[-PRE_ROLL_BYTES:]
+
                         silence_ms = self.silence_frames * FRAME_DURATION_MS
                         buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)
 
-                        hard_cap = buffer_duration_s >= 25.0
+                        hard_cap = buffer_duration_s >= self.max_local_chunk_s
                         force_flush = silence_ms >= self.max_silence_flush_ms
 
                         if (hard_cap or force_flush or silence_ms >= self.silence_threshold_ms) and self.speech_frames > 0:
@@ -1158,6 +1214,10 @@ class TranscriptionEngine:
 
             except Exception as e:
                 print(f"RunPod Server Connection Error. Retrying in 3s... ({e})")
+                discovered = self._discover_runpod_url()
+                if discovered and discovered != wss_url:
+                    print(f"[RunPod] Discovered direct accessible endpoint: {discovered}")
+                    wss_url = discovered
                 await asyncio.sleep(3)
 
 
@@ -1474,13 +1534,16 @@ class TranscriptionEngine:
 
             self.audio_buffer.extend(chunk)
 
-            silence_ms = self.silence_frames * FRAME_DURATION_MS
-            buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)
+            # Keep max 1.0s pre-roll silence while waiting for speech
+            if self.speech_frames == 0:
+                PRE_ROLL_BYTES = 32000
+                if len(self.audio_buffer) > PRE_ROLL_BYTES:
+                    self.audio_buffer = self.audio_buffer[-PRE_ROLL_BYTES:]
 
             silence_ms = self.silence_frames * FRAME_DURATION_MS
             buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)
 
-            hard_cap = buffer_duration_s >= 25.0
+            hard_cap = buffer_duration_s >= self.max_local_chunk_s
             force_flush = silence_ms >= self.max_silence_flush_ms
 
             if (hard_cap or force_flush or silence_ms >= self.silence_threshold_ms) and self.speech_frames > 0:

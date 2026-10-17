@@ -28,7 +28,7 @@ def main():
         "--noconfirm",
         "--onefile",
         "--additional-hooks-dir=hooks",
-        # Important hidden imports for the new libraries
+        # Important hidden imports for server, networking, and frameworks
         "--hidden-import=zeroconf",
         "--hidden-import=zeroconf._utils.ipaddress",
         "--hidden-import=zeroconf._services.browser",
@@ -36,6 +36,13 @@ def main():
         "--hidden-import=uvicorn.protocols.http.auto",
         "--hidden-import=uvicorn.protocols.websockets.auto",
         "--hidden-import=uvicorn.lifespan.on",
+        "--hidden-import=websockets",
+        "--hidden-import=websockets.legacy",
+        "--hidden-import=websockets.legacy.client",
+        "--hidden-import=websockets.legacy.server",
+        "--hidden-import=fastapi",
+        "--hidden-import=starlette",
+        "--hidden-import=pydantic",
     ]
 
     # The separator for --add-data differs depending on the OS
@@ -51,10 +58,11 @@ def main():
     if os.path.exists("ondertitels-486017-0ee48ab1ba8d.json"):
         data_files.append(f"ondertitels-486017-0ee48ab1ba8d.json{sep}.")
 
-    # Include all .wav files in the root directory
-    wav_files = glob.glob("*.wav")
-    for wav in wav_files:
-        data_files.append(f"{wav}{sep}.")
+    # Only bundle core demo WAV files if present (avoid bundling massive sermon recordings)
+    core_demo_wavs = ["BV.wav", "BV2.wav"]
+    for wav in core_demo_wavs:
+        if os.path.exists(wav):
+            data_files.append(f"{wav}{sep}.")
 
     # We DON'T include .env in the EXE because the user needs to edit it!
     # But we can include .env.example as a reference

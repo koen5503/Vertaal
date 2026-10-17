@@ -26,20 +26,38 @@ logging.basicConfig(level=logging.INFO)
 # Global Client for Ollama
 client = ollama.AsyncClient(host=OLLAMA_URL)
 
-# --- Automatic Shutdown Timer ---
+# --- Automatic Shutdown Timer (Activity-Based) ---
 # Default to 90 minutes (5400 seconds) to prevent runaway costs
 MAX_RUN_TIME = int(os.getenv("MAX_RUN_TIME_SEC", "5400"))
+import time
+
+last_activity_time = time.time()
+
+def reset_session_timer(reason: str = "activity"):
+    global last_activity_time
+    last_activity_time = time.time()
+    logging.info(f"SHUTDOWN TIMER: Reset triggered ({reason}). Auto-shutdown postponed by {MAX_RUN_TIME/60:.1f} minutes.")
+
+@app.get("/reset_timer")
+@app.post("/reset_timer")
+async def api_reset_timer():
+    reset_session_timer("HTTP API call")
+    return {"status": "ok", "message": f"Timer reset. Next shutdown in {MAX_RUN_TIME/60:.1f} minutes."}
 
 def auto_shutdown():
-    import time
     import os
     import json
     import urllib.request
     
-    print(f"SHUTDOWN TIMER: Server will automatically shut down in {MAX_RUN_TIME/60:.1f} minutes.")
-    time.sleep(MAX_RUN_TIME)
-    print(f"SHUTDOWN TIMER: Time limit reached ({MAX_RUN_TIME}s). Attempting to stop pod...")
+    print(f"SHUTDOWN TIMER: Active. Server will shut down after {MAX_RUN_TIME/60:.1f} minutes of inactivity.")
     
+    while True:
+        time.sleep(15)
+        elapsed = time.time() - last_activity_time
+        if elapsed >= MAX_RUN_TIME:
+            print(f"SHUTDOWN TIMER: Inactivity limit reached ({int(elapsed)}s). Attempting to stop pod...")
+            break
+            
     # RunPod injects RUNPOD_POD_ID automatically. 
     # The user must provide RUNPOD_API_KEY in the environment variables.
     api_key = os.getenv("RUNPOD_API_KEY", "").strip()
@@ -77,7 +95,9 @@ import threading
 threading.Thread(target=auto_shutdown, daemon=True).start()
 
 async def translate_text(text: str, target_lang: str, source_lang: str):
-    if not text or not target_lang:
+    if not text or "***" in text:
+        return text
+    if not target_lang:
         return ""
         
     source_code = source_lang.split("-")[0] if source_lang else "nl"
@@ -108,6 +128,7 @@ async def translate_text(text: str, target_lang: str, source_lang: str):
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     logging.info("Desktop Client connected to RunPod Server")
+    reset_session_timer("Desktop Client connected")
     
     # Track prompt context for sliding window
     last_transcript = ""
@@ -133,12 +154,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     if data.get("action") == "config":
                         config.update(data)
                         logging.info(f"Server config updated: {config}")
+                        reset_session_timer("Client config received")
+                    elif data.get("action") == "reset_timer":
+                        reset_session_timer("Client heartbeat/timer reset")
                 except Exception as e:
                     logging.error(f"JSON parse error: {e}")
                     
             elif "bytes" in message:
                 audio_bytes = message["bytes"]
                 if len(audio_bytes) > 0:
+                    # Keep session alive during active speech without spamming logs
+                    if time.time() - last_activity_time > 60:
+                        reset_session_timer("Active audio streaming")
+                        
                     audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
                     
                     # 1. Transcribe with context

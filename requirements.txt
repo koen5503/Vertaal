@@ -1,5 +1,7 @@
 # App
-webrtcvad
+webrtcvad; sys_platform != 'win32'
+webrtcvad-wheels; sys_platform == 'win32'
+sounddevice
 setuptools
 fastapi
 uvicorn[standard]
@@ -9,7 +11,7 @@ python-dotenv
 zeroconf
 
 # Local Pipeline (Apple Silicon)
-mlx-whisper
+mlx-whisper; sys_platform == 'darwin'
 numpy
 ollama
 

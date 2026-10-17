@@ -155,6 +155,85 @@ class TestAntiHallucination(unittest.TestCase):
         result2 = filter_anti_hallucination(valid_prayer, glossary_phrases=glossary)
         self.assertEqual(result2, valid_prayer)
 
+    # ------------------------------------------------------------------------
+    # g) Noise / Polite closing hallucinations (cough / breath artifacts)
+    # ------------------------------------------------------------------------
+    def test_isolated_noise_hallucinations_filtered(self):
+        """Isolated polite closings emitted on background noise or coughs must be filtered."""
+        noise_samples = [
+            "Dank u wel.",
+            "Dank u wel!",
+            "dank u",
+            "Dank je wel",
+            "Bedankt",
+            "Bedankt voor het kijken.",
+            "Bedankt voor het luisteren!",
+            "Hartelijk dank",
+            "Tot ziens",
+            "Fijne dag",
+            "Thank you",
+            "Thank you very much.",
+            "Thanks for watching!",
+            "Bye",
+            "Goodbye",
+        ]
+        for phrase in noise_samples:
+            self.assertIsNone(filter_anti_hallucination(phrase), f"Expected '{phrase}' to be filtered")
+
+    # ------------------------------------------------------------------------
+    # h) TV & Broadcaster credit hallucinations
+    # ------------------------------------------------------------------------
+    def test_broadcaster_credit_hallucinations_filtered(self):
+        """Broadcaster station tags, year tags, and subtitle credits must be filtered."""
+        credit_samples = [
+            "TV Gelderland 2021",
+            "tv gelderland",
+            "Omroep Gelderland",
+            "Omroep Brabant 2019",
+            "RTV Oost 2022",
+            "NPO 1",
+            "NPO 1 2020",
+            "RTL 4",
+            "NOS 2021",
+            "Ondertitels",
+            "Ondertiteling: Teletekst 888",
+            "Ondertiteld door de NOS",
+            "Subtitles by OpenSubtitles",
+            "Captioned by Amara.org",
+        ]
+        for phrase in credit_samples:
+            self.assertIsNone(filter_anti_hallucination(phrase), f"Expected '{phrase}' to be filtered")
+
+    # ------------------------------------------------------------------------
+    # i) Legitimate gratitude in sentences must NOT be filtered
+    # ------------------------------------------------------------------------
+    def test_legitimate_gratitude_in_sentences_preserved(self):
+        """Legitimate gratitude embedded in natural sentences must be preserved."""
+        legitimate_sentences = [
+            "Ik dank u wel voor uw komst vanochtend.",
+            "Dank u wel voor deze mooie en inspirerende dienst.",
+            "Wij bedanken de gastspreker van harte.",
+            "Hartelijk dank voor alle giften en bijdragen.",
+            "Thank you for joining our community service today.",
+        ]
+        for sentence in legitimate_sentences:
+            result = filter_anti_hallucination(sentence)
+            self.assertEqual(result, sentence, f"Expected '{sentence}' to be preserved")
+
+    # ------------------------------------------------------------------------
+    # j) Cross-segment echoed sub-sequence trimming (hard ceiling cuts)
+    # ------------------------------------------------------------------------
+    def test_cross_segment_echoed_subsequence_trimmed(self):
+        """When Whisper inserts a filler word before echoing prior tail across chunk boundary, strip the echo."""
+        prev = "wij hopen op de vrede van God"
+        curr = "en de vrede van God zij met u allen"
+        result = filter_anti_hallucination(curr, last_transcript=prev)
+        self.assertEqual(result, "zij met u allen")
+
+        # 100% echoed sub-sequence returns None
+        curr_100 = "ja de vrede van God"
+        self.assertIsNone(filter_anti_hallucination(curr_100, last_transcript=prev))
+
 
 if __name__ == "__main__":
     unittest.main()

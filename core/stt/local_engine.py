@@ -2,9 +2,10 @@
 
 import asyncio
 import os
+import re
 import string
 import time
-from typing import List, Optional
+from typing import List, Optional, Set
 
 try:
     import numpy as np
@@ -23,6 +24,48 @@ except ImportError:
 # ============================================================================
 # Anti-Hallucination Filter
 # ============================================================================
+NOISE_HALLUCINATION_PHRASES: Set[str] = {
+    # Dutch polite closings / noise hallucinations
+    "dank u wel",
+    "dank u",
+    "dank je wel",
+    "dank je",
+    "hartelijk dank",
+    "bedankt",
+    "bedankt voor het kijken",
+    "bedankt voor het luisteren",
+    "tot ziens",
+    "fijne dag",
+    "fijne avond",
+    "dag",
+    # English polite closings / noise hallucinations
+    "thank you",
+    "thank you very much",
+    "thanks",
+    "thanks for watching",
+    "thanks for listening",
+    "bye",
+    "goodbye",
+    # TV / Subtitle credits
+    "subtitles by",
+    "captioned by",
+    "amaraorg",
+    "opensubtitles",
+    "tv gelderland",
+    "omroep gelderland",
+    "rtv oost",
+    "rtv noord",
+    "omroep brabant",
+}
+
+BROADCAST_CREDIT_PATTERN = re.compile(
+    r"^(?:tv|omroep|rtv)\s+[a-z]+(?:\s+\d{4})?$|"
+    r"^(?:npo|rtl|nos)(?:\s+\d+)?(?:\s+\d{4})?$|"
+    r"^(?:ondertiteling|ondertitels|ondertiteld(?:\s+door)?|subtitles(?:\s+by)?|captioned(?:\s+by)?).*$",
+    re.IGNORECASE
+)
+
+
 def filter_anti_hallucination(
     text: Optional[str],
     last_transcript: str = "",
@@ -32,10 +75,22 @@ def filter_anti_hallucination(
     if not text:
         return None
 
-    clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower()
+    clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
+    clean_text = " ".join(clean_text.split())
     words = clean_text.split()
 
     if not words:
+        return None
+
+    # 0. Noise / Polite Closing / Broadcaster Hallucination Filter
+    clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
+    if (
+        clean_text in NOISE_HALLUCINATION_PHRASES
+        or clean_no_digits in NOISE_HALLUCINATION_PHRASES
+        or BROADCAST_CREDIT_PATTERN.match(clean_text)
+        or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
+    ):
+        print(f"Filtered hallucination (noise/broadcaster credit): '{text}'")
         return None
 
     # Prompt Leakage Filter (Whisper Hallucination)
@@ -70,10 +125,60 @@ def filter_anti_hallucination(
                 return None
             print(f"Trimmed {best_overlap} leaked prefix words. Kept: '{text}'")
 
-            clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower()
+            clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
+            clean_text = " ".join(clean_text.split())
             words = clean_text.split()
             if not words:
                 return None
+
+            clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
+            if (
+                clean_text in NOISE_HALLUCINATION_PHRASES
+                or clean_no_digits in NOISE_HALLUCINATION_PHRASES
+                or BROADCAST_CREDIT_PATTERN.match(clean_text)
+                or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
+            ):
+                print(f"Filtered hallucination (noise/broadcaster credit after trim): '{text}'")
+                return None
+
+        # d) Echoed tail sub-sequence trimmer (handles inserted filler/noise before echoed tail across chunks)
+        elif len(last_words) >= 2:
+            sub_cut = 0
+            for k in range(min(6, len(last_words)), 1, -1):
+                tail_sub = last_words[-k:]
+                search_limit = min(len(words) - k + 1, 6)
+                found = False
+                for start_idx in range(search_limit):
+                    if words[start_idx:start_idx + k] == tail_sub:
+                        sub_cut = start_idx + k
+                        found = True
+                        break
+                if found:
+                    break
+
+            if sub_cut > 0:
+                original_words = text.split()
+                text = " ".join(original_words[sub_cut:])
+                if not text:
+                    print(f"Filtered hallucination (100% Echoed Sub-sequence Drop, cut {sub_cut} words)")
+                    return None
+                print(f"Trimmed {sub_cut} echoed sub-sequence words. Kept: '{text}'")
+
+                clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
+                clean_text = " ".join(clean_text.split())
+                words = clean_text.split()
+                if not words:
+                    return None
+
+                clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
+                if (
+                    clean_text in NOISE_HALLUCINATION_PHRASES
+                    or clean_no_digits in NOISE_HALLUCINATION_PHRASES
+                    or BROADCAST_CREDIT_PATTERN.match(clean_text)
+                    or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
+                ):
+                    print(f"Filtered hallucination (noise/broadcaster credit after trim): '{text}'")
+                    return None
 
     # 1. Repetition filter
     # A. Exactly the same word repeated

@@ -22,6 +22,7 @@ from core import (
     SAMPLE_RATE,
     CHANNELS,
 )
+from core.stt.runpod_engine import restitch_segment_text
 
 
 class TestCorePackage(unittest.TestCase):
@@ -386,6 +387,108 @@ class TestCorePackage(unittest.TestCase):
 
         self.assertEqual(trans_data_2["status"], "final")
         self.assertEqual(trans_data_2["col2_text"], "The church as a gondola that is a bit exaggerated")
+
+    def test_restitch_segment_text_prevents_doublures_on_long_utterances(self):
+        """restitch_segment_text must prevent duplication when Whisper refines opening words or punctuation."""
+        # 1. Opening words slightly refined as audio accumulates
+        prev = "De kerk als gondel."
+        # Whisper refined "gondel" to "een gondel" and added rest of long sentence (>25s)
+        revised = "De kerk als een gondel, dat is wel wat gechargeerd door de media."
+        stitched = restitch_segment_text(prev, revised)
+        self.assertEqual(stitched, "De kerk als een gondel, dat is wel wat gechargeerd door de media.")
+        self.assertNotIn("De kerk als gondel. De kerk", stitched)
+
+        # 2. Punctuation and slight casing change at start
+        prev2 = "wij gaan nu bidden"
+        revised2 = "Wij gaan nu bidden voor vrede over de hele wereld."
+        stitched2 = restitch_segment_text(prev2, revised2)
+        self.assertEqual(stitched2, "Wij gaan nu bidden voor vrede over de hele wereld.")
+
+        # 3. Server stripped overlap (tail delta arrival)
+        prev3 = "Wij zingen samen een lied"
+        tail = "een lied van hoop en vreugde."
+        stitched3 = restitch_segment_text(prev3, tail)
+        self.assertEqual(stitched3, "Wij zingen samen een lied van hoop en vreugde.")
+
+        # 4. Translation restitching without duplication
+        prev_trans = "The church as a gondola."
+        revised_trans = "The church as a gondola, which is somewhat exaggerated."
+        stitched_trans = restitch_segment_text(prev_trans, revised_trans)
+        self.assertEqual(stitched_trans, "The church as a gondola, which is somewhat exaggerated.")
+
+    def test_runpod_hallucination_and_translation_suppression(self):
+        """RunPodSTTEngine drops noise hallucinations and suppresses associated subsequent translations."""
+        broadcast_messages = []
+        async def mock_broadcast(msg):
+            broadcast_messages.append(msg)
+
+        engine = TranscriptionEngine(broadcast_callback=mock_broadcast)
+        runpod = RunPodSTTEngine(engine)
+
+        # 1. Hallucinated segment (noise: "Dank u wel.")
+        seg_id_hallucination = "seg_hallucinated_123"
+        stt_msg = {
+            "id": seg_id_hallucination,
+            "status": "final",
+            "col1_text": "Dank u wel.",
+        }
+
+        # Simulate STT arrival in ws_receiver
+        filtered_text = filter_anti_hallucination(stt_msg["col1_text"])
+        if not filtered_text:
+            runpod.suppressed_seg_ids.add(seg_id_hallucination)
+
+        self.assertIn(seg_id_hallucination, runpod.suppressed_seg_ids)
+        # Message was suppressed, so NOT broadcast
+        self.assertEqual(len(broadcast_messages), 0)
+
+        # 2. Subsequent translation messages arrive for the suppressed segment
+        trans_msg_1 = {
+            "id": seg_id_hallucination,
+            "status": "final",
+            "col2_text": "Thank you.",
+        }
+        # In ws_receiver: check if client_seg_id in runpod.suppressed_seg_ids
+        if trans_msg_1["id"] in runpod.suppressed_seg_ids:
+            pass  # Dropped!
+        else:
+            broadcast_messages.append(trans_msg_1)
+
+        trans_msg_2 = {
+            "id": seg_id_hallucination,
+            "status": "final",
+            "col3_text": "Спасибо.",
+        }
+        if trans_msg_2["id"] in runpod.suppressed_seg_ids:
+            pass  # Dropped!
+        else:
+            broadcast_messages.append(trans_msg_2)
+
+        # Neither transcript nor translations for the hallucinated segment were broadcast
+        self.assertEqual(len(broadcast_messages), 0)
+
+        # 3. Legitimate segment arrives
+        seg_id_legit = "seg_legit_456"
+        legit_stt = {
+            "id": seg_id_legit,
+            "status": "final",
+            "col1_text": "Welkom allemaal in deze dienst.",
+        }
+        filtered_legit = filter_anti_hallucination(legit_stt["col1_text"])
+        self.assertIsNotNone(filtered_legit)
+        broadcast_messages.append(legit_stt)
+
+        legit_trans = {
+            "id": seg_id_legit,
+            "status": "final",
+            "col2_text": "Welcome everyone to this service.",
+        }
+        if legit_trans["id"] not in runpod.suppressed_seg_ids:
+            broadcast_messages.append(legit_trans)
+
+        self.assertEqual(len(broadcast_messages), 2)
+        self.assertEqual(broadcast_messages[0]["col1_text"], "Welkom allemaal in deze dienst.")
+        self.assertEqual(broadcast_messages[1]["col2_text"], "Welcome everyone to this service.")
 
 
 if __name__ == "__main__":

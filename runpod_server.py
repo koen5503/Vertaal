@@ -1,12 +1,55 @@
 import asyncio
 import json
-import numpy as np
-import string
 import os
+import re
+import string
+from typing import Set
+import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
 from faster_whisper import WhisperModel
 import ollama
+
+NOISE_HALLUCINATION_PHRASES: Set[str] = {
+    # Dutch polite closings / noise hallucinations
+    "dank u wel",
+    "dank u",
+    "dank je wel",
+    "dank je",
+    "hartelijk dank",
+    "bedankt",
+    "bedankt voor het kijken",
+    "bedankt voor het luisteren",
+    "tot ziens",
+    "fijne dag",
+    "fijne avond",
+    "dag",
+    # English polite closings / noise hallucinations
+    "thank you",
+    "thank you very much",
+    "thanks",
+    "thanks for watching",
+    "thanks for listening",
+    "bye",
+    "goodbye",
+    # TV / Subtitle credits
+    "subtitles by",
+    "captioned by",
+    "amaraorg",
+    "opensubtitles",
+    "tv gelderland",
+    "omroep gelderland",
+    "rtv oost",
+    "rtv noord",
+    "omroep brabant",
+}
+
+BROADCAST_CREDIT_PATTERN = re.compile(
+    r"^(?:tv|omroep|rtv)\s+[a-z]+(?:\s+\d{4})?$|"
+    r"^(?:npo|rtl|nos)(?:\s+\d+)?(?:\s+\d{4})?$|"
+    r"^(?:ondertiteling|ondertitels|ondertiteld(?:\s+door)?|subtitles(?:\s+by)?|captioned(?:\s+by)?).*$",
+    re.IGNORECASE
+)
 
 app = FastAPI()
 
@@ -184,10 +227,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     # Anti-Hallucination
                     if text:
-                        clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower()
+                        clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
+                        clean_text = " ".join(clean_text.split())
                         words = clean_text.split()
-                        
-                        if last_transcript:
+
+                        clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
+                        if (
+                            clean_text in NOISE_HALLUCINATION_PHRASES
+                            or clean_no_digits in NOISE_HALLUCINATION_PHRASES
+                            or BROADCAST_CREDIT_PATTERN.match(clean_text)
+                            or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
+                        ):
+                            text = ""
+                        elif last_transcript:
                             clean_last = last_transcript.translate(str.maketrans('', '', string.punctuation)).lower()
                             last_words = clean_last.split()
                             
@@ -204,7 +256,34 @@ async def websocket_endpoint(websocket: WebSocket):
                                         break
                                 if best_overlap > 0:
                                     text = " ".join(text.split()[best_overlap:])
-                                    
+                                elif len(last_words) >= 2:
+                                    sub_cut = 0
+                                    for k in range(min(6, len(last_words)), 1, -1):
+                                        tail_sub = last_words[-k:]
+                                        search_limit = min(len(words) - k + 1, 6)
+                                        found = False
+                                        for start_idx in range(search_limit):
+                                            if words[start_idx:start_idx + k] == tail_sub:
+                                                sub_cut = start_idx + k
+                                                found = True
+                                                break
+                                        if found:
+                                            break
+                                    if sub_cut > 0:
+                                        text = " ".join(text.split()[sub_cut:])
+
+                                if text:
+                                    clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
+                                    clean_text = " ".join(clean_text.split())
+                                    clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
+                                    if (
+                                        clean_text in NOISE_HALLUCINATION_PHRASES
+                                        or clean_no_digits in NOISE_HALLUCINATION_PHRASES
+                                        or BROADCAST_CREDIT_PATTERN.match(clean_text)
+                                        or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
+                                    ):
+                                        text = ""
+
                     if not text:
                         continue
                         

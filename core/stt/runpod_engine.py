@@ -3,10 +3,11 @@
 import asyncio
 import json
 import os
+import string
 import time
 import urllib.error
 import urllib.request
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 
 try:
     import numpy as np
@@ -20,7 +21,66 @@ except ImportError:
 
 from core.audio import FRAME_DURATION_MS, SAMPLE_RATE
 from core.stt.base import BaseSTTEngine
+from core.stt.local_engine import filter_anti_hallucination
 from core.utils import get_runpod_gpu_fallbacks
+
+
+def restitch_segment_text(prev_text: str, incoming_text: str) -> str:
+    """Restitch incoming transcript or translation against previous text without duplication."""
+    if not prev_text:
+        return incoming_text.strip()
+    if not incoming_text:
+        return prev_text.strip()
+
+    prev_clean = prev_text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
+    inc_clean = incoming_text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
+
+    prev_words = prev_clean.split()
+    inc_words = inc_clean.split()
+    orig_inc_words = incoming_text.strip().split()
+
+    if not prev_words:
+        return incoming_text.strip()
+    if not inc_words:
+        return prev_text.strip()
+
+    # 1. Check if incoming_text is a full revised transcript of the buffer
+    # A. Direct string containment or prefix match
+    if inc_clean.startswith(prev_clean[:20]) or prev_clean in inc_clean:
+        return incoming_text.strip()
+
+    # B. Word-level prefix overlap (first 5 words >= 60% match)
+    check_len = min(5, len(prev_words), len(inc_words))
+    if check_len >= 2:
+        matching_head = sum(1 for i in range(check_len) if prev_words[i] == inc_words[i])
+        if matching_head / check_len >= 0.6:
+            return incoming_text.strip()
+
+    # C. Global word containment (if incoming has >= len(prev_words) and >= 50% unique words)
+    if len(inc_words) >= len(prev_words):
+        prev_set = set(prev_words)
+        inc_set = set(inc_words)
+        if len(prev_set.intersection(inc_set)) / len(prev_set) >= 0.5:
+            return incoming_text.strip()
+
+    # 2. Incoming is a tail delta: find exact word overlap between end of prev_words and start of inc_words
+    max_overlap = min(len(prev_words), len(inc_words))
+    for i in range(max_overlap, 0, -1):
+        if prev_words[-i:] == inc_words[:i]:
+            tail = " ".join(orig_inc_words[i:])
+            return f"{prev_text} {tail}".strip() if tail else prev_text
+
+    # 3. Fuzzy tail overlap (tail sub-sequence appearing near start of incoming)
+    for k in range(min(5, len(prev_words)), 1, -1):
+        tail_sub = prev_words[-k:]
+        search_limit = min(len(inc_words) - k + 1, 5)
+        for start_idx in range(search_limit):
+            if inc_words[start_idx:start_idx + k] == tail_sub:
+                tail = " ".join(orig_inc_words[start_idx + k:])
+                return f"{prev_text} {tail}".strip() if tail else prev_text
+
+    # 4. Independent appended clause
+    return f"{prev_text} {incoming_text.strip()}".strip()
 
 
 class RunPodSTTEngine(BaseSTTEngine):
@@ -39,6 +99,8 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.segment_full_transcripts: Dict[str, str] = {}
         self.segment_translations: Dict[str, Dict[str, str]] = {}
         self.segment_status: Dict[str, str] = {}
+        self.suppressed_seg_ids: Set[str] = set()
+        self.last_transcript: str = ""
         self.last_interim_s: float = 0.0
         self.is_current_interim: bool = False
 
@@ -344,6 +406,10 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                                 client_seg_id = data.get("id")
 
+                                if client_seg_id and client_seg_id in self.suppressed_seg_ids:
+                                    print(f"[RunPod STT] Dropping message for suppressed segment '{client_seg_id}'")
+                                    continue
+
                                 if client_seg_id:
                                     if "col1_text" in data:
                                         if self.pending_status:
@@ -359,18 +425,25 @@ class RunPodSTTEngine(BaseSTTEngine):
                                 if "col1_text" in data and client_seg_id:
                                     incoming_text = data["col1_text"].strip()
                                     prev_text = self.segment_full_transcripts.get(client_seg_id, "")
-                                    if prev_text:
-                                        # If incoming text already contains or starts with prev_text, it's the full revised transcript
-                                        if incoming_text.lower().startswith(prev_text[:20].lower()) or prev_text.lower() in incoming_text.lower():
-                                            full_text = incoming_text
-                                        else:
-                                            # RunPod server stripped the overlap; re-stitch so sentence is appended
-                                            full_text = f"{prev_text} {incoming_text}".strip()
-                                    else:
-                                        full_text = incoming_text
+                                    full_text = restitch_segment_text(prev_text, incoming_text)
 
-                                    self.segment_full_transcripts[client_seg_id] = full_text
-                                    data["col1_text"] = full_text
+                                    filtered_text = filter_anti_hallucination(
+                                        full_text,
+                                        last_transcript=self.last_transcript,
+                                        glossary_phrases=getattr(self.engine, "glossary_phrases", None),
+                                    )
+
+                                    if not filtered_text:
+                                        print(f"[RunPod STT] Suppressed hallucination segment '{client_seg_id}': '{full_text}'")
+                                        self.suppressed_seg_ids.add(client_seg_id)
+                                        if len(self.suppressed_seg_ids) > 200:
+                                            oldest_suppressed = next(iter(self.suppressed_seg_ids))
+                                            self.suppressed_seg_ids.discard(oldest_suppressed)
+                                        continue
+
+                                    self.last_transcript = filtered_text
+                                    self.segment_full_transcripts[client_seg_id] = filtered_text
+                                    data["col1_text"] = filtered_text
 
                                 # Re-stitch translation columns if trimmed on subsequent chunks
                                 if client_seg_id:
@@ -378,10 +451,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                                         if col_key in data and data[col_key]:
                                             incoming_col = str(data[col_key]).strip()
                                             prev_col = self.segment_translations.setdefault(client_seg_id, {}).get(col_key, "")
-                                            if prev_col and not (incoming_col.lower().startswith(prev_col[:15].lower()) or prev_col.lower() in incoming_col.lower()):
-                                                full_col = f"{prev_col} {incoming_col}".strip()
-                                            else:
-                                                full_col = incoming_col
+                                            full_col = restitch_segment_text(prev_col, incoming_col)
                                             self.segment_translations[client_seg_id][col_key] = full_col
                                             data[col_key] = full_col
 
@@ -412,6 +482,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                                 if len(self.segment_status) > 100:
                                     oldest = next(iter(self.segment_status))
                                     del self.segment_status[oldest]
+
+                                if len(self.suppressed_seg_ids) > 100:
+                                    oldest = next(iter(self.suppressed_seg_ids))
+                                    self.suppressed_seg_ids.discard(oldest)
                         except Exception as e:
                             print(f"RunPod WS Recv Error: {e}")
 
@@ -428,6 +502,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                     self.segment_full_transcripts = {}
                     self.segment_translations = {}
                     self.segment_status = {}
+                    self.suppressed_seg_ids = set()
+                    self.last_transcript = ""
                     self.last_interim_s = 0.0
                     self.is_current_interim = False
 

@@ -43,6 +43,16 @@ def main():
         "--hidden-import=fastapi",
         "--hidden-import=starlette",
         "--hidden-import=pydantic",
+        "--hidden-import=core",
+        "--hidden-import=core.audio",
+        "--hidden-import=core.engine",
+        "--hidden-import=core.translation",
+        "--hidden-import=core.utils",
+        "--hidden-import=core.stt",
+        "--hidden-import=core.stt.base",
+        "--hidden-import=core.stt.local_engine",
+        "--hidden-import=core.stt.cloud_engine",
+        "--hidden-import=core.stt.runpod_engine",
     ]
 
     # The separator for --add-data differs depending on the OS

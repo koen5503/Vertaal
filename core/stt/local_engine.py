@@ -65,6 +65,23 @@ BROADCAST_CREDIT_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+TAIL_HALLUCINATION_PATTERN = re.compile(
+    r"(?:\s*[\-\:\;]\s*|(?<=[\.\,\!\?])\s+|\s+|^)"
+    r"(?:"
+    r"(?:tv|omroep|rtv)\s+[a-z]+(?:\s+\d{4})?|"
+    r"(?:npo|rtl|nos)(?:\s+\d+)?(?:\s+\d{4})?|"
+    r"ondertiteling(?:\s+door\s+[a-z]+)?|"
+    r"ondertitels|"
+    r"bedankt voor het kijken|"
+    r"bedankt voor het luisteren|"
+    r"thanks for watching|"
+    r"thanks for listening|"
+    r"subtitles by\s+[a-z0-9\.]+|"
+    r"captioned by\s+[a-z0-9\.]+"
+    r")[\.\,\!\?\s]*$",
+    re.IGNORECASE
+)
+
 
 def filter_anti_hallucination(
     text: Optional[str],
@@ -74,6 +91,15 @@ def filter_anti_hallucination(
     """Run anti-hallucination filters on Whisper transcription output."""
     if not text:
         return None
+
+    # Strip trailing hallucination artifacts (broadcaster tags, polite closing tacks)
+    cleaned_tail = TAIL_HALLUCINATION_PATTERN.sub("", text).strip()
+    if not cleaned_tail:
+        print(f"Filtered hallucination (pure broadcast/credit): '{text}'")
+        return None
+    if cleaned_tail != text.strip():
+        print(f"Trimmed trailing hallucination credit from text: '{text}' -> '{cleaned_tail}'")
+        text = cleaned_tail
 
     clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
     clean_text = " ".join(clean_text.split())

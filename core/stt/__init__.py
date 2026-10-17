@@ -5,6 +5,7 @@ from core.stt.cloud_engine import CloudSTTEngine
 from core.stt.local_engine import (
     BROADCAST_CREDIT_PATTERN,
     NOISE_HALLUCINATION_PHRASES,
+    TAIL_HALLUCINATION_PATTERN,
     LocalSTTEngine,
     filter_anti_hallucination,
 )
@@ -18,4 +19,5 @@ __all__ = [
     "filter_anti_hallucination",
     "NOISE_HALLUCINATION_PHRASES",
     "BROADCAST_CREDIT_PATTERN",
+    "TAIL_HALLUCINATION_PATTERN",
 ]

@@ -51,6 +51,23 @@ BROADCAST_CREDIT_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+TAIL_HALLUCINATION_PATTERN = re.compile(
+    r"(?:\s*[\-\:\;]\s*|(?<=[\.\,\!\?])\s+|\s+|^)"
+    r"(?:"
+    r"(?:tv|omroep|rtv)\s+[a-z]+(?:\s+\d{4})?|"
+    r"(?:npo|rtl|nos)(?:\s+\d+)?(?:\s+\d{4})?|"
+    r"ondertiteling(?:\s+door\s+[a-z]+)?|"
+    r"ondertitels|"
+    r"bedankt voor het kijken|"
+    r"bedankt voor het luisteren|"
+    r"thanks for watching|"
+    r"thanks for listening|"
+    r"subtitles by\s+[a-z0-9\.]+|"
+    r"captioned by\s+[a-z0-9\.]+"
+    r")[\.\,\!\?\s]*$",
+    re.IGNORECASE
+)
+
 app = FastAPI()
 
 # Configurable settings via env
@@ -226,6 +243,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     text = "".join(segment.text for segment in segments).strip()
                     
                     # Anti-Hallucination
+                    if text:
+                        cleaned_tail = TAIL_HALLUCINATION_PATTERN.sub("", text).strip()
+                        if not cleaned_tail:
+                            text = ""
+                        elif cleaned_tail != text.strip():
+                            text = cleaned_tail
+
                     if text:
                         clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
                         clean_text = " ".join(clean_text.split())

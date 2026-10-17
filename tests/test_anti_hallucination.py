@@ -234,6 +234,23 @@ class TestAntiHallucination(unittest.TestCase):
         curr_100 = "ja de vrede van God"
         self.assertIsNone(filter_anti_hallucination(curr_100, last_transcript=prev))
 
+    # ------------------------------------------------------------------------
+    # k) Trailing broadcast credits & noise closing trimmed from sentences
+    # ------------------------------------------------------------------------
+    def test_trailing_broadcast_credit_trimmed_from_legitimate_sentence(self):
+        """When Whisper tacks broadcast credits to the tail of a valid sentence, strip the credit."""
+        raw = "Want de Bijbel is niet alleen van toen, maar ook vandaag voor ons. TV Gelderland 2021"
+        expected = "Want de Bijbel is niet alleen van toen, maar ook vandaag voor ons."
+        self.assertEqual(filter_anti_hallucination(raw), expected)
+
+        raw2 = "Dit is Gods belofte voor ons allen. Omroep Gelderland."
+        expected2 = "Dit is Gods belofte voor ons allen."
+        self.assertEqual(filter_anti_hallucination(raw2), expected2)
+
+        raw3 = "Laten we nu samen gaan zingen. Bedankt voor het kijken."
+        expected3 = "Laten we nu samen gaan zingen."
+        self.assertEqual(filter_anti_hallucination(raw3), expected3)
+
 
 if __name__ == "__main__":
     unittest.main()

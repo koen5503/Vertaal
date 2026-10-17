@@ -15,6 +15,7 @@ from core.engine import TranscriptionEngine
 from core.stt import (
     BROADCAST_CREDIT_PATTERN,
     NOISE_HALLUCINATION_PHRASES,
+    TAIL_HALLUCINATION_PATTERN,
     BaseSTTEngine,
     CloudSTTEngine,
     LocalSTTEngine,
@@ -41,6 +42,7 @@ __all__ = [
     "filter_anti_hallucination",
     "NOISE_HALLUCINATION_PHRASES",
     "BROADCAST_CREDIT_PATTERN",
+    "TAIL_HALLUCINATION_PATTERN",
     "FRAME_DURATION_MS",
     "SAMPLE_RATE",
     "CHANNELS",

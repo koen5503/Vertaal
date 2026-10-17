@@ -100,7 +100,10 @@ async def startup_event():
             )
 
             app.state.zeroconf = Zeroconf()
-            app.state.zeroconf.register_service(info)
+            try:
+                app.state.zeroconf.register_service(info, allow_name_change=True)
+            except Exception as z_err:
+                print(f"Notice: Zeroconf registration skipped or name collision: {z_err}")
             app.state.zeroconf_info = info
 
             mac_name = socket.gethostname()

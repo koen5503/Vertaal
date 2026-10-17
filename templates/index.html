@@ -475,6 +475,11 @@
                 });
             }
 
+            if (segEl.classList.contains('final') && status === 'interim') {
+                // Never demote a finalized segment back to interim/italic
+                status = 'final';
+            }
+
             // Update content and class
             segEl.textContent = text;
             segEl.className = `segment ${status}`;

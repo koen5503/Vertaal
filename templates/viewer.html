@@ -372,6 +372,10 @@
                 segments[colKey][segId] = segEl;
                 requestAnimationFrame(() => listEl.scrollTop = listEl.scrollHeight);
             }
+            if (segEl.classList.contains('final') && status === 'interim') {
+                // Never demote a finalized segment back to interim/italic
+                status = 'final';
+            }
             segEl.textContent = text;
             segEl.className = `segment ${status}`;
             if (status === 'final') {

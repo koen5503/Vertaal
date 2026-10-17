@@ -100,6 +100,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.segment_translations: Dict[str, Dict[str, str]] = {}
         self.segment_status: Dict[str, str] = {}
         self.suppressed_seg_ids: Set[str] = set()
+        self.finalized_segments: Set[str] = set()
         self.last_transcript: str = ""
         self.last_interim_s: float = 0.0
         self.is_current_interim: bool = False
@@ -411,7 +412,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                                     continue
 
                                 if client_seg_id:
-                                    if "col1_text" in data:
+                                    if client_seg_id in self.finalized_segments:
+                                        data["status"] = "final"
+                                        self.segment_status[client_seg_id] = "final"
+                                    elif "col1_text" in data:
                                         if self.pending_status:
                                             data["status"] = self.pending_status
                                         self.segment_status[client_seg_id] = data.get("status", "final")
@@ -492,6 +496,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                                 if len(self.suppressed_seg_ids) > 100:
                                     oldest = next(iter(self.suppressed_seg_ids))
                                     self.suppressed_seg_ids.discard(oldest)
+
+                                if len(self.finalized_segments) > 100:
+                                    oldest = next(iter(self.finalized_segments))
+                                    self.finalized_segments.discard(oldest)
                         except Exception as e:
                             print(f"RunPod WS Recv Error: {e}")
 
@@ -509,6 +517,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                     self.segment_translations = {}
                     self.segment_status = {}
                     self.suppressed_seg_ids = set()
+                    self.finalized_segments = set()
                     self.last_transcript = ""
                     self.last_interim_s = 0.0
                     self.is_current_interim = False
@@ -581,6 +590,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                             if not self.active_seg_id:
                                 self.active_seg_id = f"seg_{int(time.time()*1000)}"
                             seg_id = self.active_seg_id
+                            self.finalized_segments.add(seg_id)
+                            if len(self.finalized_segments) > 200:
+                                oldest = next(iter(self.finalized_segments))
+                                self.finalized_segments.discard(oldest)
                             self.pending_seg_id = seg_id
                             self.pending_status = "final"
                             self.is_current_interim = False

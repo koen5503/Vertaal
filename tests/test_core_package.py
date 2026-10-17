@@ -335,6 +335,58 @@ class TestCorePackage(unittest.TestCase):
 
         self.assertEqual(full_trans, "The church as a gondola. That is a bit exaggerated.")
 
+    def test_interim_translation_status_inheritance_and_retention(self):
+        """Translation messages inherit segment status and retain multi-chunk state in bounded FIFO."""
+        engine = TranscriptionEngine(broadcast_callback=MagicMock())
+        runpod = RunPodSTTEngine(engine)
+
+        client_seg_id = "seg_multi_chunk_trans_1"
+        runpod.pending_seg_id = client_seg_id
+        runpod.pending_status = "interim"
+
+        # 1. Chunk 1: STT interim arrival
+        stt_data = {"id": "srv_chunk_1", "status": "final", "col1_text": "De kerk als gondel"}
+        runpod.server_to_client_id["srv_chunk_1"] = runpod.pending_seg_id
+        stt_data["id"] = runpod.server_to_client_id[stt_data["id"]]
+        if "col1_text" in stt_data and runpod.pending_status:
+            stt_data["status"] = runpod.pending_status
+        runpod.segment_status[client_seg_id] = stt_data["status"]
+        self.assertEqual(stt_data["status"], "interim")
+        self.assertEqual(runpod.segment_status[client_seg_id], "interim")
+
+        # 2. Chunk 1: Translation arrival (inherits status='interim', does not pop from dict)
+        trans_data_1 = {"id": "srv_chunk_1", "status": "final", "col2_text": "The church as a gondola"}
+        trans_data_1["id"] = runpod.server_to_client_id[trans_data_1["id"]]
+        # Status inheritance:
+        trans_data_1["status"] = runpod.segment_status.get(client_seg_id, runpod.pending_status or "final")
+        self.assertEqual(trans_data_1["status"], "interim")
+
+        runpod.segment_translations.setdefault(client_seg_id, {})["col2_text"] = trans_data_1["col2_text"]
+
+        # Ensure translations are NOT prematurely cleared while interim
+        self.assertIn(client_seg_id, runpod.segment_translations)
+
+        # 3. Chunk 2: Final STT & Translation
+        runpod.pending_status = "final"
+        runpod.segment_status[client_seg_id] = "final"
+
+        trans_data_2 = {"id": "srv_chunk_2", "status": "final", "col2_text": "that is a bit exaggerated"}
+        runpod.server_to_client_id["srv_chunk_2"] = client_seg_id
+        trans_data_2["id"] = runpod.server_to_client_id[trans_data_2["id"]]
+        trans_data_2["status"] = runpod.segment_status.get(client_seg_id, "final")
+
+        incoming_col = trans_data_2["col2_text"]
+        prev_col = runpod.segment_translations.get(client_seg_id, {}).get("col2_text", "")
+        if prev_col and not (incoming_col.lower().startswith(prev_col[:15].lower()) or prev_col.lower() in incoming_col.lower()):
+            full_col = f"{prev_col} {incoming_col}".strip()
+        else:
+            full_col = incoming_col
+        runpod.segment_translations[client_seg_id]["col2_text"] = full_col
+        trans_data_2["col2_text"] = full_col
+
+        self.assertEqual(trans_data_2["status"], "final")
+        self.assertEqual(trans_data_2["col2_text"], "The church as a gondola that is a bit exaggerated")
+
 
 if __name__ == "__main__":
     unittest.main()

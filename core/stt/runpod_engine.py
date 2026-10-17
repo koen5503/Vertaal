@@ -38,6 +38,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.server_to_client_id: Dict[str, str] = {}
         self.segment_full_transcripts: Dict[str, str] = {}
         self.segment_translations: Dict[str, Dict[str, str]] = {}
+        self.segment_status: Dict[str, str] = {}
         self.last_interim_s: float = 0.0
         self.is_current_interim: bool = False
 
@@ -343,8 +344,14 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                                 client_seg_id = data.get("id")
 
-                                if "col1_text" in data and self.pending_status:
-                                    data["status"] = self.pending_status
+                                if client_seg_id:
+                                    if "col1_text" in data:
+                                        if self.pending_status:
+                                            data["status"] = self.pending_status
+                                        self.segment_status[client_seg_id] = data.get("status", "final")
+                                    else:
+                                        # Translation message inherits the segment's actual status (interim or final)
+                                        data["status"] = self.segment_status.get(client_seg_id, self.pending_status or "final")
 
                                 is_final = data.get("status") == "final"
 
@@ -393,15 +400,18 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                                 await self.engine.broadcast(data)
 
-                                # Clean up finished segment text state
-                                if is_final and client_seg_id:
-                                    if "col1_text" in data:
-                                        self.segment_full_transcripts.pop(client_seg_id, None)
-                                    if all(k in self.segment_translations.get(client_seg_id, {}) for k in ("col2_text", "col3_text")):
-                                        self.segment_translations.pop(client_seg_id, None)
-                                    if len(self.segment_translations) > 100:
-                                        oldest_seg = next(iter(self.segment_translations))
-                                        del self.segment_translations[oldest_seg]
+                                # Bounded FIFO cleanup for segment text state
+                                if len(self.segment_full_transcripts) > 100:
+                                    oldest = next(iter(self.segment_full_transcripts))
+                                    del self.segment_full_transcripts[oldest]
+
+                                if len(self.segment_translations) > 100:
+                                    oldest = next(iter(self.segment_translations))
+                                    del self.segment_translations[oldest]
+
+                                if len(self.segment_status) > 100:
+                                    oldest = next(iter(self.segment_status))
+                                    del self.segment_status[oldest]
                         except Exception as e:
                             print(f"RunPod WS Recv Error: {e}")
 
@@ -417,6 +427,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                     self.server_to_client_id = {}
                     self.segment_full_transcripts = {}
                     self.segment_translations = {}
+                    self.segment_status = {}
                     self.last_interim_s = 0.0
                     self.is_current_interim = False
 

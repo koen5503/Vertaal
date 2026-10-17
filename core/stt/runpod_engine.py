@@ -31,6 +31,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.audio_buffer = bytearray()
         self.silence_frames = 0
         self.speech_frames = 0
+        self.min_speech_frames = 10
 
     def discover_runpod_url(self) -> Optional[str]:
         """Auto-discover running RunPod endpoint via GraphQL API."""
@@ -385,7 +386,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                                 self.silence_frames = 0
                                 continue
 
-                            met_speech_req = self.speech_frames >= self.engine.min_speech_frames or ((force_flush or hard_cap) and self.speech_frames >= 3)
+                            met_speech_req = self.speech_frames >= getattr(self.engine, 'min_speech_frames', self.min_speech_frames) or ((force_flush or hard_cap) and self.speech_frames >= 3)
                             if not met_speech_req:
                                 continue
 

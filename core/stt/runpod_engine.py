@@ -324,6 +324,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                         try:
                             async for msg in ws:
                                 data = json.loads(msg)
+                                if "col1_text" in data:
+                                    print(f"[RunPod STT] '{data['col1_text']}'")
+                                elif data.get("action") == "update_translation":
+                                    print(f"[RunPod Trans] ({data.get('col_key')}): '{data.get('text')}'")
                                 await self.engine.broadcast(data)
                         except Exception as e:
                             print(f"RunPod WS Recv Error: {e}")

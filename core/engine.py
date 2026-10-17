@@ -43,8 +43,8 @@ class TranscriptionEngine:
         self.translate_count = 0
         self.session_start_time = time.time()
         self.MAX_DURATION_SECONDS = int(os.getenv("MAX_SESSION_MINUTES", "30")) * 60
-        self.min_local_chunk_s = float(os.getenv("MIN_LOCAL_CHUNK_S", "5.0"))
-        self.interim_chunk_s = float(os.getenv("INTERIM_CHUNK_S", "7.0"))
+        self.min_local_chunk_s = float(os.getenv("MIN_LOCAL_CHUNK_S", "3.5"))
+        self.interim_chunk_s = float(os.getenv("INTERIM_CHUNK_S", "5.0"))
         self.max_local_chunk_s = float(os.getenv("MAX_LOCAL_CHUNK_S", "25.0"))
         self.max_silence_flush_ms = int(os.getenv("MAX_SILENCE_FLUSH_MS", "2000"))
         self.min_speech_frames = 10

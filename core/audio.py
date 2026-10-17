@@ -460,7 +460,14 @@ class AudioStream:
             sleep_time = CHUNK_SIZE / src_rate
             data = wf.readframes(CHUNK_SIZE)
 
-            while self.running and len(data) > 0:
+            while self.running:
+                if len(data) == 0:
+                    print(f"Looping demo file: {demo_name}")
+                    wf.rewind()
+                    data = wf.readframes(CHUNK_SIZE)
+                    if len(data) == 0:
+                        break
+
                 if self.playback_paused:
                     time.sleep(0.1)
                     continue

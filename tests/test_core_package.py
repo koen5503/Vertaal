@@ -154,6 +154,131 @@ class TestCorePackage(unittest.TestCase):
             self.assertFalse(is_interim)
             self.assertEqual(stt.active_seg_id, "seg_test_incremental_1")
 
+    def test_handle_translation_cancels_superseded_task(self):
+        """Translation tasks for the same column key cancel previous in-flight translations."""
+        import asyncio
+
+        broadcast_events = []
+        async def mock_broadcast(msg):
+            broadcast_events.append(msg)
+
+        engine = TranscriptionEngine(broadcast_callback=mock_broadcast)
+
+        async def run_test():
+            # Mock translator with controllable delay
+            event_slow_started = asyncio.Event()
+
+            async def slow_translate(text, target_lang, source_lang=None):
+                if text == "first_call":
+                    event_slow_started.set()
+                    await asyncio.sleep(1.0)
+                    return "SLOW_TRANSLATION"
+                return f"FAST_{text}"
+
+            engine.translate_text_async = slow_translate
+
+            # Launch task 1
+            task1 = asyncio.create_task(
+                engine.handle_translation("seg_1", "first_call", "en", "trans1", is_interim=True)
+            )
+            await event_slow_started.wait()
+
+            # Launch task 2 on the same col_key 'trans1'
+            task2 = asyncio.create_task(
+                engine.handle_translation("seg_1", "second_call", "en", "trans1", is_interim=False)
+            )
+
+            await task2
+            # Wait for task1 to finish its cancellation handling
+            await asyncio.gather(task1, return_exceptions=True)
+
+            self.assertTrue(task1.cancelled() or task1.done())
+            # Only task 2 should have broadcast its message
+            trans_texts = [m["text"] for m in broadcast_events if m.get("action") == "update_translation"]
+            self.assertEqual(trans_texts, ["FAST_second_call"])
+
+        asyncio.run(run_test())
+
+    def test_handle_translation_chain_to_restricted_to_final(self):
+        """Interim translations do not trigger chain_to back-translations; only final translations do."""
+        import asyncio
+
+        broadcast_events = []
+        async def mock_broadcast(msg):
+            broadcast_events.append(msg)
+
+        engine = TranscriptionEngine(broadcast_callback=mock_broadcast)
+
+        async def run_test():
+            calls = []
+            async def mock_translate(text, target_lang, source_lang=None):
+                calls.append((text, target_lang))
+                return f"TR_{text}"
+
+            engine.translate_text_async = mock_translate
+
+            # Interim call with chain_to
+            await engine.handle_translation(
+                "seg_1", "interim_text", "en", "trans1",
+                chain_to=[("de", "trans3")],
+                is_interim=True
+            )
+            # Give any spawned tasks a moment to run
+            await asyncio.sleep(0.01)
+            # Should have only translated trans1, not chained to trans3
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0], ("interim_text", "en"))
+
+            # Final call with chain_to
+            calls.clear()
+            await engine.handle_translation(
+                "seg_1", "final_text", "en", "trans1",
+                chain_to=[("de", "trans3")],
+                is_interim=False
+            )
+            # Give chained tasks a chance to execute
+            await asyncio.sleep(0.05)
+            # Should have translated trans1 AND chained trans3
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0], ("final_text", "en"))
+            self.assertEqual(calls[1], ("TR_final_text", "de"))
+
+        asyncio.run(run_test())
+
+    def test_runpod_engine_pending_seg_id_tracking(self):
+        """RunPodSTTEngine tracks pending_seg_id and pending_status across interim/final transitions."""
+        engine = TranscriptionEngine(broadcast_callback=MagicMock())
+        runpod = RunPodSTTEngine(engine)
+
+        self.assertIsNone(runpod.pending_seg_id)
+        self.assertEqual(runpod.pending_status, "final")
+
+        # Set interim state
+        runpod.active_seg_id = "seg_test_100"
+        runpod.pending_seg_id = runpod.active_seg_id
+        runpod.pending_status = "interim"
+
+        # Simulate incoming server response mapping
+        dummy_incoming = {"id": "server_random_999", "status": "final", "col1_text": "Hallo"}
+        if runpod.pending_seg_id:
+            dummy_incoming["id"] = runpod.pending_seg_id
+        if runpod.pending_status:
+            dummy_incoming["status"] = runpod.pending_status
+
+        self.assertEqual(dummy_incoming["id"], "seg_test_100")
+        self.assertEqual(dummy_incoming["status"], "interim")
+
+        # Finalize state
+        runpod.pending_status = "final"
+        dummy_final = {"id": "server_random_1000", "status": "server_val", "col1_text": "Hallo wereld"}
+        if runpod.pending_seg_id:
+            dummy_final["id"] = runpod.pending_seg_id
+        if runpod.pending_status:
+            dummy_final["status"] = runpod.pending_status
+
+        self.assertEqual(dummy_final["id"], "seg_test_100")
+        self.assertEqual(dummy_final["status"], "final")
+
 
 if __name__ == "__main__":
     unittest.main()

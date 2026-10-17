@@ -33,6 +33,8 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.speech_frames = 0
         self.min_speech_frames = 10
         self.active_seg_id: Optional[str] = None
+        self.pending_seg_id: Optional[str] = None
+        self.pending_status: str = "final"
         self.last_interim_s: float = 0.0
         self.is_current_interim: bool = False
 
@@ -327,12 +329,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                         try:
                             async for msg in ws:
                                 data = json.loads(msg)
-                                if self.active_seg_id:
-                                    data["id"] = self.active_seg_id
-                                if self.is_current_interim:
-                                    data["status"] = "interim"
-                                else:
-                                    data["status"] = "final"
+                                if self.pending_seg_id:
+                                    data["id"] = self.pending_seg_id
+                                if self.pending_status:
+                                    data["status"] = self.pending_status
 
                                 if "col1_text" in data:
                                     status_tag = data.get("status", "final")
@@ -350,6 +350,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                     self.silence_frames = 0
                     self.speech_frames = 0
                     self.active_seg_id = None
+                    self.pending_seg_id = None
+                    self.pending_status = "final"
                     self.last_interim_s = 0.0
                     self.is_current_interim = False
 
@@ -420,9 +422,12 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                             if not self.active_seg_id:
                                 self.active_seg_id = f"seg_{int(time.time()*1000)}"
+                            seg_id = self.active_seg_id
+                            self.pending_seg_id = seg_id
+                            self.pending_status = "final"
                             self.is_current_interim = False
                             reason = "hard_ceiling" if is_hard_ceiling else ("force_flush" if is_force_flush else f"pause_{silence_ms}ms")
-                            print(f"[RunPod] Finalizing {self.active_seg_id} ({reason}, dur={buffer_duration_s:.1f}s, speech={self.speech_frames}f)...")
+                            print(f"[RunPod] Finalizing {seg_id} ({reason}, dur={buffer_duration_s:.1f}s, speech={self.speech_frames}f)...")
 
                             audio_np = np.frombuffer(self.audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
                             await ws.send(audio_np.tobytes())
@@ -437,6 +442,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                         elif is_interim_interval and self.speech_frames >= getattr(self.engine, 'min_speech_frames', self.min_speech_frames):
                             if not self.active_seg_id:
                                 self.active_seg_id = f"seg_{int(time.time()*1000)}"
+                            self.pending_seg_id = self.active_seg_id
+                            self.pending_status = "interim"
                             self.is_current_interim = True
 
                             print(f"[RunPod] Interim update for {self.active_seg_id} (dur={buffer_duration_s:.1f}s, speech={self.speech_frames}f)...")

@@ -286,7 +286,8 @@ class LocalSTTEngine(BaseSTTEngine):
                             transcript,
                             self.engine.target_lang_1,
                             "trans1",
-                            chain_to=chain_3
+                            chain_to=chain_3,
+                            is_interim=False
                         )
                     )
                     chain_4 = [(self.engine.target_lang_4, "trans4")] if getattr(self.engine, "enable_trans_4", True) else []
@@ -296,7 +297,8 @@ class LocalSTTEngine(BaseSTTEngine):
                             transcript,
                             self.engine.target_lang_2,
                             "trans2",
-                            chain_to=chain_4
+                            chain_to=chain_4,
+                            is_interim=False
                         )
                     )
 
@@ -332,7 +334,8 @@ class LocalSTTEngine(BaseSTTEngine):
                             transcript,
                             self.engine.target_lang_1,
                             "trans1",
-                            chain_to=chain_3
+                            chain_to=chain_3,
+                            is_interim=True
                         )
                     )
                     chain_4 = [(self.engine.target_lang_4, "trans4")] if getattr(self.engine, "enable_trans_4", True) else []
@@ -342,7 +345,8 @@ class LocalSTTEngine(BaseSTTEngine):
                             transcript,
                             self.engine.target_lang_2,
                             "trans2",
-                            chain_to=chain_4
+                            chain_to=chain_4,
+                            is_interim=True
                         )
                     )
 

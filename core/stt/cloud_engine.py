@@ -183,7 +183,8 @@ class CloudSTTEngine(BaseSTTEngine):
                             transcript,
                             self.engine.target_lang_1,
                             "trans1",
-                            chain_to=chain_3
+                            chain_to=chain_3,
+                            is_interim=not is_final
                         ),
                         loop=loop
                     )
@@ -194,7 +195,8 @@ class CloudSTTEngine(BaseSTTEngine):
                             transcript,
                             self.engine.target_lang_2,
                             "trans2",
-                            chain_to=chain_4
+                            chain_to=chain_4,
+                            is_interim=not is_final
                         ),
                         loop=loop
                     )

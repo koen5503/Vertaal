@@ -69,6 +69,9 @@ class TranscriptionEngine:
             source_lang=self.source_lang,
         )
 
+        # Translation tasks tracking (for cancellation of superseded in-flight translations)
+        self.active_translation_tasks: Dict[str, asyncio.Task] = {}
+
         # Initialize appropriate STT engine
         if self.pipeline_mode == "cloud":
             self.stt_engine = CloudSTTEngine(self)
@@ -169,31 +172,50 @@ class TranscriptionEngine:
         target_lang: str,
         col_key: str,
         chain_to: Optional[List[tuple]] = None,
-        source_override: Optional[str] = None
+        source_override: Optional[str] = None,
+        is_interim: bool = False,
     ) -> None:
         """Background task to translate text and broadcast to UI."""
         if not text:
             return
-        translated = await self.translate_text_async(text, target_lang, source_lang=source_override)
-        msg = {
-            "action": "update_translation",
-            "id": seg_id,
-            "col_key": col_key,
-            "text": translated,
-        }
-        await self.broadcast(msg)
 
-        if chain_to:
-            for c_lang, c_key in chain_to:
-                asyncio.create_task(
-                    self.handle_translation(
-                        seg_id,
-                        translated,
-                        c_lang,
-                        c_key,
-                        source_override=target_lang
+        # Cancel any prior in-flight translation task for this column
+        prev_task = self.active_translation_tasks.get(col_key)
+        if prev_task and not prev_task.done():
+            prev_task.cancel()
+
+        curr_task = asyncio.current_task()
+        if curr_task:
+            self.active_translation_tasks[col_key] = curr_task
+
+        try:
+            translated = await self.translate_text_async(text, target_lang, source_lang=source_override)
+            msg = {
+                "action": "update_translation",
+                "id": seg_id,
+                "col_key": col_key,
+                "text": translated,
+            }
+            await self.broadcast(msg)
+
+            # Restrict chain_to back-translations to final chunks only
+            if chain_to and not is_interim:
+                for c_lang, c_key in chain_to:
+                    asyncio.create_task(
+                        self.handle_translation(
+                            seg_id,
+                            translated,
+                            c_lang,
+                            c_key,
+                            source_override=target_lang,
+                            is_interim=False,
+                        )
                     )
-                )
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if curr_task and self.active_translation_tasks.get(col_key) is curr_task:
+                self.active_translation_tasks.pop(col_key, None)
 
     # --- Run Loop ---
 

@@ -490,6 +490,74 @@ class TestCorePackage(unittest.TestCase):
         self.assertEqual(broadcast_messages[0]["col1_text"], "Welkom allemaal in deze dienst.")
         self.assertEqual(broadcast_messages[1]["col2_text"], "Welcome everyone to this service.")
 
+    def test_interim_followed_by_final_preserves_full_sentence_without_prefix_chop(self):
+        """Interim chunks must not pollute last_transcript and cause final chunks to be prefix-chopped."""
+        broadcast_messages = []
+        async def mock_broadcast(msg):
+            broadcast_messages.append(msg)
+
+        engine = TranscriptionEngine(broadcast_callback=mock_broadcast)
+        runpod = RunPodSTTEngine(engine)
+        runpod.last_transcript = "In de naam van de Vader en de Zoon."
+
+        seg_id = "seg_multi_chunk_rotterdam_1"
+        runpod.pending_seg_id = seg_id
+
+        # 1. Chunk 1 (interim arrival)
+        runpod.pending_status = "interim"
+        raw_interim = {
+            "id": seg_id,
+            "status": "interim",
+            "col1_text": "Zoals verschillende gemeenteleden weten heb ik Rotterdamse",
+        }
+
+        # Simulate ws_receiver logic for Chunk 1
+        client_seg_id = raw_interim["id"]
+        is_final = raw_interim["status"] == "final"
+        prev_text = runpod.segment_full_transcripts.get(client_seg_id, "")
+        full_text_1 = restitch_segment_text(prev_text, raw_interim["col1_text"])
+        effective_last_transcript = "" if prev_text else runpod.last_transcript
+        filtered_text_1 = filter_anti_hallucination(full_text_1, last_transcript=effective_last_transcript)
+
+        self.assertIsNotNone(filtered_text_1)
+        self.assertEqual(filtered_text_1, "Zoals verschillende gemeenteleden weten heb ik Rotterdamse")
+        if is_final:
+            runpod.last_transcript = filtered_text_1[-200:]
+        runpod.segment_full_transcripts[client_seg_id] = filtered_text_1
+
+        # Notice: runpod.last_transcript was NOT updated because is_final is False!
+        self.assertEqual(runpod.last_transcript, "In de naam van de Vader en de Zoon.")
+
+        # 2. Chunk 2 (final arrival with tail word "roots.")
+        runpod.pending_status = "final"
+        raw_final = {
+            "id": seg_id,
+            "status": "final",
+            "col1_text": "roots.",
+        }
+
+        is_final = raw_final["status"] == "final"
+        prev_text = runpod.segment_full_transcripts.get(client_seg_id, "")
+        full_text_2 = restitch_segment_text(prev_text, raw_final["col1_text"])
+        # Crucial: effective_last_transcript must be "" because prev_text exists
+        effective_last_transcript = "" if prev_text else runpod.last_transcript
+        filtered_text_2 = filter_anti_hallucination(full_text_2, last_transcript=effective_last_transcript)
+
+        self.assertIsNotNone(filtered_text_2)
+        # MUST BE the full sentence, NOT just 'roots.'!
+        self.assertEqual(
+            filtered_text_2,
+            "Zoals verschillende gemeenteleden weten heb ik Rotterdamse roots."
+        )
+        self.assertNotEqual(filtered_text_2, "roots.")
+
+        if is_final:
+            runpod.last_transcript = filtered_text_2[-200:]
+        runpod.segment_full_transcripts[client_seg_id] = filtered_text_2
+
+        # Now that it's final, last_transcript is updated for future segments
+        self.assertTrue(runpod.last_transcript.endswith("Rotterdamse roots."))
+
 
 if __name__ == "__main__":
     unittest.main()

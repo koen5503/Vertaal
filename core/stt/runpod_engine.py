@@ -427,9 +427,11 @@ class RunPodSTTEngine(BaseSTTEngine):
                                     prev_text = self.segment_full_transcripts.get(client_seg_id, "")
                                     full_text = restitch_segment_text(prev_text, incoming_text)
 
+                                    # For ongoing segments, last_transcript prompt leakage was already handled on chunk 1
+                                    effective_last_transcript = "" if prev_text else self.last_transcript
                                     filtered_text = filter_anti_hallucination(
                                         full_text,
-                                        last_transcript=self.last_transcript,
+                                        last_transcript=effective_last_transcript,
                                         glossary_phrases=getattr(self.engine, "glossary_phrases", None),
                                     )
 
@@ -441,7 +443,11 @@ class RunPodSTTEngine(BaseSTTEngine):
                                             self.suppressed_seg_ids.discard(oldest_suppressed)
                                         continue
 
-                                    self.last_transcript = filtered_text
+                                    if is_final:
+                                        self.last_transcript = filtered_text[-200:]
+                                        if hasattr(self.engine, "last_transcript"):
+                                            self.engine.last_transcript = self.last_transcript
+
                                     self.segment_full_transcripts[client_seg_id] = filtered_text
                                     data["col1_text"] = filtered_text
 

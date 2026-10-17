@@ -269,11 +269,7 @@ class RunPodSTTEngine(BaseSTTEngine):
 
     async def run(self) -> None:
         """Stream VAD-segmented audio to remote NVIDIA RunPod engine."""
-        wss_url = os.getenv("RUNPOD_WSS_URL")
-        if not wss_url:
-            wss_url = self.discover_runpod_url()
-
-        # Auto-deploy if enabled and no pod found
+        wss_url = self.discover_runpod_url()
         auto_deploy_val = os.getenv("AUTO_DEPLOY_RUNPOD", "false").lower()
         if not wss_url and auto_deploy_val == "true":
             print("[RunPod] No active pod found. Attempting Auto-Deployment/Resume...")
@@ -293,6 +289,9 @@ class RunPodSTTEngine(BaseSTTEngine):
                     print("[RunPod] Timeout: Pod did not become ready in time.")
             else:
                 print("[RunPod] Auto-Deployment failed.")
+
+        if not wss_url:
+            wss_url = os.getenv("RUNPOD_WSS_URL")
 
         if not wss_url:
             wss_url = "ws://127.0.0.1:8888/stream"

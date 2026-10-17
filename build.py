@@ -80,6 +80,13 @@ def main():
     try:
         subprocess.check_call(cmd)
         print("\nBuild successful!")
+        
+        # Explicitly copy configuration templates and glossary alongside the executable in dist/
+        if os.path.exists(".env.example"):
+            shutil.copy(".env.example", os.path.join("dist", ".env.example"))
+            shutil.copy(".env.example", os.path.join("dist", "env.template"))
+        if os.path.exists("SpGlos.txt"):
+            shutil.copy("SpGlos.txt", os.path.join("dist", "SpGlos.txt"))
     except subprocess.CalledProcessError as e:
         print(f"\nBuild failed with error: {e}")
         sys.exit(1)

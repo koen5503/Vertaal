@@ -36,5 +36,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ondertitels-windows-x64
-          path: dist/app.exe
+          path: |
+            dist/app.exe
+            dist/.env.example
+            dist/env.template
+            dist/SpGlos.txt
+          include-hidden-files: true
           retention-days: 30

@@ -276,9 +276,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 matcher = difflib.SequenceMatcher(None, last_words, words)
                                 match = matcher.find_longest_match(0, len(last_words), 0, len(words))
 
-                                is_large_leak = (match.size >= 4 and match.b <= 4)
+                                is_large_leak = (match.size >= 4 and match.b <= 5) or (match.size >= 6 and match.b <= 15)
                                 is_tail_overlap = (match.size >= 1 and match.b == 0 and match.a + match.size == len(last_words))
-                                is_tail_sub = (match.size >= 2 and match.b <= 4 and match.a + match.size == len(last_words))
+                                is_tail_sub = (match.size >= 2 and match.b <= 5 and match.a + match.size == len(last_words))
 
                                 if is_large_leak or is_tail_overlap or is_tail_sub:
                                     orig_words = text.split()
@@ -302,7 +302,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         continue
                         
                     # Save context 
-                    last_transcript = text[-200:]
+                    last_transcript = text[-1200:]
                     
                     import time
                     seg_id = f"seg_{int(time.time()*1000)}"

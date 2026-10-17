@@ -522,7 +522,7 @@ class TestCorePackage(unittest.TestCase):
         self.assertIsNotNone(filtered_text_1)
         self.assertEqual(filtered_text_1, "Zoals verschillende gemeenteleden weten heb ik Rotterdamse")
         if is_final:
-            runpod.last_transcript = filtered_text_1[-200:]
+            runpod.last_transcript = filtered_text_1[-1200:]
         runpod.segment_full_transcripts[client_seg_id] = filtered_text_1
 
         # Notice: runpod.last_transcript was NOT updated because is_final is False!
@@ -552,11 +552,35 @@ class TestCorePackage(unittest.TestCase):
         self.assertNotEqual(filtered_text_2, "roots.")
 
         if is_final:
-            runpod.last_transcript = filtered_text_2[-200:]
+            runpod.last_transcript = filtered_text_2[-1200:]
         runpod.segment_full_transcripts[client_seg_id] = filtered_text_2
 
         # Now that it's final, last_transcript is updated for future segments
         self.assertTrue(runpod.last_transcript.endswith("Rotterdamse roots."))
+
+    def test_runpod_translation_trailing_credit_stripped(self):
+        """Broadcast credit artifacts (e.g. 'TV Gelderland 2021' in Dutch/English/Russian) must be stripped from all translation columns."""
+        from core.stt.local_engine import TAIL_HALLUCINATION_PATTERN
+        import re
+
+        test_cases = [
+            ("Want to see you today. TV Gelderland 2021", "Want to see you today."),
+            ("но и сегодня для нас. ТВ Гельдерланд 2021", "но и сегодня для нас."),
+            ("Maar ook vandaag voor ons. TV Gelreland 2021", "Maar ook vandaag voor ons."),
+            ("Voor ons allen. Omroep Gelderland", "Voor ons allen."),
+            ("TV Gelderland 2021", ""),
+            ("ТВ Гельдерланд 2021", ""),
+        ]
+
+        for raw, expected in test_cases:
+            cleaned = TAIL_HALLUCINATION_PATTERN.sub("", raw).strip()
+            cleaned = re.sub(
+                r"(?:\s*[\-\:\;]\s*|(?<=[\.\,\!\?])\s+|\s+|^)(?:tv|тв)?\s*(?:gelderland|gelreland|гельдерланд)(?:\s+\d{4})?[\.\,\!\?\s]*$",
+                "",
+                cleaned,
+                flags=re.IGNORECASE
+            ).strip()
+            self.assertEqual(cleaned, expected)
 
 
 if __name__ == "__main__":

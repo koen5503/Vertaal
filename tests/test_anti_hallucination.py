@@ -261,6 +261,14 @@ class TestAntiHallucination(unittest.TestCase):
         expected = "Maar dat is niet zo, het is geen zeepbel, maar het is een functie."
         self.assertEqual(filter_anti_hallucination(curr, last_transcript=prev), expected)
 
+    def test_large_prompt_leakage_with_fillers_within_15_words_trimmed(self):
+        """When Whisper echoes a large block (>=6 words) starting anywhere within the first 15 words, trim it."""
+        prev = "De reddende kracht zou onbereikbaar geworden zijn of zou zich alleen maar opsluiten in dat stukje van ons aardse leven."
+        # 8 filler words before the match begins:
+        curr = "En nou ja kijk we zien dat immers ook de reddende kracht zou onbereikbaar geworden zijn of zou zich alleen maar opsluiten in dat stukje van ons aardse leven. En daarom vieren wij feest."
+        expected = "En daarom vieren wij feest."
+        self.assertEqual(filter_anti_hallucination(curr, last_transcript=prev), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

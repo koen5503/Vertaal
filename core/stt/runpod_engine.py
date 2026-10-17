@@ -99,7 +99,7 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                 ports = runtime.get('ports', [])
                 for port_map in ports:
-                    if port_map.get('privatePort') == 8000:
+                    if port_map.get('privatePort') == 8000 and port_map.get('type') != 'udp':
                         ip = port_map.get('ip')
                         public_port = port_map.get('publicPort')
 
@@ -308,7 +308,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         while True:
             try:
                 print(f"Connecting to RunPod Server: {wss_url}")
-                async with websockets.connect(wss_url) as ws:
+                async with websockets.connect(wss_url, ping_interval=None) as ws:
                     print("Connected to RunPod.")
 
                     self.engine.session_start_time = time.time()

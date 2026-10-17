@@ -6,7 +6,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from typing import Optional
+from typing import Dict, Optional
 
 try:
     import numpy as np
@@ -35,6 +35,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.active_seg_id: Optional[str] = None
         self.pending_seg_id: Optional[str] = None
         self.pending_status: str = "final"
+        self.server_to_client_id: Dict[str, str] = {}
         self.last_interim_s: float = 0.0
         self.is_current_interim: bool = False
 
@@ -329,16 +330,31 @@ class RunPodSTTEngine(BaseSTTEngine):
                         try:
                             async for msg in ws:
                                 data = json.loads(msg)
-                                if self.pending_seg_id:
-                                    data["id"] = self.pending_seg_id
-                                if self.pending_status:
+                                server_id = data.get("id")
+                                if server_id:
+                                    if server_id not in self.server_to_client_id:
+                                        self.server_to_client_id[server_id] = self.pending_seg_id or server_id
+                                        if len(self.server_to_client_id) > 200:
+                                            first_key = next(iter(self.server_to_client_id))
+                                            del self.server_to_client_id[first_key]
+                                    data["id"] = self.server_to_client_id[server_id]
+
+                                if "col1_text" in data and self.pending_status:
                                     data["status"] = self.pending_status
 
+                                # Log STT transcripts, translation columns, and generic payloads
                                 if "col1_text" in data:
                                     status_tag = data.get("status", "final")
-                                    print(f"[RunPod STT] [{status_tag}] '{data['col1_text']}'")
+                                    print(f"[RunPod STT] [{status_tag}] ({data.get('id')}): '{data['col1_text']}'")
+                                elif any(k in data for k in ("col2_text", "col3_text", "col4_text", "col5_text")):
+                                    for k in ("col2_text", "col3_text", "col4_text", "col5_text"):
+                                        if k in data:
+                                            print(f"[RunPod Trans] ({data.get('id')}, {k}): '{data[k]}'")
                                 elif data.get("action") == "update_translation":
-                                    print(f"[RunPod Trans] ({data.get('col_key')}): '{data.get('text')}'")
+                                    print(f"[RunPod Trans] ({data.get('id')}, {data.get('col_key')}): '{data.get('text')}'")
+                                else:
+                                    print(f"[RunPod Msg] Keys: {list(data.keys())} -> {data}")
+
                                 await self.engine.broadcast(data)
                         except Exception as e:
                             print(f"RunPod WS Recv Error: {e}")
@@ -352,6 +368,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                     self.active_seg_id = None
                     self.pending_seg_id = None
                     self.pending_status = "final"
+                    self.server_to_client_id = {}
                     self.last_interim_s = 0.0
                     self.is_current_interim = False
 

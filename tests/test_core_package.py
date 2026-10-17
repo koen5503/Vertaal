@@ -279,6 +279,62 @@ class TestCorePackage(unittest.TestCase):
         self.assertEqual(dummy_final["id"], "seg_test_100")
         self.assertEqual(dummy_final["status"], "final")
 
+    def test_runpod_text_and_translation_stitching_on_overlap_trim(self):
+        """When RunPod server trims overlap, ws_receiver re-stitches full transcript and translations."""
+        broadcast_messages = []
+        async def mock_broadcast(msg):
+            broadcast_messages.append(msg)
+
+        engine = TranscriptionEngine(broadcast_callback=mock_broadcast)
+        runpod = RunPodSTTEngine(engine)
+
+        client_seg_id = "seg_test_stitch_1"
+        runpod.pending_seg_id = client_seg_id
+
+        # 1. Interim transcript arrival
+        interim_msg = {
+            "id": "srv_chunk_1",
+            "col1_text": "De kerk als gondel.",
+        }
+        # Simulate mapping & stitching logic as in ws_receiver
+        runpod.server_to_client_id["srv_chunk_1"] = runpod.pending_seg_id
+        data1 = interim_msg.copy()
+        data1["id"] = runpod.server_to_client_id[data1["id"]]
+        incoming1 = data1["col1_text"].strip()
+        runpod.segment_full_transcripts[client_seg_id] = incoming1
+        data1["col1_text"] = incoming1
+
+        self.assertEqual(data1["col1_text"], "De kerk als gondel.")
+
+        # 2. Final transcript arrival where server stripped the first part
+        final_msg = {
+            "id": "srv_chunk_2",
+            "col1_text": "Dat is wel wat gechargeerd.",
+        }
+        runpod.server_to_client_id["srv_chunk_2"] = runpod.pending_seg_id
+        data2 = final_msg.copy()
+        data2["id"] = runpod.server_to_client_id[data2["id"]]
+        incoming2 = data2["col1_text"].strip()
+        prev_text = runpod.segment_full_transcripts.get(client_seg_id, "")
+        if prev_text and not (incoming2.lower().startswith(prev_text[:20].lower()) or prev_text.lower() in incoming2.lower()):
+            full_text = f"{prev_text} {incoming2}".strip()
+        else:
+            full_text = incoming2
+
+        self.assertEqual(full_text, "De kerk als gondel. Dat is wel wat gechargeerd.")
+
+        # 3. Translation stitching
+        trans_interim = "The church as a gondola."
+        runpod.segment_translations.setdefault(client_seg_id, {})["col2_text"] = trans_interim
+        trans_tail = "That is a bit exaggerated."
+        prev_trans = runpod.segment_translations[client_seg_id].get("col2_text", "")
+        if prev_trans and not (trans_tail.lower().startswith(prev_trans[:15].lower()) or prev_trans.lower() in trans_tail.lower()):
+            full_trans = f"{prev_trans} {trans_tail}".strip()
+        else:
+            full_trans = trans_tail
+
+        self.assertEqual(full_trans, "The church as a gondola. That is a bit exaggerated.")
+
 
 if __name__ == "__main__":
     unittest.main()

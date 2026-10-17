@@ -36,6 +36,8 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.pending_seg_id: Optional[str] = None
         self.pending_status: str = "final"
         self.server_to_client_id: Dict[str, str] = {}
+        self.segment_full_transcripts: Dict[str, str] = {}
+        self.segment_translations: Dict[str, Dict[str, str]] = {}
         self.last_interim_s: float = 0.0
         self.is_current_interim: bool = False
 
@@ -339,8 +341,42 @@ class RunPodSTTEngine(BaseSTTEngine):
                                             del self.server_to_client_id[first_key]
                                     data["id"] = self.server_to_client_id[server_id]
 
+                                client_seg_id = data.get("id")
+
                                 if "col1_text" in data and self.pending_status:
                                     data["status"] = self.pending_status
+
+                                is_final = data.get("status") == "final"
+
+                                # Re-stitch transcripts when RunPod strips overlap on subsequent chunks for the same segment
+                                if "col1_text" in data and client_seg_id:
+                                    incoming_text = data["col1_text"].strip()
+                                    prev_text = self.segment_full_transcripts.get(client_seg_id, "")
+                                    if prev_text:
+                                        # If incoming text already contains or starts with prev_text, it's the full revised transcript
+                                        if incoming_text.lower().startswith(prev_text[:20].lower()) or prev_text.lower() in incoming_text.lower():
+                                            full_text = incoming_text
+                                        else:
+                                            # RunPod server stripped the overlap; re-stitch so sentence is appended
+                                            full_text = f"{prev_text} {incoming_text}".strip()
+                                    else:
+                                        full_text = incoming_text
+
+                                    self.segment_full_transcripts[client_seg_id] = full_text
+                                    data["col1_text"] = full_text
+
+                                # Re-stitch translation columns if trimmed on subsequent chunks
+                                if client_seg_id:
+                                    for col_key in ("col2_text", "col3_text", "col4_text", "col5_text"):
+                                        if col_key in data and data[col_key]:
+                                            incoming_col = str(data[col_key]).strip()
+                                            prev_col = self.segment_translations.setdefault(client_seg_id, {}).get(col_key, "")
+                                            if prev_col and not (incoming_col.lower().startswith(prev_col[:15].lower()) or prev_col.lower() in incoming_col.lower()):
+                                                full_col = f"{prev_col} {incoming_col}".strip()
+                                            else:
+                                                full_col = incoming_col
+                                            self.segment_translations[client_seg_id][col_key] = full_col
+                                            data[col_key] = full_col
 
                                 # Log STT transcripts, translation columns, and generic payloads
                                 if "col1_text" in data:
@@ -356,6 +392,16 @@ class RunPodSTTEngine(BaseSTTEngine):
                                     print(f"[RunPod Msg] Keys: {list(data.keys())} -> {data}")
 
                                 await self.engine.broadcast(data)
+
+                                # Clean up finished segment text state
+                                if is_final and client_seg_id:
+                                    if "col1_text" in data:
+                                        self.segment_full_transcripts.pop(client_seg_id, None)
+                                    if all(k in self.segment_translations.get(client_seg_id, {}) for k in ("col2_text", "col3_text")):
+                                        self.segment_translations.pop(client_seg_id, None)
+                                    if len(self.segment_translations) > 100:
+                                        oldest_seg = next(iter(self.segment_translations))
+                                        del self.segment_translations[oldest_seg]
                         except Exception as e:
                             print(f"RunPod WS Recv Error: {e}")
 
@@ -369,6 +415,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                     self.pending_seg_id = None
                     self.pending_status = "final"
                     self.server_to_client_id = {}
+                    self.segment_full_transcripts = {}
+                    self.segment_translations = {}
                     self.last_interim_s = 0.0
                     self.is_current_interim = False
 

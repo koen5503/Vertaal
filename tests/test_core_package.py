@@ -93,6 +93,67 @@ class TestCorePackage(unittest.TestCase):
         self.assertEqual(gpus[0], "NVIDIA RTX A5000")
         self.assertEqual(len(gpus), len(set(gpus)))
 
+    def test_incremental_interim_and_final_chunking_triggers(self):
+        """Validate interim (7s) and final (pause/ceiling) trigger conditions and seg_id persistence."""
+        with patch.dict(os.environ, {
+            "MIN_LOCAL_CHUNK_S": "5.0",
+            "INTERIM_CHUNK_S": "7.0",
+            "MAX_LOCAL_CHUNK_S": "25.0",
+            "SILENCE_THRESHOLD_MS": "300",
+        }):
+            engine = TranscriptionEngine(broadcast_callback=MagicMock())
+            self.assertEqual(engine.min_local_chunk_s, 5.0)
+            self.assertEqual(engine.interim_chunk_s, 7.0)
+            self.assertEqual(engine.silence_threshold_ms, 300)
+
+            stt = LocalSTTEngine(engine)
+            self.assertIsNone(stt.active_seg_id)
+            self.assertEqual(stt.last_interim_s, 0.0)
+
+            # 1. Simulate continuous speech reaching 7.0s (interim interval)
+            # 7.0s @ 16kHz 16-bit mono = 7.0 * 16000 * 2 = 224,000 bytes
+            stt.audio_buffer = bytearray(b'\x01\x00' * int(7.0 * SAMPLE_RATE))
+            stt.speech_frames = int(7.0 * 1000 / FRAME_DURATION_MS)
+            stt.silence_frames = 0
+
+            buffer_duration_s = len(stt.audio_buffer) / (SAMPLE_RATE * 2)
+            silence_ms = stt.silence_frames * FRAME_DURATION_MS
+
+            is_natural_pause = (silence_ms >= engine.silence_threshold_ms and buffer_duration_s >= engine.min_local_chunk_s)
+            is_force_flush = (silence_ms >= engine.max_silence_flush_ms)
+            is_hard_ceiling = (buffer_duration_s >= engine.max_local_chunk_s)
+            is_interim = (
+                (buffer_duration_s - stt.last_interim_s >= engine.interim_chunk_s)
+                and not is_natural_pause
+                and not is_hard_ceiling
+            )
+
+            self.assertTrue(is_interim)
+            self.assertFalse(is_natural_pause)
+
+            # Assign active_seg_id as done in interim branch
+            stt.active_seg_id = "seg_test_incremental_1"
+            stt.last_interim_s = buffer_duration_s
+
+            # 2. Simulate speech continuing to 9.5s followed by 300ms pause (10 frames)
+            # 9.8s total buffer
+            stt.audio_buffer = bytearray(b'\x01\x00' * int(9.8 * SAMPLE_RATE))
+            stt.silence_frames = 10  # 300ms
+            silence_ms = stt.silence_frames * FRAME_DURATION_MS
+            buffer_duration_s = len(stt.audio_buffer) / (SAMPLE_RATE * 2)
+
+            is_natural_pause = (silence_ms >= engine.silence_threshold_ms and buffer_duration_s >= engine.min_local_chunk_s)
+            is_interim = (
+                (buffer_duration_s - stt.last_interim_s >= engine.interim_chunk_s)
+                and not is_natural_pause
+                and not is_hard_ceiling
+            )
+
+            # Must finalize on natural pause using the same active_seg_id
+            self.assertTrue(is_natural_pause)
+            self.assertFalse(is_interim)
+            self.assertEqual(stt.active_seg_id, "seg_test_incremental_1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -88,10 +88,11 @@ class TestConfigModes(unittest.TestCase):
 
         # Intervals and thresholds
         self.assertEqual(cfg["translate_interval"], 10)
-        self.assertEqual(cfg["silence_threshold_ms"], 400)
+        self.assertEqual(cfg["silence_threshold_ms"], 300)
         self.assertEqual(cfg["max_session_minutes"], 30)
         self.assertEqual(cfg["max_duration_seconds"], 1800)
-        self.assertEqual(cfg["min_local_chunk_s"], 10.0)
+        self.assertEqual(cfg["min_local_chunk_s"], 5.0)
+        self.assertEqual(cfg["interim_chunk_s"], 7.0)
         self.assertEqual(cfg["max_local_chunk_s"], 25.0)
         self.assertEqual(cfg["max_silence_flush_ms"], 2000)
 

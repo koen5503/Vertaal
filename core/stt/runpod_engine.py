@@ -32,6 +32,9 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.silence_frames = 0
         self.speech_frames = 0
         self.min_speech_frames = 10
+        self.active_seg_id: Optional[str] = None
+        self.last_interim_s: float = 0.0
+        self.is_current_interim: bool = False
 
     def discover_runpod_url(self) -> Optional[str]:
         """Auto-discover running RunPod endpoint via GraphQL API."""
@@ -324,8 +327,16 @@ class RunPodSTTEngine(BaseSTTEngine):
                         try:
                             async for msg in ws:
                                 data = json.loads(msg)
+                                if self.active_seg_id:
+                                    data["id"] = self.active_seg_id
+                                if self.is_current_interim:
+                                    data["status"] = "interim"
+                                else:
+                                    data["status"] = "final"
+
                                 if "col1_text" in data:
-                                    print(f"[RunPod STT] '{data['col1_text']}'")
+                                    status_tag = data.get("status", "final")
+                                    print(f"[RunPod STT] [{status_tag}] '{data['col1_text']}'")
                                 elif data.get("action") == "update_translation":
                                     print(f"[RunPod Trans] ({data.get('col_key')}): '{data.get('text')}'")
                                 await self.engine.broadcast(data)
@@ -338,6 +349,9 @@ class RunPodSTTEngine(BaseSTTEngine):
                     self.audio_buffer = bytearray()
                     self.silence_frames = 0
                     self.speech_frames = 0
+                    self.active_seg_id = None
+                    self.last_interim_s = 0.0
+                    self.is_current_interim = False
 
                     while not self.engine.restart_required:
                         if not self.engine.audio_stream.running:
@@ -380,31 +394,56 @@ class RunPodSTTEngine(BaseSTTEngine):
                         silence_ms = self.silence_frames * FRAME_DURATION_MS
                         buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)
 
-                        hard_cap = buffer_duration_s >= self.engine.max_local_chunk_s
-                        force_flush = silence_ms >= self.engine.max_silence_flush_ms
+                        is_natural_pause = (silence_ms >= self.engine.silence_threshold_ms and buffer_duration_s >= self.engine.min_local_chunk_s)
+                        is_force_flush = (silence_ms >= self.engine.max_silence_flush_ms)
+                        is_hard_ceiling = (buffer_duration_s >= self.engine.max_local_chunk_s)
+                        is_interim_interval = (
+                            (buffer_duration_s - self.last_interim_s >= self.engine.interim_chunk_s)
+                            and not is_natural_pause
+                            and not is_hard_ceiling
+                        )
 
-                        if (hard_cap or force_flush or silence_ms >= self.engine.silence_threshold_ms) and self.speech_frames > 0:
-                            if force_flush and self.speech_frames < 3:
+                        # --- Finalization Trigger (Natural Pause, Max Silence Flush, or Hard Ceiling) ---
+                        if (is_natural_pause or is_force_flush or is_hard_ceiling) and self.speech_frames > 0:
+                            if is_force_flush and self.speech_frames < 3:
                                 self.audio_buffer = bytearray()
                                 self.speech_frames = 0
                                 self.silence_frames = 0
+                                self.active_seg_id = None
+                                self.last_interim_s = 0.0
+                                self.is_current_interim = False
                                 continue
 
-                            met_speech_req = self.speech_frames >= getattr(self.engine, 'min_speech_frames', self.min_speech_frames) or ((force_flush or hard_cap) and self.speech_frames >= 3)
+                            met_speech_req = self.speech_frames >= getattr(self.engine, 'min_speech_frames', self.min_speech_frames) or ((is_force_flush or is_hard_ceiling) and self.speech_frames >= 3)
                             if not met_speech_req:
                                 continue
 
-                            if buffer_duration_s < self.engine.min_local_chunk_s and not force_flush and not hard_cap:
-                                continue
+                            if not self.active_seg_id:
+                                self.active_seg_id = f"seg_{int(time.time()*1000)}"
+                            self.is_current_interim = False
+                            reason = "hard_ceiling" if is_hard_ceiling else ("force_flush" if is_force_flush else f"pause_{silence_ms}ms")
+                            print(f"[RunPod] Finalizing {self.active_seg_id} ({reason}, dur={buffer_duration_s:.1f}s, speech={self.speech_frames}f)...")
 
-                            print(f"[RunPod] Sending {buffer_duration_s:.1f}s of audio with {self.speech_frames} speech frames...")
                             audio_np = np.frombuffer(self.audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
-
                             await ws.send(audio_np.tobytes())
 
                             self.audio_buffer = bytearray()
                             self.silence_frames = 0
                             self.speech_frames = 0
+                            self.active_seg_id = None
+                            self.last_interim_s = 0.0
+
+                        # --- Incremental Interim Trigger (Option B: continuous speech reaching interim interval) ---
+                        elif is_interim_interval and self.speech_frames >= getattr(self.engine, 'min_speech_frames', self.min_speech_frames):
+                            if not self.active_seg_id:
+                                self.active_seg_id = f"seg_{int(time.time()*1000)}"
+                            self.is_current_interim = True
+
+                            print(f"[RunPod] Interim update for {self.active_seg_id} (dur={buffer_duration_s:.1f}s, speech={self.speech_frames}f)...")
+                            audio_np = np.frombuffer(self.audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+                            await ws.send(audio_np.tobytes())
+
+                            self.last_interim_s = buffer_duration_s
 
                     recv_task.cancel()
                     self.engine.restart_required = False

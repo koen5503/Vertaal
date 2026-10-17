@@ -1,6 +1,7 @@
 """Local Speech-to-Text engine using Apple Silicon MLX-Whisper and VAD accumulation."""
 
 import asyncio
+import difflib
 import os
 import re
 import string
@@ -135,21 +136,23 @@ def filter_anti_hallucination(
             print(f"Filtered hallucination (Partial Prompt Leakage): '{text}'")
             return None
 
-        # c) Overlapping sliding-window prefix trimmer
-        max_overlap = min(len(last_words), len(words))
-        best_overlap = 0
-        for i in range(max_overlap, 0, -1):
-            if last_words[-i:] == words[:i]:
-                best_overlap = i
-                break
+        # c) Overlapping sliding-window / sub-sequence prompt-leak trimmer using SequenceMatcher
+        matcher = difflib.SequenceMatcher(None, last_words, words)
+        match = matcher.find_longest_match(0, len(last_words), 0, len(words))
 
-        if best_overlap > 0:
-            original_words = text.split()
-            text = " ".join(original_words[best_overlap:])
+        is_large_leak = (match.size >= 4 and match.b <= 4)
+        is_tail_overlap = (match.size >= 1 and match.b == 0 and match.a + match.size == len(last_words))
+        is_tail_sub = (match.size >= 2 and match.b <= 4 and match.a + match.size == len(last_words))
+
+        if is_large_leak or is_tail_overlap or is_tail_sub:
+            orig_words = text.split()
+            cut_idx = match.b + match.size
+            trimmed_words = orig_words[cut_idx:]
+            text = " ".join(trimmed_words).strip()
             if not text:
-                print("Filtered hallucination (100% Leaked Prefix Drop)")
+                print(f"Filtered hallucination (100% Leaked Prompt Drop): matched {match.size} words")
                 return None
-            print(f"Trimmed {best_overlap} leaked prefix words. Kept: '{text}'")
+            print(f"Trimmed {match.size} leaked prompt words (matched at idx {match.b}). Kept: '{text}'")
 
             clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
             clean_text = " ".join(clean_text.split())
@@ -166,45 +169,6 @@ def filter_anti_hallucination(
             ):
                 print(f"Filtered hallucination (noise/broadcaster credit after trim): '{text}'")
                 return None
-
-        # d) Echoed tail sub-sequence trimmer (handles inserted filler/noise before echoed tail across chunks)
-        elif len(last_words) >= 2:
-            sub_cut = 0
-            for k in range(min(6, len(last_words)), 1, -1):
-                tail_sub = last_words[-k:]
-                search_limit = min(len(words) - k + 1, 6)
-                found = False
-                for start_idx in range(search_limit):
-                    if words[start_idx:start_idx + k] == tail_sub:
-                        sub_cut = start_idx + k
-                        found = True
-                        break
-                if found:
-                    break
-
-            if sub_cut > 0:
-                original_words = text.split()
-                text = " ".join(original_words[sub_cut:])
-                if not text:
-                    print(f"Filtered hallucination (100% Echoed Sub-sequence Drop, cut {sub_cut} words)")
-                    return None
-                print(f"Trimmed {sub_cut} echoed sub-sequence words. Kept: '{text}'")
-
-                clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
-                clean_text = " ".join(clean_text.split())
-                words = clean_text.split()
-                if not words:
-                    return None
-
-                clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
-                if (
-                    clean_text in NOISE_HALLUCINATION_PHRASES
-                    or clean_no_digits in NOISE_HALLUCINATION_PHRASES
-                    or BROADCAST_CREDIT_PATTERN.match(clean_text)
-                    or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
-                ):
-                    print(f"Filtered hallucination (noise/broadcaster credit after trim): '{text}'")
-                    return None
 
     # 1. Repetition filter
     # A. Exactly the same word repeated

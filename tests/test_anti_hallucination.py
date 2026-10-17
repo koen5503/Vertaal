@@ -251,6 +251,16 @@ class TestAntiHallucination(unittest.TestCase):
         expected3 = "Laten we nu samen gaan zingen."
         self.assertEqual(filter_anti_hallucination(raw3), expected3)
 
+    # ------------------------------------------------------------------------
+    # l) Large prompt-leakage autoregressive echoes (40+ words)
+    # ------------------------------------------------------------------------
+    def test_large_prompt_leakage_with_filler_prefix_trimmed(self):
+        """When Whisper echoes an entire prior sentence (~40 words) with filler word, strip the leaked echo."""
+        prev = "Moet je je voorstellen, dan zou er ergens een redder zijn, Jezus, die het uitriep aan het kruis, het is volbracht, maar die reddende kracht zou onbereikbaar geworden zijn, of zou zich alleen maar opsluiten in dat stukje van ons aardse leven."
+        curr = "Ik moet je voorstellen, dan zou er ergens een redder zijn, Jezus, die het uitriep aan het kruis, het is volbracht, maar die reddende kracht zou onbereikbaar geworden zijn, of zou zich alleen maar opsluiten in dat stukje van ons aardse leven. Maar dat is niet zo, het is geen zeepbel, maar het is een functie."
+        expected = "Maar dat is niet zo, het is geen zeepbel, maar het is een functie."
+        self.assertEqual(filter_anti_hallucination(curr, last_transcript=prev), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

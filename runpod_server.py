@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import json
 import os
 import re
@@ -272,29 +273,18 @@ async def websocket_endpoint(websocket: WebSocket):
                             elif len(words) >= 3 and clean_text in clean_last:
                                 text = ""
                             else:
-                                max_overlap = min(len(last_words), len(words))
-                                best_overlap = 0
-                                for i in range(max_overlap, 0, -1):
-                                    if last_words[-i:] == words[:i]:
-                                        best_overlap = i
-                                        break
-                                if best_overlap > 0:
-                                    text = " ".join(text.split()[best_overlap:])
-                                elif len(last_words) >= 2:
-                                    sub_cut = 0
-                                    for k in range(min(6, len(last_words)), 1, -1):
-                                        tail_sub = last_words[-k:]
-                                        search_limit = min(len(words) - k + 1, 6)
-                                        found = False
-                                        for start_idx in range(search_limit):
-                                            if words[start_idx:start_idx + k] == tail_sub:
-                                                sub_cut = start_idx + k
-                                                found = True
-                                                break
-                                        if found:
-                                            break
-                                    if sub_cut > 0:
-                                        text = " ".join(text.split()[sub_cut:])
+                                matcher = difflib.SequenceMatcher(None, last_words, words)
+                                match = matcher.find_longest_match(0, len(last_words), 0, len(words))
+
+                                is_large_leak = (match.size >= 4 and match.b <= 4)
+                                is_tail_overlap = (match.size >= 1 and match.b == 0 and match.a + match.size == len(last_words))
+                                is_tail_sub = (match.size >= 2 and match.b <= 4 and match.a + match.size == len(last_words))
+
+                                if is_large_leak or is_tail_overlap or is_tail_sub:
+                                    orig_words = text.split()
+                                    cut_idx = match.b + match.size
+                                    trimmed_words = orig_words[cut_idx:]
+                                    text = " ".join(trimmed_words).strip()
 
                                 if text:
                                     clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()

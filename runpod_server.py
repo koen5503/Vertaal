@@ -183,16 +183,38 @@ LANG_NAMES = {
 }
 
 META_PATTERNS = [
-    r'(?i)\bthe word\s+["\'\w]+(?:\s+in\s+\w+)?\s+translates\b.*',
+    # English
+    r'(?i)\bthe word\s+["\'«„\w]+.*?\btranslates\b.*',
     r'(?i)\bhowever,?\s+without\s+context\b.*',
     r'(?i)\bplease\s+provide\s+(?:the\s+)?(?:full|more|additional)\b.*',
     r'(?i)\bwithout\s+(?:more\s+)?context\b.*',
     r'(?i)\bas\s+per\s+your\s+strict\s+requirements\b.*',
     r'(?i)\bfor\s+example,?\s+if\s+the\s+full\s+sentence\b.*',
-    r'(?i)\bnote:\s*.*',
-    r'(?i)\bexplanation:\s*.*',
-    r'(?i)\bcontext:\s*.*',
-    r'(?i)\bhere\s+is\s+the\s+translation:?\s*',
+    # French
+    r'(?i)\ble mot\s+[«"\'\w]+.*?\bse traduit\b.*',
+    r'(?i)\bcependant,?\s+sans\s+contexte\b.*',
+    r'(?i)\bsans\s+(?:plus\s+de\s+)?contexte\b.*',
+    r'(?i)\bveuillez\s+fournir\b.*',
+    r'(?i)\bselon\s+vos\s+exigences\s+strictes\b.*',
+    r'(?i)\bpar\s+exemple,?\s+si\s+la\s+phrase\b.*',
+    # Dutch
+    r'(?i)\bhet woord\s+["\'\w]+.*?\bvertaalt\b.*',
+    r'(?i)\bechter,?\s+zonder\s+context\b.*',
+    r'(?i)\bzonder\s+(?:nadere\s+)?context\b.*',
+    r'(?i)\bgeef\s+alstublieft\b.*',
+    r'(?i)\bvolgens\s+uw\s+strikte\s+eisen\b.*',
+    r'(?i)\bbijvoorbeeld,?\s+als\s+de\b.*',
+    # German
+    r'(?i)\bdas wort\s+["\'„\w]+.*?\bübersetzt\b.*',
+    r'(?i)\bjedoch,?\s+ohne\s+kontext\b.*',
+    r'(?i)\bohne\s+(?:weiteren\s+)?kontext\b.*',
+    # Russian
+    r'(?i)\bслово\s+[«"\'\w]+.*?\bпереводится\b.*',
+    r'(?i)\bоднако,?\s+без\s+контекста\b.*',
+    r'(?i)\bбез\s+(?:дополнительного\s+)?контекста\b.*',
+    # Generic note markers across languages
+    r'(?i)\b(?:note|remarque|hinweis|opmerking|примечание|explanation|explication|erklärung|uitleg)\s*:.*',
+    r'(?i)\b(?:here\s+is\s+the\s+translation|voici\s+la\s+traduction|hier\s+is\s+de\s+vertaling|hier\s+ist\s+die\s+übersetzung|вот\s+перевод)\s*:?\s*',
 ]
 
 
@@ -202,9 +224,13 @@ def clean_translation_meta(text: str) -> str:
         return ""
     cleaned = text.strip()
 
-    # Strip introductory markers like "Here is the translation:"
+    # If the LLM output a multi-line response with blank line, translation is paragraph 1
+    if "\n\n" in cleaned:
+        cleaned = cleaned.split("\n\n")[0].strip()
+
+    # Strip introductory markers
     cleaned = re.sub(
-        r'(?i)^(?:here\s+is\s+the\s+translation:?\s*|translation:?\s*|translated\s+text:?\s*)',
+        r'(?i)^(?:here\s+is\s+the\s+translation:?\s*|voici\s+la\s+traduction:?\s*|translation:?\s*|traduction:?\s*|vertaling:?\s*|translated\s+text:?\s*)',
         '',
         cleaned
     ).strip()
@@ -212,7 +238,7 @@ def clean_translation_meta(text: str) -> str:
     # Find earliest trailing meta-commentary pattern
     earliest_idx = len(cleaned)
     for pat in META_PATTERNS:
-        if "here" in pat:
+        if "here" in pat or "voici" in pat or "hier" in pat:
             continue
         m = re.search(pat, cleaned)
         if m and m.start() < earliest_idx:
@@ -221,8 +247,12 @@ def clean_translation_meta(text: str) -> str:
     if earliest_idx < len(cleaned):
         cleaned = cleaned[:earliest_idx].strip()
 
-    # Strip surrounding quotes if wrapped
+    # Strip surrounding quotes if wrapped (including French « » and German „ “)
     if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1].strip()
+    elif cleaned.startswith('«') and cleaned.endswith('»'):
+        cleaned = cleaned[1:-1].strip()
+    elif cleaned.startswith('„') and cleaned.endswith('“'):
         cleaned = cleaned[1:-1].strip()
 
     return cleaned
@@ -243,16 +273,16 @@ async def translate_text(text: str, target_lang: str, source_lang: str):
     target_lang_name = LANG_NAMES.get(target_code, target_lang)
 
     system_prompt = (
-        f"You are a real-time speech subtitle translator. Translate from {source_lang_name} to {target_lang_name}.\n\n"
-        "CRITICAL TRANSLATION INSTRUCTIONS:\n"
-        "- Output ONLY the direct translation. Absolutely zero notes, explanations, disclaimers, or conversation.\n"
-        "- Translate accurately, completely, and faithfully without omissions.\n"
-        "- Never omit proper names, biblical figures (e.g. David, Jesus, Moses, Paul), locations, numbers, or clauses.\n"
-        "- Do not summarize, condense, or simplify the text.\n"
-        "- The input is real-time spoken audio and may contain pauses, sentence fragments, or trailing words (e.g. 'over.', 'en.', 'maar.').\n"
-        "- Translate incomplete thoughts and trailing words directly and literally as far as they go (e.g. 'over.' -> 'about.' or 'over.').\n"
-        "- NEVER explain words or state that context is missing. Never ask for more context.\n"
-        "- NEVER output phrases like 'However, without context...', 'The word... translates to...', or 'Please provide'."
+        f"You are an automated real-time speech subtitle translation engine for church services.\n"
+        f"Translate from {source_lang_name} to {target_lang_name}.\n\n"
+        "CORE DIRECTIVES:\n"
+        "1. You are a silent translation machine, not an assistant. You have no personality and never converse.\n"
+        f"2. Output ONLY the raw translated text in {target_lang_name}. Absolutely zero explanations, notes, intros, or conversation.\n"
+        "3. The input is live spoken audio transcribed in real-time. It frequently contains sentence fragments, pauses, and dangling words (e.g. 'over.', 'en.', 'maar.').\n"
+        f"4. When input ends on an incomplete thought or trailing word, translate those exact words directly into {target_lang_name} and stop immediately.\n"
+        "5. Never explain words, never comment on missing context or grammar, and never ask for more context in any language.\n"
+        "6. Translate accurately and without omissions. Never omit proper names, biblical figures (e.g. David, Jesus, Moses, Paul), locations, numbers, or clauses.\n"
+        "7. Do not summarize, condense, or simplify the text.\n"
     )
     
     try:

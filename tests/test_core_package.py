@@ -1148,9 +1148,33 @@ class TestCorePackage(unittest.TestCase):
         disclaimer_sample = "However, without context, it's impossible to provide a complete translation."
         self.assertEqual(clean_translation_meta(disclaimer_sample), "")
 
-        # 5. Surrounding quotes stripped
+        # 5. Surrounding quotes stripped (including French « » and German „ “)
         quoted_sample = '"And they talk to each other."'
         self.assertEqual(clean_translation_meta(quoted_sample), "And they talk to each other.")
+        self.assertEqual(clean_translation_meta("«Et ils se parlent.»"), "Et ils se parlent.")
+        self.assertEqual(clean_translation_meta("„Und sie reden miteinander.“"), "Und sie reden miteinander.")
+
+        # 6. Exact user French example: trailing word lecturing
+        french_sample = (
+            "Et ils lisent tout le livre d'une traite, et ils se parlent les uns aux autres. "
+            "Le mot « over » en néerlandais se traduit directement par « over » en anglais. "
+            "Cependant, sans contexte, il est impossible de fournir une traduction complète "
+            "et précise selon vos exigences strictes. Veuillez fournir la phrase ou le paragraphe "
+            "complet pour une traduction précise. Par exemple, si la phrase entière est "
+            "« De taak is over », la traduction serait : « La tâche est faite. »"
+        )
+        self.assertEqual(
+            clean_translation_meta(french_sample),
+            "Et ils lisent tout le livre d'une traite, et ils se parlent les uns aux autres."
+        )
+
+        # 7. Russian meta-commentary
+        russian_sample = "И они читают всю эту книгу. Слово «over» переводится как... Однако, без контекста невозможно перевести."
+        self.assertEqual(clean_translation_meta(russian_sample), "И они читают всю эту книгу.")
+
+        # 8. Dutch back-translation meta-commentary
+        dutch_sample = 'En ze praten met elkaar. Het woord "over" in het Nederlands vertaalt direct... Echter, zonder context is het onmogelijk.'
+        self.assertEqual(clean_translation_meta(dutch_sample), "En ze praten met elkaar.")
 
 
 if __name__ == "__main__":

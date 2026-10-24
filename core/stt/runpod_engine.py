@@ -442,10 +442,14 @@ class RunPodSTTEngine(BaseSTTEngine):
         while True:
             try:
                 print(f"Connecting to RunPod Server: {wss_url}")
-                async with websockets.connect(wss_url, ping_interval=None) as ws:
+                async with websockets.connect(wss_url, ping_interval=20, ping_timeout=60, close_timeout=10) as ws:
                     print("Connected to RunPod.")
                     self.intentional_shutdown = False
                     self.last_speech_or_heartbeat_time = time.time()
+
+                    if self.engine and hasattr(self.engine, "audio_stream") and not self.engine.audio_stream.running:
+                        print("[Audio] Starting audio stream / demo file playback now that RunPod is connected.")
+                        self.engine.audio_stream.start()
 
                     self.engine.reset_session_timer(reason="runpod_connected")
                     await ws.send(json.dumps({

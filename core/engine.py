@@ -271,9 +271,12 @@ class TranscriptionEngine:
 
     async def run(self) -> None:
         """Main loop — activates audio stream and executes selected STT engine."""
-        print("Starting Audio Stream...")
         self.reset_session_timer(reason="start_streaming")
-        self.audio_stream.start()
+        if self.pipeline_mode != "runpod" and not isinstance(self.stt_engine, RunPodSTTEngine):
+            print("Starting Audio Stream...")
+            self.audio_stream.start()
+        else:
+            print("[Engine] RunPod mode: Audio stream start deferred until WebSocket connection is established.")
         await self.stt_engine.run()
 
     async def stop(self) -> None:

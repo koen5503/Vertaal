@@ -256,8 +256,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     if last_transcript:
                         transcribe_args["initial_prompt"] = last_transcript
                         
-                    segments, info = model.transcribe(audio_np, **transcribe_args)
-                    text = "".join(segment.text for segment in segments).strip()
+                    loop = asyncio.get_running_loop()
+                    def _transcribe():
+                        segments, info = model.transcribe(audio_np, **transcribe_args)
+                        return "".join(segment.text for segment in segments).strip()
+
+                    text = await loop.run_in_executor(None, _transcribe)
                     
                     # Anti-Hallucination
                     if text:

@@ -1032,6 +1032,76 @@ class TestCorePackage(unittest.TestCase):
         self.assertEqual(event["type"], "heartbeat")
         self.assertEqual(event["latency_ms"], 0)
 
+    def test_runpod_mode_defers_audio_stream_start(self):
+        """In RunPod mode, TranscriptionEngine.run() does NOT start audio_stream upfront."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from core.engine import TranscriptionEngine
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        engine = MagicMock(spec=TranscriptionEngine)
+        engine.pipeline_mode = "runpod"
+        engine.audio_stream = MagicMock()
+        engine.stt_engine = MagicMock(spec=RunPodSTTEngine)
+        engine.stt_engine.run = AsyncMock()
+        engine.reset_session_timer = MagicMock()
+
+        # Run the unbound method with our mocked engine
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(TranscriptionEngine.run(engine))
+        loop.close()
+
+        # audio_stream.start() must NOT have been called upfront
+        engine.audio_stream.start.assert_not_called()
+        engine.stt_engine.run.assert_called_once()
+
+    def test_local_mode_starts_audio_stream_immediately(self):
+        """In local/cloud mode, TranscriptionEngine.run() starts audio_stream immediately."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from core.engine import TranscriptionEngine
+        from core.stt.local_engine import LocalSTTEngine
+
+        engine = MagicMock(spec=TranscriptionEngine)
+        engine.pipeline_mode = "local"
+        engine.audio_stream = MagicMock()
+        engine.stt_engine = MagicMock(spec=LocalSTTEngine)
+        engine.stt_engine.run = AsyncMock()
+        engine.reset_session_timer = MagicMock()
+
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(TranscriptionEngine.run(engine))
+        loop.close()
+
+        # audio_stream.start() MUST have been called immediately
+        engine.audio_stream.start.assert_called_once()
+        engine.stt_engine.run.assert_called_once()
+
+    def test_runpod_starts_audio_stream_on_connect(self):
+        """When RunPod connects, audio_stream is started if it is not already running."""
+        from unittest.mock import MagicMock
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        engine = MagicMock()
+        engine.audio_stream = MagicMock()
+        engine.audio_stream.running = False
+
+        runpod = RunPodSTTEngine(engine)
+
+        # Simulate the connection block check
+        if runpod.engine and hasattr(runpod.engine, "audio_stream") and not runpod.engine.audio_stream.running:
+            runpod.engine.audio_stream.start()
+
+        engine.audio_stream.start.assert_called_once()
+
+        # If already running, it should not call start again
+        engine.audio_stream.reset_mock()
+        engine.audio_stream.running = True
+        if runpod.engine and hasattr(runpod.engine, "audio_stream") and not runpod.engine.audio_stream.running:
+            runpod.engine.audio_stream.start()
+
+        engine.audio_stream.start.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

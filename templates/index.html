@@ -493,15 +493,16 @@
             segEl.textContent = text;
             segEl.className = `segment ${status}`;
 
+            // Ensure auto-scroll triggers on every text update (both interim and final)
+            requestAnimationFrame(() => {
+                listEl.scrollTop = listEl.scrollHeight;
+            });
+
             // If final, maybe animate or lock?
             if (status === 'final') {
                 ['source', 'trans1', 'trans2', 'trans3', 'trans4'].forEach(c => {
                     const el = segments[c][segId];
                     if (el) el.className = 'segment final';
-                });
-                // Ensure scroll happens on finalization too
-                requestAnimationFrame(() => {
-                    listEl.scrollTop = listEl.scrollHeight;
                 });
             }
         }

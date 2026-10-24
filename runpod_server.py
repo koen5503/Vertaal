@@ -1,10 +1,15 @@
 import asyncio
 import difflib
 import json
+import logging
 import os
 import re
 import string
+import threading
+import time
 from typing import Set
+import urllib.request
+
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
@@ -81,7 +86,6 @@ print(f"Loading faster-whisper model: {WHISPER_MODEL}")
 model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16")
 print("Whisper model loaded.")
 
-import logging
 logging.basicConfig(level=logging.INFO)
 
 # Global Client for Ollama
@@ -90,7 +94,6 @@ client = ollama.AsyncClient(host=OLLAMA_URL)
 # --- Automatic Shutdown Timer (Activity-Based) ---
 # Default to 90 minutes (5400 seconds) to prevent runaway costs
 MAX_RUN_TIME = int(os.getenv("MAX_RUN_TIME_SEC", "5400"))
-import time
 
 last_activity_time = time.time()
 last_logged_activity = 0.0
@@ -108,10 +111,6 @@ async def api_reset_timer():
     return {"status": "ok", "message": f"Timer reset. Next shutdown in {MAX_RUN_TIME/60:.1f} minutes."}
 
 def auto_shutdown():
-    import os
-    import json
-    import urllib.request
-    
     print(f"SHUTDOWN TIMER: Active. Server will shut down after {MAX_RUN_TIME/60:.1f} minutes of inactivity.")
     
     while True:
@@ -154,7 +153,6 @@ def auto_shutdown():
         
     os._exit(0) # Forcefully exit the process as a fallback
 
-import threading
 threading.Thread(target=auto_shutdown, daemon=True).start()
 
 async def translate_text(text: str, target_lang: str, source_lang: str):
@@ -324,7 +322,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Save context 
                     last_transcript = text[-1200:]
                     
-                    import time
                     seg_id = f"seg_{int(time.time()*1000)}"
                     
                     # Dispatch to websocket

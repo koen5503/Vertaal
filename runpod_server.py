@@ -1,8 +1,10 @@
 import asyncio
 import difflib
+import glob
 import json
 import logging
 import os
+import shutil
 import re
 import string
 import threading
@@ -81,9 +83,29 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small") # small, medium, large-v3
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "aya-expanse:8b")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
-# Load model globally on server boot (uses CUDA if available)
-print(f"Loading faster-whisper model: {WHISPER_MODEL}")
-model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16")
+def load_whisper_model(model_name: str, device: str = "cuda", compute_type: str = "float16"):
+    """Load Faster-Whisper model with self-healing recovery against partial/corrupt downloads."""
+    try:
+        print(f"Loading faster-whisper model: {model_name}")
+        return WhisperModel(model_name, device=device, compute_type=compute_type)
+    except Exception as e:
+        print(f"Warning: Failed to load faster-whisper model ({e}). Purging corrupted model cache...")
+        cache_patterns = [
+            "/workspace/huggingface/hub/models--Systran--faster-whisper*",
+            os.path.expanduser("~/.cache/huggingface/hub/models--Systran--faster-whisper*"),
+        ]
+        purged = False
+        for pattern in cache_patterns:
+            for p in glob.glob(pattern):
+                print(f"Purging corrupted cache: {p}")
+                shutil.rmtree(p, ignore_errors=True)
+                purged = True
+        if purged:
+            print("Corrupted cache purged successfully. Retrying fresh model download...")
+            return WhisperModel(model_name, device=device, compute_type=compute_type)
+        raise
+
+model = load_whisper_model(WHISPER_MODEL, device="cuda", compute_type="float16")
 print("Whisper model loaded.")
 
 logging.basicConfig(level=logging.INFO)

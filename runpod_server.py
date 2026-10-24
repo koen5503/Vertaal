@@ -234,15 +234,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     logging.error(f"JSON parse error: {e}")
                     
             elif "bytes" in message:
-                audio_bytes = message["bytes"]
-                if len(audio_bytes) > 0:
-                    global last_activity_time, last_logged_activity
-                    last_activity_time = time.time()
-                    if time.time() - last_logged_activity > 60:
-                        last_logged_activity = time.time()
-                        logging.info(f"SHUTDOWN TIMER: Active audio streaming. Auto-shutdown postponed by {MAX_RUN_TIME/60:.1f} minutes.")
-                        
-                    audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
+                try:
+                    audio_bytes = message["bytes"]
+                    if len(audio_bytes) > 0:
+                        global last_activity_time, last_logged_activity
+                        last_activity_time = time.time()
+                        if time.time() - last_logged_activity > 60:
+                            last_logged_activity = time.time()
+                            logging.info(f"SHUTDOWN TIMER: Active audio streaming. Auto-shutdown postponed by {MAX_RUN_TIME/60:.1f} minutes.")
+                            
+                        audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
                     
                     # 1. Transcribe with context
                     source_code = config["source_lang"].split("-")[0]
@@ -366,6 +367,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     tasks.append(process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id))
                         
                     await asyncio.gather(*tasks)
+                except Exception as e:
+                    logging.error(f"Error processing audio chunk: {e}", exc_info=True)
 
     except WebSocketDisconnect:
         logging.info("Client disconnected.")

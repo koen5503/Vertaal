@@ -456,13 +456,6 @@ class AudioStream:
             needs_resample = (src_rate != SAMPLE_RATE or src_channels != CHANNELS)
             print(f"Playing: {demo_name} (rate={src_rate}, channels={src_channels}, width={src_width}, resample={needs_resample})")
 
-            out_stream = self.p.open(
-                format=self.p.get_format_from_width(src_width),
-                channels=src_channels,
-                rate=src_rate,
-                output=True
-            ) if (self.p and pyaudio) else None
-
             sleep_time = CHUNK_SIZE / src_rate
 
             # In RunPod mode, gate demo file playback at 0:00 until WebSocket is connected
@@ -473,6 +466,19 @@ class AudioStream:
                 if not self.running:
                     return
                 print(f"[Audio] RunPod connected! Commencing playback of '{demo_name}' from 0:00.")
+
+            out_stream = None
+            if self.p and pyaudio:
+                try:
+                    out_stream = self.p.open(
+                        format=self.p.get_format_from_width(src_width),
+                        channels=src_channels,
+                        rate=src_rate,
+                        output=True
+                    )
+                except Exception as e:
+                    print(f"Warning: Failed to open PyAudio speaker out stream: {e}")
+                    out_stream = None
 
             data = wf.readframes(CHUNK_SIZE)
 
@@ -493,8 +499,12 @@ class AudioStream:
                     try:
                         out_stream.write(data)
                     except Exception as e:
-                        print(f"Write to PyAudio out failed: {e}")
-                        break
+                        print(f"Warning: Write to PyAudio out failed: {e}")
+                        try:
+                            out_stream.close()
+                        except Exception:
+                            pass
+                        out_stream = None
 
                 if len(data) < CHUNK_SIZE * src_width * src_channels:
                     data += b'\x00' * (CHUNK_SIZE * src_width * src_channels - len(data))

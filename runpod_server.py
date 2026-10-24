@@ -388,8 +388,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     c4_lang = config.get("target_lang_4") if config.get("enable_trans_4") else None
                     tasks.append(process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id))
                         
+                    async def _dispatch_translations(task_list):
+                        try:
+                            await asyncio.gather(*task_list)
+                        except Exception as ex:
+                            logging.error(f"Error in translation background task: {ex}", exc_info=True)
+
                     if tasks:
-                        asyncio.create_task(asyncio.gather(*tasks))
+                        asyncio.create_task(_dispatch_translations(tasks))
                 except Exception as e:
                     logging.error(f"Error processing audio chunk: {e}", exc_info=True)
 

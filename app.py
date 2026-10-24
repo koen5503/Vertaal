@@ -12,6 +12,7 @@ import signal
 import socket
 import threading
 import time
+import urllib.request
 import webbrowser
 from typing import List
 
@@ -131,8 +132,16 @@ async def startup_event():
     threading.Thread(target=start_zeroconf, daemon=True).start()
 
     def open_browser():
-        time.sleep(1.5)
-        webbrowser.open(f"http://127.0.0.1:{active_port}")
+        target_url = f"http://127.0.0.1:{active_port}"
+        for _ in range(120):
+            try:
+                with urllib.request.urlopen(target_url, timeout=1.0) as resp:
+                    if resp.status == 200:
+                        break
+            except Exception:
+                pass
+            time.sleep(0.5)
+        webbrowser.open(target_url)
 
     threading.Thread(target=open_browser, daemon=True).start()
 

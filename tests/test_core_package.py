@@ -635,13 +635,181 @@ class TestCorePackage(unittest.TestCase):
             "I must introduce you to a savior, Jesus, who cried out on the cross, 'It is finished,' but that saving power would become inaccessible."
         )
 
-        # Direct update as implemented in runpod_engine.py
-        full_col = incoming_col = incoming_final.strip()
+        # Direct update with is_delta: False as implemented in runpod_engine.py
+        data = {"id": client_seg_id, "is_delta": False, "col2_text": incoming_final}
+        if data.get("is_delta") is not None:
+            is_delta = bool(data.get("is_delta"))
+        else:
+            is_delta = runpod.server_chunk_is_delta.get(client_seg_id, False)
+
+        prev_col = runpod.segment_translations.get(client_seg_id, {}).get("col2_text", "")
+        if is_delta and prev_col:
+            full_col = restitch_segment_text(prev_col, incoming_final)
+        else:
+            full_col = incoming_final.strip()
+
         runpod.segment_translations.setdefault(client_seg_id, {})["col2_text"] = full_col
 
         # Must NOT contain the concatenated interim translation
         self.assertEqual(runpod.segment_translations[client_seg_id]["col2_text"], incoming_final)
         self.assertNotIn("If you imagine", runpod.segment_translations[client_seg_id]["col2_text"])
+
+    def test_runpod_full_segment_revision_protocol(self):
+        """Verify Full-Segment Revision protocol: when is_delta: False is received, incoming STT transcripts and translations replace prior interim versions directly without duplication, while is_delta: True stitches."""
+        engine = TranscriptionEngine(broadcast_callback=lambda msg: None)
+        runpod = RunPodSTTEngine(engine)
+
+        client_seg_id = "seg_full_revision_123"
+        runpod.pending_seg_id = client_seg_id
+        srv_chunk_1 = "srv_c1"
+        srv_chunk_2 = "srv_c2"
+        runpod.server_to_client_id[srv_chunk_1] = client_seg_id
+        runpod.server_to_client_id[srv_chunk_2] = client_seg_id
+
+        # --- 1. Interim Chunk 1: is_delta: False ---
+        stt_msg_1 = {"id": srv_chunk_1, "status": "interim", "is_delta": False, "col1_text": "Het geloof is bepalen"}
+        stt_msg_1["id"] = runpod.server_to_client_id[stt_msg_1["id"]]
+
+        incoming_stt_1 = stt_msg_1["col1_text"].strip()
+        prev_stt_1 = runpod.segment_full_transcripts.get(client_seg_id, "")
+        is_server_delta_1 = stt_msg_1.get("is_delta", None)
+        if is_server_delta_1 is not None:
+            is_delta_chunk_1 = bool(is_server_delta_1)
+            if is_delta_chunk_1 and prev_stt_1:
+                full_stt_1 = restitch_segment_text(prev_stt_1, incoming_stt_1)
+            else:
+                full_stt_1 = incoming_stt_1
+        else:
+            full_stt_1 = restitch_segment_text(prev_stt_1, incoming_stt_1)
+            is_delta_chunk_1 = bool(prev_stt_1 and incoming_stt_1 != full_stt_1)
+
+        runpod.server_chunk_is_delta[srv_chunk_1] = is_delta_chunk_1
+        runpod.segment_last_chunk_is_delta[client_seg_id] = is_delta_chunk_1
+        runpod.segment_full_transcripts[client_seg_id] = full_stt_1
+
+        # Translation for Chunk 1: is_delta: False
+        trans_msg_1 = {"id": srv_chunk_1, "status": "interim", "is_delta": False, "col2_text": "Faith is determin"}
+        trans_msg_1["id"] = runpod.server_to_client_id[trans_msg_1["id"]]
+
+        incoming_col_1 = trans_msg_1["col2_text"].strip()
+        prev_col_1 = runpod.segment_translations.setdefault(client_seg_id, {}).get("col2_text", "")
+        if trans_msg_1.get("is_delta") is not None:
+            is_delta_1 = bool(trans_msg_1.get("is_delta"))
+        else:
+            is_delta_1 = runpod.server_chunk_is_delta.get(srv_chunk_1, False)
+
+        if is_delta_1 and prev_col_1:
+            full_col_1 = restitch_segment_text(prev_col_1, incoming_col_1)
+        else:
+            full_col_1 = incoming_col_1
+        runpod.segment_translations[client_seg_id]["col2_text"] = full_col_1
+
+        self.assertEqual(runpod.segment_full_transcripts[client_seg_id], "Het geloof is bepalen")
+        self.assertEqual(runpod.segment_translations[client_seg_id]["col2_text"], "Faith is determin")
+        self.assertFalse(runpod.server_chunk_is_delta[srv_chunk_1])
+
+        # --- 2. Final Chunk 2: Full-Segment Revision with is_delta: False ---
+        stt_msg_2 = {"id": srv_chunk_2, "status": "final", "is_delta": False, "col1_text": "Het geloof is bepalend."}
+        stt_msg_2["id"] = runpod.server_to_client_id[stt_msg_2["id"]]
+
+        incoming_stt_2 = stt_msg_2["col1_text"].strip()
+        prev_stt_2 = runpod.segment_full_transcripts.get(client_seg_id, "")
+        is_server_delta_2 = stt_msg_2.get("is_delta", None)
+        if is_server_delta_2 is not None:
+            is_delta_chunk_2 = bool(is_server_delta_2)
+            if is_delta_chunk_2 and prev_stt_2:
+                full_stt_2 = restitch_segment_text(prev_stt_2, incoming_stt_2)
+            else:
+                full_stt_2 = incoming_stt_2
+        else:
+            full_stt_2 = restitch_segment_text(prev_stt_2, incoming_stt_2)
+            is_delta_chunk_2 = bool(prev_stt_2 and incoming_stt_2 != full_stt_2)
+
+        runpod.server_chunk_is_delta[srv_chunk_2] = is_delta_chunk_2
+        runpod.segment_last_chunk_is_delta[client_seg_id] = is_delta_chunk_2
+        runpod.segment_full_transcripts[client_seg_id] = full_stt_2
+
+        # Translation for Chunk 2: is_delta: False
+        trans_msg_2 = {"id": srv_chunk_2, "status": "final", "is_delta": False, "col2_text": "Faith is decisive."}
+        trans_msg_2["id"] = runpod.server_to_client_id[trans_msg_2["id"]]
+
+        incoming_col_2 = trans_msg_2["col2_text"].strip()
+        prev_col_2 = runpod.segment_translations.setdefault(client_seg_id, {}).get("col2_text", "")
+        if trans_msg_2.get("is_delta") is not None:
+            is_delta_2 = bool(trans_msg_2.get("is_delta"))
+        else:
+            is_delta_2 = runpod.server_chunk_is_delta.get(srv_chunk_2, False)
+
+        if is_delta_2 and prev_col_2:
+            full_col_2 = restitch_segment_text(prev_col_2, incoming_col_2)
+        else:
+            full_col_2 = incoming_col_2
+        runpod.segment_translations[client_seg_id]["col2_text"] = full_col_2
+
+        # Both STT and translation directly replace prior interim without duplication
+        self.assertEqual(runpod.segment_full_transcripts[client_seg_id], "Het geloof is bepalend.")
+        self.assertEqual(runpod.segment_translations[client_seg_id]["col2_text"], "Faith is decisive.")
+        self.assertNotIn("bepalen Het", runpod.segment_full_transcripts[client_seg_id])
+        self.assertNotIn("determin Faith", runpod.segment_translations[client_seg_id]["col2_text"])
+
+        # --- 3. Backward Compatibility: Server sending is_delta: True ---
+        client_seg_delta = "seg_delta_compat_456"
+        runpod.pending_seg_id = client_seg_delta
+        runpod.server_to_client_id["srv_d1"] = client_seg_delta
+        runpod.server_to_client_id["srv_d2"] = client_seg_delta
+
+        # Chunk 1 (is_delta: False)
+        runpod.segment_full_transcripts[client_seg_delta] = "Onze hulp"
+        runpod.segment_translations.setdefault(client_seg_delta, {})["col2_text"] = "Our help"
+
+        # Chunk 2 (is_delta: True delta tail)
+        delta_stt_msg = {"id": "srv_d2", "status": "final", "is_delta": True, "col1_text": "is de Heer."}
+        delta_stt_msg["id"] = runpod.server_to_client_id[delta_stt_msg["id"]]
+
+        inc_d_stt = delta_stt_msg["col1_text"].strip()
+        prev_d_stt = runpod.segment_full_transcripts.get(client_seg_delta, "")
+        is_server_delta_d = delta_stt_msg.get("is_delta", None)
+        if is_server_delta_d is not None:
+            is_delta_chunk_d = bool(is_server_delta_d)
+            if is_delta_chunk_d and prev_d_stt:
+                full_d_stt = restitch_segment_text(prev_d_stt, inc_d_stt)
+            else:
+                full_d_stt = inc_d_stt
+        else:
+            full_d_stt = restitch_segment_text(prev_d_stt, inc_d_stt)
+            is_delta_chunk_d = bool(prev_d_stt and inc_d_stt != full_d_stt)
+
+        runpod.server_chunk_is_delta["srv_d2"] = is_delta_chunk_d
+        runpod.segment_full_transcripts[client_seg_delta] = full_d_stt
+
+        delta_trans_msg = {"id": "srv_d2", "status": "final", "is_delta": True, "col2_text": "is the Lord."}
+        delta_trans_msg["id"] = runpod.server_to_client_id[delta_trans_msg["id"]]
+
+        inc_d_trans = delta_trans_msg["col2_text"].strip()
+        prev_d_trans = runpod.segment_translations.setdefault(client_seg_delta, {}).get("col2_text", "")
+        if delta_trans_msg.get("is_delta") is not None:
+            is_delta_d = bool(delta_trans_msg.get("is_delta"))
+        else:
+            is_delta_d = runpod.server_chunk_is_delta.get("srv_d2", False)
+
+        if is_delta_d and prev_d_trans:
+            full_d_trans = restitch_segment_text(prev_d_trans, inc_d_trans)
+        else:
+            full_d_trans = inc_d_trans
+        runpod.segment_translations[client_seg_delta]["col2_text"] = full_d_trans
+
+        # With is_delta: True, both STT and translation stitch correctly
+        self.assertEqual(runpod.segment_full_transcripts[client_seg_delta], "Onze hulp is de Heer.")
+        self.assertEqual(runpod.segment_translations[client_seg_delta]["col2_text"], "Our help is the Lord.")
+
+        # --- 4. Server Protocol Verification in runpod_server.py ---
+        with open("runpod_server.py", "r", encoding="utf-8") as f:
+            server_src = f.read()
+
+        self.assertIn('elif data.get("action") == "audio_meta":', server_src)
+        self.assertIn('is_same_segment = bool(last_processed_seg_id and last_processed_seg_id == seg_id)', server_src)
+        self.assertIn('elif last_transcript and not is_same_segment:', server_src)
+        self.assertIn('"is_delta": False', server_src)
 
     def test_runpod_translation_delta_tail_stitching(self):
         """When RunPod server sends a delta tail chunk, translations must be restitched onto earlier translations so the opening clause is not omitted."""

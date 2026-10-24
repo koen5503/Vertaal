@@ -563,7 +563,18 @@ class RunPodSTTEngine(BaseSTTEngine):
                                 if "col1_text" in data and client_seg_id:
                                     incoming_text = data["col1_text"].strip()
                                     prev_text = self.segment_full_transcripts.get(client_seg_id, "")
-                                    full_text = restitch_segment_text(prev_text, incoming_text)
+
+                                    # Determine if RunPod server trimmed overlap on this chunk (making STT and its translations delta tails)
+                                    is_server_delta = data.get("is_delta", None)
+                                    if is_server_delta is not None:
+                                        is_delta_chunk = bool(is_server_delta)
+                                        if is_delta_chunk and prev_text:
+                                            full_text = restitch_segment_text(prev_text, incoming_text)
+                                        else:
+                                            full_text = incoming_text
+                                    else:
+                                        full_text = restitch_segment_text(prev_text, incoming_text)
+                                        is_delta_chunk = bool(prev_text and incoming_text != full_text)
 
                                     # For ongoing segments, last_transcript prompt leakage was already handled on chunk 1
                                     effective_last_transcript = "" if prev_text else self.last_transcript
@@ -583,8 +594,6 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                                     self.engine.extend_session_window(reason="stt_activity")
 
-                                    # Determine if RunPod server trimmed overlap on this chunk (making STT and its translations delta tails)
-                                    is_delta_chunk = bool(prev_text and incoming_text != full_text)
                                     if server_id:
                                         self.server_chunk_is_delta[server_id] = is_delta_chunk
                                         if len(self.server_chunk_is_delta) > 200:
@@ -605,10 +614,13 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                                 # Translation columns: stitch if delta tail, replace directly if full revision
                                 if client_seg_id:
-                                    is_delta = self.server_chunk_is_delta.get(
-                                        server_id,
-                                        self.segment_last_chunk_is_delta.get(client_seg_id, False)
-                                    ) if server_id else self.segment_last_chunk_is_delta.get(client_seg_id, False)
+                                    if data.get("is_delta") is not None:
+                                        is_delta = bool(data.get("is_delta"))
+                                    else:
+                                        is_delta = self.server_chunk_is_delta.get(
+                                            server_id,
+                                            self.segment_last_chunk_is_delta.get(client_seg_id, False)
+                                        ) if server_id else self.segment_last_chunk_is_delta.get(client_seg_id, False)
 
                                     for col_key in ("col2_text", "col3_text", "col4_text", "col5_text"):
                                         if col_key in data and data[col_key]:
@@ -817,6 +829,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                             print(f"[RunPod] Finalizing {seg_id} ({reason}, dur={buffer_duration_s:.1f}s, speech={self.speech_frames}f)...")
 
                             audio_np = np.frombuffer(self.audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+                            await ws.send(json.dumps({"action": "audio_meta", "seg_id": seg_id, "status": "final"}))
                             await ws.send(audio_np.tobytes())
                             await ws.send(json.dumps({"action": "reset_timer"}))
                             self.engine.extend_session_window(reason="stt_activity")
@@ -837,6 +850,7 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                             print(f"[RunPod] Interim update for {self.active_seg_id} (dur={buffer_duration_s:.1f}s, speech={self.speech_frames}f)...")
                             audio_np = np.frombuffer(self.audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+                            await ws.send(json.dumps({"action": "audio_meta", "seg_id": self.active_seg_id, "status": "interim"}))
                             await ws.send(audio_np.tobytes())
                             await ws.send(json.dumps({"action": "reset_timer"}))
                             self.engine.extend_session_window(reason="stt_activity")

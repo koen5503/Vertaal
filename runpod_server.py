@@ -309,6 +309,9 @@ async def websocket_endpoint(websocket: WebSocket):
     
     # Track prompt context for sliding window
     last_transcript = ""
+    current_seg_id = None
+    current_status = "final"
+    last_processed_seg_id = None
     
     # Default configs
     config = {
@@ -332,6 +335,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         config.update(data)
                         logging.info(f"Server config updated: {config}")
                         reset_session_timer("Client config received")
+                    elif data.get("action") == "audio_meta":
+                        current_seg_id = data.get("seg_id")
+                        current_status = data.get("status", "final")
                     elif data.get("action") == "reset_timer":
                         reset_session_timer("Client heartbeat/timer reset")
                     elif data.get("action") == "probe":
@@ -357,6 +363,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             
                         audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
                     
+                    seg_id = current_seg_id or f"seg_{int(time.time()*1000)}"
+                    status = current_status or "final"
+                    is_same_segment = bool(last_processed_seg_id and last_processed_seg_id == seg_id)
+
                     # 1. Transcribe with context
                     source_code = config["source_lang"].split("-")[0]
                     transcribe_args = {
@@ -395,7 +405,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
                         ):
                             text = ""
-                        elif last_transcript:
+                        elif last_transcript and not is_same_segment:
                             clean_last = last_transcript.translate(str.maketrans('', '', string.punctuation)).lower()
                             last_words = clean_last.split()
                             
@@ -432,27 +442,30 @@ async def websocket_endpoint(websocket: WebSocket):
                     if not text:
                         continue
                         
-                    # Save context 
-                    last_transcript = text[-1200:]
-                    
-                    seg_id = f"seg_{int(time.time()*1000)}"
+                    last_processed_seg_id = seg_id
+                    if status == "final":
+                        last_transcript = text[-1200:]
+                        current_seg_id = None
+                        current_status = "final"
                     
                     # Dispatch to websocket
                     await websocket.send_json({
                         "id": seg_id,
-                        "status": "final",
+                        "status": status,
+                        "is_delta": False,
                         "col1_text": text
                     })
                     
                     # Dispatch parallel translation chains
-                    async def process_translation_chain(col_key_1, lang_1, col_key_2, lang_2, segment_id):
+                    async def process_translation_chain(col_key_1, lang_1, col_key_2, lang_2, segment_id, segment_status):
                         # First translation (e.g. NL -> EN)
                         text_1 = await translate_text(text, lang_1, config["source_lang"])
                         col_idx_1 = "col2_text" if col_key_1 == "trans1" else "col3_text"
                         
                         await websocket.send_json({
                             "id": segment_id,
-                            "status": "final",
+                            "status": segment_status,
+                            "is_delta": False,
                             col_idx_1: text_1
                         })
                         
@@ -462,7 +475,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             col_idx_2 = "col4_text" if col_key_2 == "trans3" else "col5_text"
                             await websocket.send_json({
                                 "id": segment_id,
-                                "status": "final",
+                                "status": segment_status,
+                                "is_delta": False,
                                 col_idx_2: text_2
                             })
 
@@ -471,12 +485,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Chain 1: trans1 -> trans3 (Back-translation 1)
                     c3_key = "trans3" if config.get("enable_trans_3") else None
                     c3_lang = config.get("target_lang_3") if config.get("enable_trans_3") else None
-                    tasks.append(process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id))
+                    tasks.append(process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status))
                     
                     # Chain 2: trans2 -> trans4 (Back-translation 2)
                     c4_key = "trans4" if config.get("enable_trans_4") else None
                     c4_lang = config.get("target_lang_4") if config.get("enable_trans_4") else None
-                    tasks.append(process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id))
+                    tasks.append(process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id, status))
                         
                     async def _dispatch_translations(task_list):
                         try:

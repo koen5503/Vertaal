@@ -163,7 +163,9 @@ class RunPodSTTEngine(BaseSTTEngine):
             with urllib.request.urlopen(req, timeout=10) as response:
                 result = json.loads(response.read())
 
-            pods = result.get('data', {}).get('myself', {}).get('pods', [])
+            data_obj = result.get('data') or {}
+            myself_obj = data_obj.get('myself') or {}
+            pods = myself_obj.get('pods') or []
             print(f"[RunPod Auto-Discovery] Found {len(pods)} pods in your account.")
 
             for pod in pods:

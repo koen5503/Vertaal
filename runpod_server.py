@@ -166,8 +166,12 @@ async def translate_text(text: str, target_lang: str, source_lang: str):
         return text
 
     prompt = (
-        f"Translate the following text from {source_code} to {target_lang}. "
-        "Do not explain, do not add quotes, just return the translated text.\n\n"
+        f"You are a professional, native translator. Translate the following text from {source_code} to {target_lang}.\n\n"
+        "Strict Requirements:\n"
+        "- Translate accurately, completely, and faithfully without omissions.\n"
+        "- Never omit proper names, biblical figures (e.g. David, Jesus, Moses, Paul), locations, numbers, or clauses.\n"
+        "- Do not summarize, condense, or simplify the text.\n"
+        "- Do not add explanations, notes, or quotes. Output ONLY the raw translation text.\n\n"
         f"Text to translate:\n{text}"
     )
     

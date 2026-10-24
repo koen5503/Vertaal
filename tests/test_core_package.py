@@ -54,6 +54,22 @@ class TestCorePackage(unittest.TestCase):
         self.assertEqual(translator.source_lang, "nl-NL")
         self.assertIsNone(translator.translate_client)
 
+    def test_translator_prompt_strict_anti_omission_rules(self):
+        """Translation prompts must enforce faithful translation without omitting proper names, figures, or clauses."""
+        import inspect
+        from core.translation import Translator
+
+        trans_src = inspect.getsource(Translator._translate_local)
+        self.assertIn("Never omit proper names", trans_src)
+        self.assertIn("biblical figures (e.g. David, Jesus, Moses, Paul)", trans_src)
+        self.assertIn("without omissions", trans_src)
+
+        with open("runpod_server.py", "r", encoding="utf-8") as f:
+            runpod_src = f.read()
+        self.assertIn("Never omit proper names", runpod_src)
+        self.assertIn("biblical figures (e.g. David, Jesus, Moses, Paul)", runpod_src)
+        self.assertIn("without omissions", runpod_src)
+
     def test_transcription_engine_lifecycle(self):
         """TranscriptionEngine initializes, loads config, and updates parameters cleanly."""
         broadcasts = []

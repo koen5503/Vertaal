@@ -95,10 +95,14 @@ class Translator:
 
         system_prompt = (
             f"You are a professional, native translator. "
-            f"Translate the provided {source_lang_name} text into {lang_name}. "
-            f"Retain the original tone and meaning perfectly. "
-            f"Provide ONLY the direct translation. "
-            f"Do not provide explanations, introductions, quotes, or markdown."
+            f"Translate the provided {source_lang_name} text into {lang_name}.\n\n"
+            f"Strict Requirements:\n"
+            f"- Translate accurately, completely, and faithfully without omissions.\n"
+            f"- Never omit proper names, biblical figures (e.g. David, Jesus, Moses, Paul), locations, numbers, or clauses.\n"
+            f"- Do not summarize, condense, or simplify the text.\n"
+            f"- Retain the original tone and meaning perfectly.\n"
+            f"- Provide ONLY the direct translation text.\n"
+            f"- Do not provide explanations, introductions, notes, quotes, or markdown."
         )
 
         try:

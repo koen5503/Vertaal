@@ -441,7 +441,16 @@
                         break;
                     }
                 }
-            } else if (data.action === 'update_translation') {
+            }
+
+            if (data.status === 'final' && data.id) {
+                ['source', 'trans1', 'trans2', 'trans3', 'trans4'].forEach(c => {
+                    const el = segments[c][data.id];
+                    if (el) el.className = 'segment final';
+                });
+            }
+
+            if (data.action === 'update_translation') {
                 const listId = `list-${data.col_key}`;
                 // Use 'final' style for async translations as they are stable
                 updateColumn(data.col_key, listId, data.id, 'final', data.text);
@@ -486,6 +495,10 @@
 
             // If final, maybe animate or lock?
             if (status === 'final') {
+                ['source', 'trans1', 'trans2', 'trans3', 'trans4'].forEach(c => {
+                    const el = segments[c][segId];
+                    if (el) el.className = 'segment final';
+                });
                 // Ensure scroll happens on finalization too
                 requestAnimationFrame(() => {
                     listEl.scrollTop = listEl.scrollHeight;

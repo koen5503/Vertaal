@@ -456,15 +456,15 @@ class RunPodSTTEngine(BaseSTTEngine):
                                     self.segment_full_transcripts[client_seg_id] = filtered_text
                                     data["col1_text"] = filtered_text
 
-                                # Re-stitch translation columns if trimmed on subsequent chunks and strip trailing credits
+                                # Direct update for translation columns (each incoming translation covers the full segment)
                                 if client_seg_id:
                                     for col_key in ("col2_text", "col3_text", "col4_text", "col5_text"):
                                         if col_key in data and data[col_key]:
                                             incoming_col = str(data[col_key]).strip()
-                                            prev_col = self.segment_translations.setdefault(client_seg_id, {}).get(col_key, "")
-                                            full_col = restitch_segment_text(prev_col, incoming_col)
+                                            # Direct update: incoming translation represents the full segment translation
+                                            full_col = incoming_col
 
-                                            # Strip trailing broadcast credits / noise artifacts from translations (multi-lingual)
+                                            # Strip trailing broadcast credits / noise artifacts
                                             cleaned_col = TAIL_HALLUCINATION_PATTERN.sub("", full_col).strip()
                                             # Also strip any trailing Gelderland / station / year variations (including Cyrillic)
                                             cleaned_col = re.sub(
@@ -477,7 +477,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                                             if cleaned_col != full_col:
                                                 print(f"[RunPod Trans] Trimmed trailing credit from {col_key}: '{full_col}' -> '{cleaned_col}'")
 
-                                            self.segment_translations[client_seg_id][col_key] = cleaned_col
+                                            self.segment_translations.setdefault(client_seg_id, {})[col_key] = cleaned_col
                                             data[col_key] = cleaned_col
 
                                 if data.get("action") == "update_translation" and "text" in data and data["text"]:

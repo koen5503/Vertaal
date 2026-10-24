@@ -341,6 +341,13 @@
             } else if (data.action === 'update_config') {
                 updateLabels(data);
             }
+            if (data.status === 'final' && data.id) {
+                ['source', 'trans1', 'trans2', 'trans3', 'trans4'].forEach(c => {
+                    const el = segments[c][data.id];
+                    if (el) el.className = 'segment final';
+                });
+            }
+
             if (data.action === 'update_translation') {
                 updateColumn(data.col_key, `list-${data.col_key}`, data.id, 'final', data.text);
             } else if (data.action === 'update_config') {
@@ -379,6 +386,10 @@
             segEl.textContent = text;
             segEl.className = `segment ${status}`;
             if (status === 'final') {
+                ['source', 'trans1', 'trans2', 'trans3', 'trans4'].forEach(c => {
+                    const el = segments[c][segId];
+                    if (el) el.className = 'segment final';
+                });
                 requestAnimationFrame(() => listEl.scrollTop = listEl.scrollHeight);
             }
         }

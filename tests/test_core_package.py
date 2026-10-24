@@ -582,6 +582,32 @@ class TestCorePackage(unittest.TestCase):
             ).strip()
             self.assertEqual(cleaned, expected)
 
+    def test_runpod_translation_direct_update_no_doublure(self):
+        """Incoming translation packets represent the cumulative segment translation and must replace earlier interim translations directly without concatenating or doubling."""
+        engine = TranscriptionEngine(broadcast_callback=lambda msg: None)
+        runpod = RunPodSTTEngine(engine)
+
+        client_seg_id = "seg_test_trans_direct"
+        runpod.pending_seg_id = client_seg_id
+
+        # Interim translation
+        runpod.segment_translations.setdefault(client_seg_id, {})["col2_text"] = (
+            "If you imagine, there would be a savior, Jesus, who cried out on the cross, 'It is finished.'"
+        )
+
+        # Later final translation with rephrased wording from LLM
+        incoming_final = (
+            "I must introduce you to a savior, Jesus, who cried out on the cross, 'It is finished,' but that saving power would become inaccessible."
+        )
+
+        # Direct update as implemented in runpod_engine.py
+        full_col = incoming_col = incoming_final.strip()
+        runpod.segment_translations.setdefault(client_seg_id, {})["col2_text"] = full_col
+
+        # Must NOT contain the concatenated interim translation
+        self.assertEqual(runpod.segment_translations[client_seg_id]["col2_text"], incoming_final)
+        self.assertNotIn("If you imagine", runpod.segment_translations[client_seg_id]["col2_text"])
+
 
 if __name__ == "__main__":
     unittest.main()

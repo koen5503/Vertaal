@@ -39,7 +39,7 @@ class TranscriptionEngine:
         self.current_seg_id = f"seg_{int(time.time()*1000)}"
         self.last_translate_time = 0.0
         self.translate_interval = int(os.getenv("TRANSLATE_INTERVAL_SEC", "10"))
-        self.silence_threshold_ms = int(os.getenv("SILENCE_THRESHOLD_MS", "300"))
+        self.silence_threshold_ms = int(os.getenv("SILENCE_THRESHOLD_MS", "500"))
         self.translate_count = 0
         self.session_start_time = time.time()
         self.MAX_DURATION_SECONDS = int(os.getenv("MAX_SESSION_MINUTES", "30")) * 60

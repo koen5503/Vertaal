@@ -116,6 +116,8 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.heartbeat_seg_ids: Set[str] = set()
         self.heartbeat_probe_sent_time: float = 0.0
         self.intentional_shutdown: bool = False
+        if self.engine and hasattr(self.engine, "audio_stream"):
+            self.engine.audio_stream.is_connected = False
 
     def discover_runpod_url(self) -> Optional[str]:
         """Auto-discover running RunPod endpoint via GraphQL API."""
@@ -438,18 +440,28 @@ class RunPodSTTEngine(BaseSTTEngine):
             print("No RUNPOD_API_KEY or RUNPOD_WSS_URL found. Defaulting to local.")
 
         loop = asyncio.get_event_loop()
+        if self.engine and hasattr(self.engine, "audio_stream"):
+            self.engine.audio_stream.is_connected = False
 
         while True:
             try:
                 print(f"Connecting to RunPod Server: {wss_url}")
-                async with websockets.connect(wss_url, ping_interval=20, ping_timeout=60, close_timeout=10) as ws:
+                async with websockets.connect(
+                    wss_url,
+                    ping_interval=30,
+                    ping_timeout=120,
+                    close_timeout=15,
+                    max_size=10_000_000,
+                ) as ws:
                     print("Connected to RunPod.")
                     self.intentional_shutdown = False
                     self.last_speech_or_heartbeat_time = time.time()
 
-                    if self.engine and hasattr(self.engine, "audio_stream") and not self.engine.audio_stream.running:
-                        print("[Audio] Starting audio stream / demo file playback now that RunPod is connected.")
-                        self.engine.audio_stream.start()
+                    if self.engine and hasattr(self.engine, "audio_stream"):
+                        self.engine.audio_stream.is_connected = True
+                        if not self.engine.audio_stream.running:
+                            print("[Audio] Starting audio stream / demo file playback now that RunPod is connected.")
+                            self.engine.audio_stream.start()
 
                     self.engine.reset_session_timer(reason="runpod_connected")
                     await ws.send(json.dumps({
@@ -799,10 +811,14 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                     recv_task.cancel()
                     self.engine.restart_required = False
+                    if self.engine and hasattr(self.engine, "audio_stream"):
+                        self.engine.audio_stream.is_connected = False
                     if not self.engine.audio_stream.running:
                         self.engine.audio_stream.start()
 
             except Exception as e:
+                if self.engine and hasattr(self.engine, "audio_stream"):
+                    self.engine.audio_stream.is_connected = False
                 print(f"RunPod Server Connection Error. Retrying in 3s... ({e})")
                 discovered = self.discover_runpod_url()
                 if discovered and discovered != wss_url:

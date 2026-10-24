@@ -140,6 +140,8 @@ class AudioStream:
         self.playback_paused = False
         self.thread = None
         self.sd_stream = None  # For sounddevice (Windows/ASIO)
+        pipeline_mode = os.getenv("PIPELINE_MODE", "local").lower()
+        self.is_connected = (pipeline_mode != "runpod")
 
         # Default to VoiceMeeter if available, else demo file
         self.current_device_index = "demo_file"
@@ -330,6 +332,8 @@ class AudioStream:
                     time.sleep(0.5)
                     continue
                 data = self.stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                if not self.is_connected:
+                    continue
                 self.queue.put(data)
             except Exception as e:
                 print(f"Audio Read Error: {e}")
@@ -349,6 +353,8 @@ class AudioStream:
             def callback(indata, frames, ctime, status):
                 if status:
                     print(f"SD Status: {status}")
+                if not self.is_connected:
+                    return
                 # indata is float32 [-1.0, 1.0], convert to int16
                 pcm = (indata[:, 0] * 32767).astype(np.int16).tobytes()
                 self.queue.put(pcm)
@@ -458,6 +464,16 @@ class AudioStream:
             ) if (self.p and pyaudio) else None
 
             sleep_time = CHUNK_SIZE / src_rate
+
+            # In RunPod mode, gate demo file playback at 0:00 until WebSocket is connected
+            if not self.is_connected:
+                print(f"[Audio] RunPod connection pending: gating demo playback of '{demo_name}' at 0:00...")
+                while self.running and not self.is_connected:
+                    time.sleep(0.05)
+                if not self.running:
+                    return
+                print(f"[Audio] RunPod connected! Commencing playback of '{demo_name}' from 0:00.")
+
             data = wf.readframes(CHUNK_SIZE)
 
             while self.running:
@@ -468,8 +484,8 @@ class AudioStream:
                     if len(data) == 0:
                         break
 
-                if self.playback_paused:
-                    time.sleep(0.1)
+                if not self.is_connected or self.playback_paused:
+                    time.sleep(0.05)
                     continue
 
                 start_t = time.time()

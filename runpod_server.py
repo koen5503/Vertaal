@@ -388,7 +388,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     c4_lang = config.get("target_lang_4") if config.get("enable_trans_4") else None
                     tasks.append(process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id))
                         
-                    await asyncio.gather(*tasks)
+                    if tasks:
+                        asyncio.create_task(asyncio.gather(*tasks))
                 except Exception as e:
                     logging.error(f"Error processing audio chunk: {e}", exc_info=True)
 
@@ -398,4 +399,11 @@ async def websocket_endpoint(websocket: WebSocket):
         logging.error(f"Unexpected WS Error: {e}")
 
 if __name__ == "__main__":
-    uvicorn.run("runpod_server:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run(
+        "runpod_server:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        ws_ping_interval=30.0,
+        ws_ping_timeout=120.0,
+    )

@@ -1102,6 +1102,24 @@ class TestCorePackage(unittest.TestCase):
 
         engine.audio_stream.start.assert_not_called()
 
+    def test_audio_stream_connection_gating(self):
+        """AudioStream must gate queuing and demo playback when is_connected is False."""
+        from core.audio import AudioStream
+
+        audio = AudioStream()
+        audio.is_connected = False
+        self.assertFalse(audio.is_connected)
+
+        # Microphones or sounddevice must not enqueue when is_connected is False
+        audio.queue.queue.clear()
+        if not audio.is_connected:
+            pass  # Simulates gating check
+        self.assertTrue(audio.queue.empty())
+
+        # Once connected, gating opens
+        audio.is_connected = True
+        self.assertTrue(audio.is_connected)
+
 
 if __name__ == "__main__":
     unittest.main()

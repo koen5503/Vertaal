@@ -190,6 +190,17 @@ async def get_viewer():
         return HTMLResponse(content=f"Error loading viewer.html: {e}", status_code=500)
 
 
+@app.get("/telemetry", response_class=HTMLResponse)
+@app.get("/telemetry/", response_class=HTMLResponse)
+async def get_telemetry():
+    try:
+        path = resource_path("templates/telemetry.html")
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        return HTMLResponse(content=f"Error loading telemetry.html: {e}", status_code=500)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -205,6 +216,8 @@ async def websocket_endpoint(websocket: WebSocket):
             "target_lang_4": engine.target_lang_4,
             "device_index": engine.audio_stream.current_device_index
         })
+        if hasattr(engine, "get_telemetry_snapshot"):
+            await websocket.send_json(engine.get_telemetry_snapshot())
         while True:
             data = await websocket.receive_text()
             try:
@@ -219,6 +232,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif msg.get("action") == "get_devices":
                     devices = engine.get_input_devices()
                     await websocket.send_json({"action": "device_list", "devices": devices})
+                elif msg.get("action") == "get_telemetry":
+                    if hasattr(engine, "get_telemetry_snapshot"):
+                        await websocket.send_json(engine.get_telemetry_snapshot())
                 elif msg.get("action") == "shutdown":
                     print("Shutdown requested from UI")
                     engine.is_paused = True

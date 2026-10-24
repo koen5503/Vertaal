@@ -145,6 +145,10 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.heartbeat_seg_ids: Set[str] = set()
         self.heartbeat_probe_sent_time: float = 0.0
         self.intentional_shutdown: bool = False
+        self.segment_sent_time: Dict[str, float] = {}
+        self.segment_stt_time: Dict[str, float] = {}
+        self.last_stt_latency_ms: Optional[int] = None
+        self.last_trans_latency_ms: Optional[int] = None
         if self.engine and hasattr(self.engine, "audio_stream"):
             self.engine.audio_stream.is_connected = False
 
@@ -612,6 +616,23 @@ class RunPodSTTEngine(BaseSTTEngine):
                                     self.segment_full_transcripts[client_seg_id] = filtered_text
                                     data["col1_text"] = filtered_text
 
+                                    sent_t = self.segment_sent_time.get(client_seg_id)
+                                    stt_latency_ms = int((time.time() - sent_t) * 1000) if sent_t else None
+                                    if stt_latency_ms is not None:
+                                        self.last_stt_latency_ms = stt_latency_ms
+                                    self.segment_stt_time[client_seg_id] = time.time()
+                                    if len(self.segment_stt_time) > 200:
+                                        oldest_tt = next(iter(self.segment_stt_time))
+                                        del self.segment_stt_time[oldest_tt]
+
+                                    await self.engine.broadcast({
+                                        "type": "telemetry",
+                                        "stt_latency_ms": stt_latency_ms,
+                                        "trans_latency_ms": self.last_trans_latency_ms,
+                                        "pod_id": self.active_pod_id,
+                                        "pipeline_mode": getattr(self.engine, "pipeline_mode", "runpod"),
+                                    })
+
                                 # Translation columns: stitch if delta tail, replace directly if full revision
                                 if client_seg_id:
                                     if data.get("is_delta") is not None:
@@ -651,6 +672,19 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                                             self.segment_translations.setdefault(client_seg_id, {})[col_key] = cleaned_col
                                             data[col_key] = cleaned_col
+
+                                            if col_key == "col2_text":
+                                                stt_t = self.segment_stt_time.get(client_seg_id)
+                                                trans_latency_ms = int((time.time() - stt_t) * 1000) if stt_t else None
+                                                if trans_latency_ms is not None:
+                                                    self.last_trans_latency_ms = trans_latency_ms
+                                                await self.engine.broadcast({
+                                                    "type": "telemetry",
+                                                    "stt_latency_ms": self.last_stt_latency_ms,
+                                                    "trans_latency_ms": trans_latency_ms,
+                                                    "pod_id": self.active_pod_id,
+                                                    "pipeline_mode": getattr(self.engine, "pipeline_mode", "runpod"),
+                                                })
 
                                 if data.get("action") == "update_translation" and "text" in data and data["text"]:
                                     full_t = str(data["text"]).strip()
@@ -724,6 +758,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                     self.last_transcript = ""
                     self.last_interim_s = 0.0
                     self.is_current_interim = False
+                    self.segment_sent_time = {}
+                    self.segment_stt_time = {}
+                    self.last_stt_latency_ms = None
+                    self.last_trans_latency_ms = None
 
                     while not self.engine.restart_required:
                         if not self.engine.audio_stream.running:
@@ -749,6 +787,16 @@ class RunPodSTTEngine(BaseSTTEngine):
                         if chunk_count % 10 == 0:
                             rms = self.engine.audio_stream.calculate_rms(chunk)
                             await self.engine.broadcast({"type": "volume", "rms": rms})
+
+                        if chunk_count % 30 == 0:
+                            silence_sec = round((self.silence_frames * FRAME_DURATION_MS) / 1000.0, 1)
+                            next_heartbeat_in = max(0, int(self.silence_heartbeat_sec - (time.time() - self.last_speech_or_heartbeat_time)))
+                            await self.engine.broadcast({
+                                "type": "telemetry_vad",
+                                "silence_sec": silence_sec,
+                                "speech_frames": self.speech_frames,
+                                "next_heartbeat_in": next_heartbeat_in,
+                            })
 
                         is_speech = self.engine.audio_stream.is_speech(chunk)
                         if is_speech:
@@ -828,6 +876,11 @@ class RunPodSTTEngine(BaseSTTEngine):
                             reason = "hard_ceiling" if is_hard_ceiling else ("force_flush" if is_force_flush else f"pause_{silence_ms}ms")
                             print(f"[RunPod] Finalizing {seg_id} ({reason}, dur={buffer_duration_s:.1f}s, speech={self.speech_frames}f)...")
 
+                            self.segment_sent_time[seg_id] = time.time()
+                            if len(self.segment_sent_time) > 200:
+                                oldest_st = next(iter(self.segment_sent_time))
+                                del self.segment_sent_time[oldest_st]
+
                             audio_np = np.frombuffer(self.audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
                             await ws.send(json.dumps({"action": "audio_meta", "seg_id": seg_id, "status": "final"}))
                             await ws.send(audio_np.tobytes())
@@ -849,6 +902,12 @@ class RunPodSTTEngine(BaseSTTEngine):
                             self.is_current_interim = True
 
                             print(f"[RunPod] Interim update for {self.active_seg_id} (dur={buffer_duration_s:.1f}s, speech={self.speech_frames}f)...")
+
+                            self.segment_sent_time[self.active_seg_id] = time.time()
+                            if len(self.segment_sent_time) > 200:
+                                oldest_st = next(iter(self.segment_sent_time))
+                                del self.segment_sent_time[oldest_st]
+
                             audio_np = np.frombuffer(self.audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
                             await ws.send(json.dumps({"action": "audio_meta", "seg_id": self.active_seg_id, "status": "interim"}))
                             await ws.send(audio_np.tobytes())

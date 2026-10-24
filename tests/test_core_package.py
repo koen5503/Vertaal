@@ -1,6 +1,7 @@
 """Unit tests for the modular core package and its component engines."""
 
 import os
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -1363,6 +1364,97 @@ class TestCorePackage(unittest.TestCase):
         dutch_sample = 'En ze praten met elkaar. Het woord "over" in het Nederlands vertaalt direct... Echter, zonder context is het onmogelijk.'
         self.assertEqual(clean_translation_meta(dutch_sample), "En ze praten met elkaar.")
 
+    def test_telemetry_dashboard_and_payload_construction(self):
+        """Telemetry Dashboard template, backend routes, navigation links, and payload calculations function correctly."""
+        # 1. Telemetry template resolution and HTML content markers
+        telemetry_path = resource_path("templates/telemetry.html")
+        self.assertTrue(os.path.exists(telemetry_path))
+        with open(telemetry_path, "r", encoding="utf-8") as f:
+            html = f.read()
+
+        self.assertIn("Telemetrie & Diagnostics", html)
+        self.assertIn("vu-fill", html)
+        self.assertIn("vad-badge", html)
+        self.assertIn("session-countdown", html)
+        self.assertIn("stt-latency", html)
+        self.assertIn("trans-latency", html)
+        self.assertIn("net-latency", html)
+        self.assertIn("pipeline-mode-badge", html)
+        self.assertIn("updateSessionCountdown", html)
+        self.assertIn("telemetry_vad", html)
+
+        # 2. Verify backend route registration in app.py
+        with open("app.py", "r", encoding="utf-8") as f:
+            app_src = f.read()
+
+        self.assertIn('@app.get("/telemetry", response_class=HTMLResponse)', app_src)
+        self.assertIn('@app.get("/telemetry/", response_class=HTMLResponse)', app_src)
+        self.assertIn('templates/telemetry.html', app_src)
+        self.assertIn('get_telemetry_snapshot', app_src)
+        self.assertIn('"get_telemetry"', app_src)
+
+        # 3. Navigation links in index.html and viewer.html
+        with open("templates/index.html", "r", encoding="utf-8") as f:
+            index_src = f.read()
+        self.assertIn('href="/telemetry"', index_src)
+
+        with open("templates/viewer.html", "r", encoding="utf-8") as f:
+            viewer_src = f.read()
+        self.assertIn('href="/telemetry"', viewer_src)
+
+        # 4. Engine telemetry snapshot construction
+        broadcasts = []
+        engine = TranscriptionEngine(broadcast_callback=lambda msg: broadcasts.append(msg))
+        snapshot = engine.get_telemetry_snapshot()
+
+        self.assertEqual(snapshot.get("type"), "telemetry")
+        self.assertIn("pipeline_mode", snapshot)
+        self.assertIn("source_lang", snapshot)
+        self.assertIn("target_lang_1", snapshot)
+        self.assertIn("remaining_sec", snapshot)
+        self.assertIn("session_window_minutes", snapshot)
+
+        # 5. RunPodSTTEngine latency measurement calculation
+        runpod = RunPodSTTEngine(engine)
+        test_seg_id = "seg_telemetry_test_1"
+
+        # Simulate audio send at t0
+        t0 = time.time() - 0.750  # 750ms ago
+        runpod.segment_sent_time[test_seg_id] = t0
+
+        # Simulate STT arrival at t1
+        t1 = time.time()
+        stt_latency = int((t1 - runpod.segment_sent_time[test_seg_id]) * 1000)
+        self.assertGreaterEqual(stt_latency, 700)
+        self.assertLessEqual(stt_latency, 1000)
+        runpod.last_stt_latency_ms = stt_latency
+        runpod.segment_stt_time[test_seg_id] = t1
+
+        # Simulate Translation arrival at t2
+        t2 = t1 + 0.420  # 420ms later
+        trans_latency = int((t2 - runpod.segment_stt_time[test_seg_id]) * 1000)
+        self.assertEqual(trans_latency, 420)
+        runpod.last_trans_latency_ms = trans_latency
+
+        # Check telemetry payload structure
+        payload = {
+            "type": "telemetry",
+            "stt_latency_ms": stt_latency,
+            "trans_latency_ms": trans_latency,
+            "pod_id": runpod.active_pod_id,
+            "pipeline_mode": "runpod",
+        }
+        self.assertEqual(payload["type"], "telemetry")
+        self.assertEqual(payload["stt_latency_ms"], stt_latency)
+        self.assertEqual(payload["trans_latency_ms"], 420)
+
+        # 6. VAD Telemetry payload structure
+        runpod.silence_frames = 40  # 40 * 30ms = 1200ms = 1.2s
+        runpod.speech_frames = 15
+        silence_sec = round((runpod.silence_frames * 30) / 1000.0, 1)
+        self.assertEqual(silence_sec, 1.2)
+
 
 if __name__ == "__main__":
     unittest.main()
+

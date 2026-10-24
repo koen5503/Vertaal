@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telemetrie & Diagnostics - Ondertitels</title>
+    <style>
+        :root {
+            --bg-primary: #121212;
+            --bg-card: #1e1e1e;
+            --bg-card-hover: #252525;
+            --text-main: #f0f0f0;
+            --text-muted: #888888;
+            --accent-blue: #007bff;
+            --accent-green: #28a745;
+            --accent-orange: #fd7e14;
+            --accent-red: #dc3545;
+            --border-color: #333333;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background-color: #1a1a1a;
+            border-bottom: 1px solid var(--border-color);
+            padding: 14px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .header-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .nav-btn {
+            color: #ddd;
+            background: #2a2a2a;
+            border: 1px solid var(--border-color);
+            padding: 6px 14px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        .nav-btn:hover {
+            background: #3a3a3a;
+            color: #fff;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            background: #2a2a2a;
+            color: var(--text-muted);
+        }
+
+        .status-badge.connected {
+            background: rgba(40, 167, 69, 0.2);
+            color: #4cd964;
+            border: 1px solid rgba(40, 167, 69, 0.4);
+        }
+
+        .status-badge.disconnected {
+            background: rgba(220, 53, 69, 0.2);
+            color: #ff453a;
+            border: 1px solid rgba(220, 53, 69, 0.4);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        main {
+            flex: 1;
+            padding: 24px;
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 12px;
+        }
+
+        .card-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            font-size: 0.9rem;
+        }
+
+        .metric-label {
+            color: var(--text-muted);
+        }
+
+        .metric-value {
+            font-weight: 600;
+            color: #f5f5f5;
+        }
+
+        /* VU Meter */
+        .vu-container {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .vu-bar-bg {
+            height: 18px;
+            background: #2a2a2a;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #333;
+            position: relative;
+        }
+
+        .vu-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #28a745 0%, #ffc107 70%, #dc3545 100%);
+            transition: width 0.08s ease-out;
+            border-radius: 5px;
+        }
+
+        /* Latency badges */
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            background: #2b2b2b;
+            color: #ddd;
+        }
+
+        .badge.fast {
+            background: rgba(40, 167, 69, 0.2);
+            color: #4cd964;
+            border: 1px solid rgba(40, 167, 69, 0.4);
+        }
+
+        .badge.normal {
+            background: rgba(253, 126, 20, 0.2);
+            color: #ff9f0a;
+            border: 1px solid rgba(253, 126, 20, 0.4);
+        }
+
+        .badge.slow {
+            background: rgba(220, 53, 69, 0.2);
+            color: #ff453a;
+            border: 1px solid rgba(220, 53, 69, 0.4);
+        }
+
+        /* Session countdown clock */
+        .countdown-display {
+            font-size: 2.2rem;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: var(--accent-blue);
+            text-align: center;
+            padding: 8px 0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .progress-bar-bg {
+            height: 8px;
+            background: #2a2a2a;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            width: 100%;
+            background: var(--accent-blue);
+            transition: width 0.5s ease;
+        }
+
+        .vad-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+
+        .vad-speech {
+            background: rgba(40, 167, 69, 0.25);
+            color: #4cd964;
+            border: 1px solid #28a745;
+        }
+
+        .vad-silence {
+            background: rgba(108, 117, 125, 0.2);
+            color: #aaa;
+            border: 1px solid #555;
+        }
+
+        footer {
+            text-align: center;
+            padding: 16px;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            border-top: 1px solid var(--border-color);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <div class="header-title">📊 Telemetrie & Diagnostics</div>
+            <div id="connection-status" class="status-badge disconnected">
+                <span class="status-dot"></span>
+                <span id="connection-text">Verbinden...</span>
+            </div>
+        </div>
+        <div class="nav-links">
+            <a href="/" class="nav-btn">← Hoofdscherm</a>
+            <a href="/viewer" class="nav-btn" target="_blank">👁 Viewer</a>
+        </div>
+    </header>
+
+    <main>
+        <div class="grid">
+            <!-- Card 1: Audio & VAD Status -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">🎙 Audio & VAD Telemetrie</div>
+                    <span id="vad-badge" class="vad-indicator vad-silence">Stilte</span>
+                </div>
+                <div class="vu-container">
+                    <div class="metric-row">
+                        <span class="metric-label">Ingangsniveau (RMS)</span>
+                        <span class="metric-value" id="rms-value">0.000</span>
+                    </div>
+                    <div class="vu-bar-bg">
+                        <div id="vu-fill" class="vu-bar-fill"></div>
+                    </div>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Stiltedekking</span>
+                    <span class="metric-value" id="silence-duration">0.0s</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Spraak Frames</span>
+                    <span class="metric-value" id="speech-frames">0 frames</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Volgende Liveness Probe</span>
+                    <span class="metric-value" id="next-heartbeat">in 60s</span>
+                </div>
+            </div>
+
+            <!-- Card 2: RunPod & Session Window -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">⏱ RunPod Sessie Venster</div>
+                    <span id="pipeline-mode-badge" class="badge">RUNPOD</span>
+                </div>
+                <div>
+                    <div class="countdown-display" id="session-countdown">15:00</div>
+                    <div class="progress-bar-bg">
+                        <div id="session-progress" class="progress-bar-fill"></div>
+                    </div>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Sliding Window</span>
+                    <span class="metric-value" id="window-status">+15m auto-verlenging bij spraak</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">RunPod Pod ID</span>
+                    <span class="metric-value" id="pod-id">-</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Sessie Status</span>
+                    <span class="metric-value" id="session-state">Actief</span>
+                </div>
+            </div>
+
+            <!-- Card 3: Latenties & Prestaties -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">⚡ Prestaties & Latentie</div>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Whisper STT Latentie</span>
+                    <span class="metric-value"><span id="stt-latency" class="badge">-</span></span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Ollama Vertaal Latentie</span>
+                    <span class="metric-value"><span id="trans-latency" class="badge">-</span></span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Netwerk Roundtrip (Ping)</span>
+                    <span class="metric-value"><span id="net-latency" class="badge">-</span></span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Totale E2E Pijplijn</span>
+                    <span class="metric-value"><span id="e2e-latency" class="badge">-</span></span>
+                </div>
+            </div>
+
+            <!-- Card 4: Pijplijn & Verbinding -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">⚙️ Configuratie & Pijplijn</div>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Pijplijn Modus</span>
+                    <span class="metric-value" id="pipeline-mode-text">RunPod Remote GPU</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Audio Ingang</span>
+                    <span class="metric-value" id="audio-device-text">Standaard Microfoon</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Brontaal</span>
+                    <span class="metric-value" id="source-lang-text">nl-NL</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Doeltalen (Live)</span>
+                    <span class="metric-value" id="target-langs-text">EN, RU</span>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        Ondertitels Real-Time Speech Recognition & Translation &bull; Live Telemetry Engine
+    </footer>
+
+    <script>
+        let ws = null;
+        let countdownTimer = null;
+        let remainingSeconds = 900;
+        let initialWindowSeconds = 900;
+        let lastSttMs = 0;
+        let lastTransMs = 0;
+
+        function connect() {
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${proto}//${location.host}/ws`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                const badge = document.getElementById('connection-status');
+                badge.className = 'status-badge connected';
+                document.getElementById('connection-text').innerText = 'Verbonden';
+                ws.send(JSON.stringify({ action: "get_telemetry" }));
+            };
+
+            ws.onclose = () => {
+                const badge = document.getElementById('connection-status');
+                badge.className = 'status-badge disconnected';
+                document.getElementById('connection-text').innerText = 'Verbinding verbroken';
+                setTimeout(connect, 2000);
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket Error:", err);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                } catch (e) {
+                    console.error("JSON parse error:", e);
+                }
+            };
+        }
+
+        function handleMessage(data) {
+            // 1. Audio Volume (VU Meter)
+            if (data.type === 'volume' && typeof data.rms === 'number') {
+                const rms = data.rms;
+                document.getElementById('rms-value').innerText = rms.toFixed(4);
+                // Scale RMS logarithmically/percentually for responsive visual bar
+                const pct = Math.min(100, Math.max(0, Math.round(rms * 400)));
+                document.getElementById('vu-fill').style.width = `${pct}%`;
+            }
+
+            // 2. VAD Telemetry
+            if (data.type === 'telemetry_vad') {
+                const silenceSec = data.silence_sec || 0;
+                const speechFrames = data.speech_frames || 0;
+                const nextHb = data.next_heartbeat_in !== undefined ? data.next_heartbeat_in : 60;
+
+                document.getElementById('silence-duration').innerText = `${silenceSec.toFixed(1)}s`;
+                document.getElementById('speech-frames').innerText = `${speechFrames} frames`;
+                document.getElementById('next-heartbeat').innerText = `in ${nextHb}s`;
+
+                const vadBadge = document.getElementById('vad-badge');
+                if (speechFrames > 0 && silenceSec < 0.4) {
+                    vadBadge.className = 'vad-indicator vad-speech';
+                    vadBadge.innerText = 'Spraak actief';
+                } else {
+                    vadBadge.className = 'vad-indicator vad-silence';
+                    vadBadge.innerText = 'Stilte';
+                }
+            }
+
+            // 3. Heartbeat & Roundtrip Latency
+            if (data.type === 'heartbeat' && data.latency_ms !== undefined) {
+                const ms = data.latency_ms;
+                const el = document.getElementById('net-latency');
+                el.innerText = `${ms} ms`;
+                el.className = `badge ${ms < 100 ? 'fast' : (ms < 300 ? 'normal' : 'slow')}`;
+            }
+
+            // 4. STT & Translation Latency Telemetry
+            if (data.type === 'telemetry') {
+                if (data.stt_latency_ms !== undefined && data.stt_latency_ms !== null) {
+                    lastSttMs = data.stt_latency_ms;
+                    const el = document.getElementById('stt-latency');
+                    el.innerText = `${lastSttMs} ms`;
+                    el.className = `badge ${lastSttMs < 1000 ? 'fast' : (lastSttMs < 2500 ? 'normal' : 'slow')}`;
+                }
+
+                if (data.trans_latency_ms !== undefined && data.trans_latency_ms !== null) {
+                    lastTransMs = data.trans_latency_ms;
+                    const el = document.getElementById('trans-latency');
+                    el.innerText = `${lastTransMs} ms`;
+                    el.className = `badge ${lastTransMs < 1500 ? 'fast' : (lastTransMs < 3500 ? 'normal' : 'slow')}`;
+                }
+
+                if (lastSttMs && lastTransMs) {
+                    const e2e = lastSttMs + lastTransMs;
+                    const el = document.getElementById('e2e-latency');
+                    el.innerText = `${e2e} ms`;
+                    el.className = `badge ${e2e < 2500 ? 'fast' : (e2e < 5000 ? 'normal' : 'slow')}`;
+                }
+
+                if (data.pod_id) {
+                    document.getElementById('pod-id').innerText = data.pod_id;
+                }
+
+                if (data.pipeline_mode) {
+                    const mode = data.pipeline_mode.toUpperCase();
+                    document.getElementById('pipeline-mode-badge').innerText = mode;
+                    document.getElementById('pipeline-mode-text').innerText = mode;
+                }
+
+                if (data.source_lang) {
+                    document.getElementById('source-lang-text').innerText = data.source_lang;
+                }
+
+                if (data.target_lang_1 || data.target_lang_2) {
+                    const langs = [data.target_lang_1, data.target_lang_2].filter(Boolean).map(l => l.toUpperCase());
+                    document.getElementById('target-langs-text').innerText = langs.join(', ');
+                }
+
+                if (data.remaining_sec !== undefined) {
+                    remainingSeconds = data.remaining_sec;
+                    updateSessionCountdown();
+                }
+            }
+
+            // 5. Session Timer Updates
+            if (data.type === 'session_timer' && typeof data.remaining_sec === 'number') {
+                remainingSeconds = data.remaining_sec;
+                updateSessionCountdown();
+            }
+
+            // 6. Config Initializer
+            if (data.action === 'init_config') {
+                if (data.source_lang) document.getElementById('source-lang-text').innerText = data.source_lang;
+                const t1 = data.target_lang_1 ? data.target_lang_1.toUpperCase() : 'EN';
+                const t2 = data.target_lang_2 ? data.target_lang_2.toUpperCase() : 'RU';
+                document.getElementById('target-langs-text').innerText = `${t1}, ${t2}`;
+                if (data.device_index !== undefined) {
+                    document.getElementById('audio-device-text').innerText = `Device #${data.device_index}`;
+                }
+            }
+
+            // 7. Auto pause notice
+            if (data.action === 'auto_paused') {
+                document.getElementById('session-state').innerText = 'Gepauzeerd (Time-out)';
+                document.getElementById('session-countdown').innerText = '00:00';
+                document.getElementById('session-progress').style.width = '0%';
+            }
+        }
+
+        function updateSessionCountdown() {
+            const mins = Math.floor(remainingSeconds / 60);
+            const secs = remainingSeconds % 60;
+            const formatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+            document.getElementById('session-countdown').innerText = formatted;
+
+            const pct = Math.min(100, Math.max(0, (remainingSeconds / initialWindowSeconds) * 100));
+            document.getElementById('session-progress').style.width = `${pct}%`;
+
+            if (remainingSeconds <= 0) {
+                document.getElementById('session-state').innerText = 'Verlopen / Gepauzeerd';
+            } else {
+                document.getElementById('session-state').innerText = 'Actief';
+            }
+        }
+
+        // Local 1s decrement for smooth countdown between server syncs
+        setInterval(() => {
+            if (remainingSeconds > 0) {
+                remainingSeconds--;
+                updateSessionCountdown();
+            }
+        }, 1000);
+
+        connect();
+    </script>
+</body>
+</html>

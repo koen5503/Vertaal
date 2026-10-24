@@ -286,3 +286,29 @@ class TranscriptionEngine:
             await self.stt_engine.stop()
         elif hasattr(self.stt_engine, "stop_runpod_pod"):
             await self.stt_engine.stop_runpod_pod()
+
+    def get_telemetry_snapshot(self) -> dict:
+        """Return a snapshot of current telemetry, engine parameters, and session window."""
+        stt = getattr(self, "stt_engine", None)
+        pod_id = getattr(stt, "active_pod_id", None)
+        stt_latency_ms = getattr(stt, "last_stt_latency_ms", None)
+        trans_latency_ms = getattr(stt, "last_trans_latency_ms", None)
+        remaining_sec = max(0, int(self.session_expiry_time - time.time())) if self.session_expiry_time else 0
+        return {
+            "type": "telemetry",
+            "pod_id": pod_id,
+            "stt_latency_ms": stt_latency_ms,
+            "trans_latency_ms": trans_latency_ms,
+            "pipeline_mode": getattr(self, "pipeline_mode", "local"),
+            "source_lang": self.source_lang,
+            "target_lang_1": self.target_lang_1,
+            "target_lang_2": self.target_lang_2,
+            "target_lang_3": self.target_lang_3,
+            "target_lang_4": self.target_lang_4,
+            "device_index": getattr(self.audio_stream, "current_device_index", None),
+            "remaining_sec": remaining_sec,
+            "session_window_minutes": getattr(self, "session_window_minutes", 15),
+            "session_expiry_time": getattr(self, "session_expiry_time", 0),
+            "session_start_time": getattr(self, "session_start_time", 0),
+            "is_paused": self.is_paused,
+        }

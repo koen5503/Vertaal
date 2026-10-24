@@ -274,3 +274,11 @@ class TranscriptionEngine:
         self.reset_session_timer(reason="start_streaming")
         self.audio_stream.start()
         await self.stt_engine.run()
+
+    async def stop(self) -> None:
+        """Stop audio streaming and terminate any external resources (e.g. remote RunPod pod)."""
+        self.audio_stream.stop(terminate_pyaudio=True)
+        if hasattr(self.stt_engine, "stop"):
+            await self.stt_engine.stop()
+        elif hasattr(self.stt_engine, "stop_runpod_pod"):
+            await self.stt_engine.stop_runpod_pod()

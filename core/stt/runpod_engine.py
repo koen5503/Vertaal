@@ -84,11 +84,15 @@ def restitch_segment_text(prev_text: str, incoming_text: str) -> str:
     return f"{prev_text} {incoming_text.strip()}".strip()
 
 
+RUNPOD_OVERRIDE_CMD = "[ -f /workspace/runpod_server.py ] && cp -f /workspace/runpod_server.py /app/runpod_server.py; rm -rf /workspace/huggingface/hub/models--Systran--faster-whisper* && exec /app/start.sh"
+
+
 class RunPodSTTEngine(BaseSTTEngine):
     """RunPod remote streaming engine with auto-discovery and deployment."""
 
     def __init__(self, engine):
         self.engine = engine
+        self.active_pod_id: Optional[str] = None
         self.audio_buffer = bytearray()
         self.silence_frames = 0
         self.speech_frames = 0
@@ -176,10 +180,12 @@ class RunPodSTTEngine(BaseSTTEngine):
                         if ip and port_map.get('isIpPublic') and public_port:
                             link = f"ws://{ip}:{public_port}/stream"
                             print(f"[RunPod Auto-Discovery] Found TCP Link: {link}")
+                            self.active_pod_id = pod_id
                             return link
                         else:
                             link = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
                             print(f"[RunPod Auto-Discovery] Found WSS HTTP Proxy Link: {link}")
+                            self.active_pod_id = pod_id
                             return link
 
             print("[RunPod Auto-Discovery] No running pod with port 8000 found.")
@@ -223,7 +229,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                         "global": [{"volumeId": volume_id, "path": "/workspace"}]
                     },
                     "entrypoint": ["/bin/bash", "-c"],
-                    "cmd": ["rm -rf /workspace/huggingface/hub/models--Systran--faster-whisper* && exec /app/start.sh"]
+                    "cmd": [RUNPOD_OVERRIDE_CMD]
                 }
                 data = json.dumps(payload).encode('utf-8')
                 req = urllib.request.Request(v2_url, data=data, headers=v2_headers, method="POST")
@@ -232,6 +238,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                     with urllib.request.urlopen(req, timeout=15) as f:
                         res = json.loads(f.read().decode('utf-8'))
                         pod_id = res.get("id") or (res.get("data", {}).get("id") if isinstance(res.get("data"), dict) else None)
+                        if pod_id:
+                            self.active_pod_id = str(pod_id)
                         print(f"[RunPod Deploy v2] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
                         return True
                 except urllib.error.HTTPError as he:
@@ -287,6 +295,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                                 return False
 
                         pod_id = res.get("data", {}).get("podFindAndDeployOnDemand", {}).get("id")
+                        if pod_id:
+                            self.active_pod_id = str(pod_id)
                         print(f"[RunPod Deploy GraphQL] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
                         return True
                 except Exception as e:
@@ -332,6 +342,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                     res = json.loads(f.read().decode('utf-8'))
                     if "errors" not in res:
                         print(f"[RunPod Deploy] Successfully resumed pod {pod_id}!")
+                        self.active_pod_id = str(pod_id)
                         return True
                     else:
                         err_msg = res["errors"][0].get("message", "")
@@ -342,6 +353,53 @@ class RunPodSTTEngine(BaseSTTEngine):
 
         print("[RunPod Deploy] No paused pods could be resumed. Falling back to renting a fresh pod...")
         return await self.deploy_runpod_pod()
+
+    async def stop_runpod_pod(self) -> bool:
+        """Stop the currently active RunPod pod via GraphQL mutation to avoid runaway cloud costs."""
+        api_key = os.getenv("RUNPOD_API_KEY")
+        if not self.active_pod_id or not api_key:
+            return False
+
+        api_key = api_key.strip().strip('\'" ')
+        pod_id = self.active_pod_id
+        url = f"https://api.runpod.io/graphql?api_key={api_key}"
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        mutation = f'''
+        mutation {{
+          podStop(input: {{podId: "{pod_id}"}}) {{
+            id
+            desiredStatus
+          }}
+        }}
+        '''
+        data = json.dumps({"query": mutation}).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+        def _do_stop() -> bool:
+            try:
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    res = json.loads(response.read().decode('utf-8'))
+                    if "errors" in res:
+                        print(f"[RunPod] Error executing podStop for pod {pod_id}: {res['errors']}")
+                        return False
+                    status = res.get("data", {}).get("podStop", {}).get("desiredStatus", "EXITED")
+                    print(f"[RunPod] Sent podStop for pod {pod_id}. DesiredStatus: {status}")
+                    return True
+            except Exception as e:
+                print(f"[RunPod] Failed to stop pod {pod_id}: {e}")
+                return False
+
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(None, _do_stop)
+        self.active_pod_id = None
+        return success
+
+    async def stop(self) -> None:
+        """Stop streaming and terminate remote RunPod pod."""
+        await self.stop_runpod_pod()
 
     async def run(self) -> None:
         """Stream VAD-segmented audio to remote NVIDIA RunPod engine."""
@@ -587,8 +645,9 @@ class RunPodSTTEngine(BaseSTTEngine):
                             continue
 
                         if time.time() > self.engine.session_expiry_time:
-                            print(f"[RunPod] TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing.")
+                            print(f"[RunPod] TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing & stopping pod.")
                             self.engine.is_paused = True
+                            await self.stop_runpod_pod()
                             await self.engine.broadcast({"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"})
                             continue
 

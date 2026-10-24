@@ -773,6 +773,130 @@ class TestCorePackage(unittest.TestCase):
         # Verify condition
         self.assertTrue(time.time() > engine.session_expiry_time)
 
+    def test_runpod_stop_pod_mutation_payload(self):
+        """stop_runpod_pod sends the correct podStop GraphQL mutation with podId and resets active_pod_id."""
+        import asyncio
+        import json
+        from unittest.mock import MagicMock, patch
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+        runpod.active_pod_id = "pod-xyz-123"
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "data": {"podStop": {"id": "pod-xyz-123", "desiredStatus": "EXITED"}}
+        }).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_api_key"}):
+            with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+                loop = asyncio.new_event_loop()
+                success = loop.run_until_complete(runpod.stop_runpod_pod())
+                loop.close()
+
+                self.assertTrue(success)
+                self.assertIsNone(runpod.active_pod_id)
+
+                # Verify payload sent to RunPod GraphQL API
+                sent_req = mock_urlopen.call_args[0][0]
+                sent_body = json.loads(sent_req.data.decode("utf-8"))
+                self.assertIn("podStop", sent_body["query"])
+                self.assertIn("pod-xyz-123", sent_body["query"])
+
+    def test_runpod_active_pod_id_tracking(self):
+        """active_pod_id is tracked on auto-discovery and on pod deployment."""
+        import asyncio
+        import json
+        from unittest.mock import MagicMock, patch
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+        self.assertIsNone(runpod.active_pod_id)
+
+        # 1. Discovery tracking
+        discovery_payload = {
+            "data": {
+                "myself": {
+                    "pods": [{
+                        "id": "pod-disc-456",
+                        "name": "ondertitels-gpu",
+                        "desiredStatus": "RUNNING",
+                        "runtime": {
+                            "ports": [{
+                                "ip": "100.200.50.1",
+                                "isIpPublic": True,
+                                "privatePort": 8000,
+                                "publicPort": 18000,
+                                "type": "tcp"
+                            }]
+                        }
+                    }]
+                }
+            }
+        }
+        mock_disc_resp = MagicMock()
+        mock_disc_resp.read.return_value = json.dumps(discovery_payload).encode("utf-8")
+        mock_disc_resp.__enter__.return_value = mock_disc_resp
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key"}):
+            with patch("urllib.request.urlopen", return_value=mock_disc_resp):
+                url = runpod.discover_runpod_url()
+                self.assertEqual(url, "ws://100.200.50.1:18000/stream")
+                self.assertEqual(runpod.active_pod_id, "pod-disc-456")
+
+        # 2. Deployment tracking (REST API v2)
+        mock_deploy_resp = MagicMock()
+        mock_deploy_resp.read.return_value = json.dumps({"id": "pod-dep-789"}).encode("utf-8")
+        mock_deploy_resp.__enter__.return_value = mock_deploy_resp
+
+        with patch.dict(os.environ, {
+            "RUNPOD_API_KEY": "fake_key",
+            "RUNPOD_TEMPLATE_ID": "tmpl-1",
+            "RUNPOD_VOLUME_ID": "cmu-vol-1",
+        }):
+            with patch("urllib.request.urlopen", return_value=mock_deploy_resp):
+                loop = asyncio.new_event_loop()
+                deployed = loop.run_until_complete(runpod.deploy_runpod_pod())
+                loop.close()
+
+                self.assertTrue(deployed)
+                self.assertEqual(runpod.active_pod_id, "pod-dep-789")
+
+    def test_runpod_override_cmd_in_deployment_payload(self):
+        """deploy_runpod_pod embeds /workspace/runpod_server.py override in container startup cmd."""
+        import asyncio
+        import json
+        from unittest.mock import MagicMock, patch
+        from core.stt.runpod_engine import RunPodSTTEngine, RUNPOD_OVERRIDE_CMD
+
+        self.assertIn("[ -f /workspace/runpod_server.py ]", RUNPOD_OVERRIDE_CMD)
+        self.assertIn("cp -f /workspace/runpod_server.py /app/runpod_server.py", RUNPOD_OVERRIDE_CMD)
+        self.assertIn("exec /app/start.sh", RUNPOD_OVERRIDE_CMD)
+
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"id": "pod-check-override"}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch.dict(os.environ, {
+            "RUNPOD_API_KEY": "fake_key",
+            "RUNPOD_TEMPLATE_ID": "tmpl-1",
+            "RUNPOD_VOLUME_ID": "cmu-vol-1",
+        }):
+            with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(runpod.deploy_runpod_pod())
+                loop.close()
+
+                sent_req = mock_urlopen.call_args[0][0]
+                payload = json.loads(sent_req.data.decode("utf-8"))
+                self.assertEqual(payload["cmd"], [RUNPOD_OVERRIDE_CMD])
+
 
 if __name__ == "__main__":
     unittest.main()

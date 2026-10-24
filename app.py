@@ -147,6 +147,16 @@ def shutdown_event():
     except Exception:
         pass
 
+    if hasattr(engine.stt_engine, "stop_runpod_pod") and getattr(engine.stt_engine, "active_pod_id", None):
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(engine.stt_engine.stop_runpod_pod())
+            else:
+                loop.run_until_complete(engine.stt_engine.stop_runpod_pod())
+        except Exception as e:
+            print(f"[Shutdown] Notice: could not stop pod synchronously: {e}")
+
     engine.audio_stream.stop(terminate_pyaudio=True)
 
 

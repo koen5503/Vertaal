@@ -97,6 +97,8 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.pending_seg_id: Optional[str] = None
         self.pending_status: str = "final"
         self.server_to_client_id: Dict[str, str] = {}
+        self.server_chunk_is_delta: Dict[str, bool] = {}
+        self.segment_last_chunk_is_delta: Dict[str, bool] = {}
         self.segment_full_transcripts: Dict[str, str] = {}
         self.segment_translations: Dict[str, Dict[str, str]] = {}
         self.segment_status: Dict[str, str] = {}
@@ -448,6 +450,18 @@ class RunPodSTTEngine(BaseSTTEngine):
                                             self.suppressed_seg_ids.discard(oldest_suppressed)
                                         continue
 
+                                    # Determine if RunPod server trimmed overlap on this chunk (making STT and its translations delta tails)
+                                    is_delta_chunk = bool(prev_text and incoming_text != full_text)
+                                    if server_id:
+                                        self.server_chunk_is_delta[server_id] = is_delta_chunk
+                                        if len(self.server_chunk_is_delta) > 200:
+                                            oldest_chunk = next(iter(self.server_chunk_is_delta))
+                                            del self.server_chunk_is_delta[oldest_chunk]
+                                    self.segment_last_chunk_is_delta[client_seg_id] = is_delta_chunk
+                                    if len(self.segment_last_chunk_is_delta) > 200:
+                                        oldest_seg = next(iter(self.segment_last_chunk_is_delta))
+                                        del self.segment_last_chunk_is_delta[oldest_seg]
+
                                     if is_final:
                                         self.last_transcript = filtered_text[-1200:]
                                         if hasattr(self.engine, "last_transcript"):
@@ -456,13 +470,24 @@ class RunPodSTTEngine(BaseSTTEngine):
                                     self.segment_full_transcripts[client_seg_id] = filtered_text
                                     data["col1_text"] = filtered_text
 
-                                # Direct update for translation columns (each incoming translation covers the full segment)
+                                # Translation columns: stitch if delta tail, replace directly if full revision
                                 if client_seg_id:
+                                    is_delta = self.server_chunk_is_delta.get(
+                                        server_id,
+                                        self.segment_last_chunk_is_delta.get(client_seg_id, False)
+                                    ) if server_id else self.segment_last_chunk_is_delta.get(client_seg_id, False)
+
                                     for col_key in ("col2_text", "col3_text", "col4_text", "col5_text"):
                                         if col_key in data and data[col_key]:
                                             incoming_col = str(data[col_key]).strip()
-                                            # Direct update: incoming translation represents the full segment translation
-                                            full_col = incoming_col
+                                            prev_col = self.segment_translations.setdefault(client_seg_id, {}).get(col_key, "")
+
+                                            if is_delta and prev_col:
+                                                # RunPod only translated the delta tail; stitch onto earlier translation
+                                                full_col = restitch_segment_text(prev_col, incoming_col)
+                                            else:
+                                                # RunPod translated the full segment (or chunk 1); direct replacement
+                                                full_col = incoming_col
 
                                             # Strip trailing broadcast credits / noise artifacts
                                             cleaned_col = TAIL_HALLUCINATION_PATTERN.sub("", full_col).strip()
@@ -539,6 +564,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                     self.pending_seg_id = None
                     self.pending_status = "final"
                     self.server_to_client_id = {}
+                    self.server_chunk_is_delta = {}
+                    self.segment_last_chunk_is_delta = {}
                     self.segment_full_transcripts = {}
                     self.segment_translations = {}
                     self.segment_status = {}

@@ -608,6 +608,55 @@ class TestCorePackage(unittest.TestCase):
         self.assertEqual(runpod.segment_translations[client_seg_id]["col2_text"], incoming_final)
         self.assertNotIn("If you imagine", runpod.segment_translations[client_seg_id]["col2_text"])
 
+    def test_runpod_translation_delta_tail_stitching(self):
+        """When RunPod server sends a delta tail chunk, translations must be restitched onto earlier translations so the opening clause is not omitted."""
+        engine = TranscriptionEngine(broadcast_callback=lambda msg: None)
+        runpod = RunPodSTTEngine(engine)
+
+        client_seg_id = "seg_test_trans_delta"
+        runpod.pending_seg_id = client_seg_id
+
+        # Chunk 1: Interim
+        srv_chunk_1 = "srv_chunk_1"
+        runpod.server_to_client_id[srv_chunk_1] = client_seg_id
+        c1_stt = "Onze hulp."
+        runpod.segment_full_transcripts[client_seg_id] = c1_stt
+        runpod.server_chunk_is_delta[srv_chunk_1] = False
+        runpod.segment_last_chunk_is_delta[client_seg_id] = False
+
+        c1_trans = "Our help."
+        runpod.segment_translations.setdefault(client_seg_id, {})["col2_text"] = c1_trans
+
+        # Chunk 2: RunPod server sends delta tail because overlap was trimmed
+        srv_chunk_2 = "srv_chunk_2"
+        runpod.server_to_client_id[srv_chunk_2] = client_seg_id
+        c2_stt_incoming = "is de Heer."
+        prev_stt = runpod.segment_full_transcripts[client_seg_id]
+        full_stt = restitch_segment_text(prev_stt, c2_stt_incoming)
+        is_delta_chunk = bool(prev_stt and c2_stt_incoming != full_stt)
+        self.assertTrue(is_delta_chunk)
+
+        runpod.server_chunk_is_delta[srv_chunk_2] = is_delta_chunk
+        runpod.segment_last_chunk_is_delta[client_seg_id] = is_delta_chunk
+        runpod.segment_full_transcripts[client_seg_id] = full_stt
+
+        # Translation arrives for chunk 2 (RunPod translated only the delta tail)
+        c2_trans_incoming = "is the Lord."
+        is_delta = runpod.server_chunk_is_delta.get(srv_chunk_2, False)
+        prev_trans = runpod.segment_translations[client_seg_id]["col2_text"]
+
+        if is_delta and prev_trans:
+            full_trans = restitch_segment_text(prev_trans, c2_trans_incoming)
+        else:
+            full_trans = c2_trans_incoming
+
+        runpod.segment_translations[client_seg_id]["col2_text"] = full_trans
+
+        # Crucial check: opening clause "Our help." MUST be preserved!
+        self.assertTrue(full_trans.startswith("Our help"))
+        self.assertTrue(full_trans.endswith("is the Lord."))
+        self.assertEqual(full_trans, "Our help. is the Lord.")
+
 
 if __name__ == "__main__":
     unittest.main()

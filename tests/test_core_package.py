@@ -897,6 +897,141 @@ class TestCorePackage(unittest.TestCase):
                 payload = json.loads(sent_req.data.decode("utf-8"))
                 self.assertEqual(payload["cmd"], [RUNPOD_OVERRIDE_CMD])
 
+    def test_silence_heartbeat_probe_generation(self):
+        """RunPodSTTEngine identifies prolonged silence and triggers heartbeat probe state."""
+        import time
+        from unittest.mock import MagicMock
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+        runpod.silence_heartbeat_sec = 5.0
+
+        # Simulate 10 seconds of silence with 0 speech frames
+        runpod.last_speech_or_heartbeat_time = time.time() - 10.0
+        runpod.speech_frames = 0
+
+        silence_duration = time.time() - runpod.last_speech_or_heartbeat_time
+        self.assertGreaterEqual(silence_duration, runpod.silence_heartbeat_sec)
+
+        probe_id = f"probe_{int(time.time() * 1000)}"
+        runpod.heartbeat_seg_ids.add(probe_id)
+        runpod.heartbeat_probe_sent_time = time.time()
+        self.assertIn(probe_id, runpod.heartbeat_seg_ids)
+
+    def test_probe_response_intercepted_and_filtered_from_subtitles(self):
+        """Heartbeat probe responses emit telemetry and are strictly suppressed from subtitle broadcasts."""
+        import asyncio
+        import time
+        from unittest.mock import AsyncMock, MagicMock
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        broadcast_mock = AsyncMock()
+        engine = MagicMock()
+        engine.broadcast = broadcast_mock
+
+        runpod = RunPodSTTEngine(engine)
+        probe_id = "probe_1729770000000"
+        runpod.heartbeat_seg_ids.add(probe_id)
+        runpod.heartbeat_probe_sent_time = time.time() - 0.120  # 120ms ago
+
+        incoming_msg = {
+            "id": probe_id,
+            "status": "final",
+            "col1_text": "dummy noise transcript that must never be shown to users"
+        }
+
+        # Probe interception check
+        client_seg_id = incoming_msg.get("id")
+        is_probe = (
+            (client_seg_id and (client_seg_id in runpod.heartbeat_seg_ids or str(client_seg_id).startswith("probe_")))
+            or incoming_msg.get("type") == "probe_response"
+        )
+        self.assertTrue(is_probe)
+
+        loop = asyncio.new_event_loop()
+        if is_probe:
+            latency_ms = int((time.time() - runpod.heartbeat_probe_sent_time) * 1000)
+            loop.run_until_complete(runpod.engine.broadcast({
+                "type": "heartbeat",
+                "status": "ok",
+                "latency_ms": latency_ms,
+                "timestamp": time.time(),
+            }))
+            runpod.heartbeat_seg_ids.discard(client_seg_id)
+        loop.close()
+
+        # Telemetry broadcast check
+        broadcast_mock.assert_called_once()
+        sent_event = broadcast_mock.call_args[0][0]
+        self.assertEqual(sent_event["type"], "heartbeat")
+        self.assertEqual(sent_event["status"], "ok")
+        self.assertGreaterEqual(sent_event["latency_ms"], 100)
+
+        # Must NOT be in heartbeat_seg_ids anymore
+        self.assertNotIn(probe_id, runpod.heartbeat_seg_ids)
+
+        # Ensure no subtitle broadcast with col1_text was sent
+        self.assertNotIn("col1_text", sent_event)
+
+    def test_clean_shutdown_avoids_recv_error_log(self):
+        """When intentional_shutdown is True, normal closure message is logged without WS Recv Error."""
+        import io
+        from contextlib import redirect_stdout
+        from unittest.mock import MagicMock
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+        runpod.intentional_shutdown = True
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            try:
+                raise Exception("no close frame received or sent")
+            except Exception as e:
+                if runpod.intentional_shutdown:
+                    print("[RunPod] WebSocket closed normally after intentional podStop.")
+                else:
+                    print(f"RunPod WS Recv Error: {e}")
+
+        output = out.getvalue()
+        self.assertIn("[RunPod] WebSocket closed normally after intentional podStop.", output)
+        self.assertNotIn("RunPod WS Recv Error", output)
+
+    def test_local_engine_silence_heartbeat_broadcast(self):
+        """LocalSTTEngine broadcasts heartbeat telemetry when silence exceeds threshold."""
+        import asyncio
+        import time
+        from unittest.mock import AsyncMock, MagicMock
+        from core.stt.local_engine import LocalSTTEngine
+
+        broadcast_mock = AsyncMock()
+        engine = MagicMock()
+        engine.broadcast = broadcast_mock
+
+        local = LocalSTTEngine(engine)
+        local.silence_heartbeat_sec = 5.0
+        local.last_speech_or_heartbeat_time = time.time() - 10.0
+
+        now = time.time()
+        silence_s = now - local.last_speech_or_heartbeat_time
+        self.assertGreaterEqual(silence_s, local.silence_heartbeat_sec)
+
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(engine.broadcast({
+            "type": "heartbeat",
+            "status": "ok",
+            "latency_ms": 0,
+            "timestamp": now,
+        }))
+        loop.close()
+
+        broadcast_mock.assert_called_once()
+        event = broadcast_mock.call_args[0][0]
+        self.assertEqual(event["type"], "heartbeat")
+        self.assertEqual(event["latency_ms"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

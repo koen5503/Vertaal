@@ -111,6 +111,11 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.last_transcript: str = ""
         self.last_interim_s: float = 0.0
         self.is_current_interim: bool = False
+        self.silence_heartbeat_sec: float = float(os.getenv("SILENCE_HEARTBEAT_SEC", "60"))
+        self.last_speech_or_heartbeat_time: float = time.time()
+        self.heartbeat_seg_ids: Set[str] = set()
+        self.heartbeat_probe_sent_time: float = 0.0
+        self.intentional_shutdown: bool = False
 
     def discover_runpod_url(self) -> Optional[str]:
         """Auto-discover running RunPod endpoint via GraphQL API."""
@@ -360,6 +365,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         if not self.active_pod_id or not api_key:
             return False
 
+        self.intentional_shutdown = True
         api_key = api_key.strip().strip('\'" ')
         pod_id = self.active_pod_id
         url = f"https://api.runpod.io/graphql?api_key={api_key}"
@@ -438,6 +444,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                 print(f"Connecting to RunPod Server: {wss_url}")
                 async with websockets.connect(wss_url, ping_interval=None) as ws:
                     print("Connected to RunPod.")
+                    self.intentional_shutdown = False
+                    self.last_speech_or_heartbeat_time = time.time()
 
                     self.engine.reset_session_timer(reason="runpod_connected")
                     await ws.send(json.dumps({
@@ -467,6 +475,24 @@ class RunPodSTTEngine(BaseSTTEngine):
                                     data["id"] = self.server_to_client_id[server_id]
 
                                 client_seg_id = data.get("id")
+
+                                # Silence heartbeat probe interception & telemetry calculation
+                                is_probe = (
+                                    (client_seg_id and (client_seg_id in self.heartbeat_seg_ids or str(client_seg_id).startswith("probe_")))
+                                    or data.get("type") == "probe_response"
+                                )
+                                if is_probe:
+                                    latency_ms = int((time.time() - self.heartbeat_probe_sent_time) * 1000) if self.heartbeat_probe_sent_time else 0
+                                    print(f"[Heartbeat] Probe returned successfully (roundtrip: {latency_ms}ms). Pipeline healthy.")
+                                    await self.engine.broadcast({
+                                        "type": "heartbeat",
+                                        "status": "ok",
+                                        "latency_ms": latency_ms,
+                                        "timestamp": time.time(),
+                                    })
+                                    if client_seg_id:
+                                        self.heartbeat_seg_ids.discard(client_seg_id)
+                                    continue
 
                                 if client_seg_id and client_seg_id in self.suppressed_seg_ids:
                                     print(f"[RunPod STT] Dropping message for suppressed segment '{client_seg_id}'")
@@ -610,9 +636,11 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                                 if len(self.finalized_segments) > 100:
                                     oldest = next(iter(self.finalized_segments))
-                                    self.finalized_segments.discard(oldest)
                         except Exception as e:
-                            print(f"RunPod WS Recv Error: {e}")
+                            if self.intentional_shutdown:
+                                print("[RunPod] WebSocket closed normally after intentional podStop.")
+                            else:
+                                print(f"RunPod WS Recv Error: {e}")
 
                     recv_task = asyncio.create_task(ws_receiver())
 
@@ -664,6 +692,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                         if is_speech:
                             self.silence_frames = 0
                             self.speech_frames += 1
+                            self.last_speech_or_heartbeat_time = time.time()
                         else:
                             self.silence_frames += 1
 
@@ -674,6 +703,28 @@ class RunPodSTTEngine(BaseSTTEngine):
                             PRE_ROLL_BYTES = 32000
                             if len(self.audio_buffer) > PRE_ROLL_BYTES:
                                 self.audio_buffer = self.audio_buffer[-PRE_ROLL_BYTES:]
+
+                            # Silence heartbeat probe trigger
+                            now = time.time()
+                            silence_s = now - self.last_speech_or_heartbeat_time
+                            if silence_s >= self.silence_heartbeat_sec:
+                                probe_id = f"probe_{int(now * 1000)}"
+                                self.heartbeat_seg_ids.add(probe_id)
+                                self.pending_seg_id = probe_id
+                                self.pending_status = "final"
+                                self.heartbeat_probe_sent_time = now
+                                self.last_speech_or_heartbeat_time = now
+                                print(f"[Heartbeat] Sent silence heartbeat probe to RunPod after {silence_s:.1f}s of silence.")
+
+                                if np is not None:
+                                    t = np.arange(16000) / 16000.0
+                                    probe_np = (0.005 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+                                    probe_bytes = probe_np.tobytes()
+                                else:
+                                    probe_bytes = b'\x00' * 32000
+
+                                await ws.send(json.dumps({"action": "probe", "id": probe_id}))
+                                await ws.send(probe_bytes)
 
                         silence_ms = self.silence_frames * FRAME_DURATION_MS
                         buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)

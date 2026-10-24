@@ -222,6 +222,8 @@ class LocalSTTEngine(BaseSTTEngine):
         self.last_transcript = ""
         self.active_seg_id: Optional[str] = None
         self.last_interim_s: float = 0.0
+        self.silence_heartbeat_sec: float = float(os.getenv("SILENCE_HEARTBEAT_SEC", "60"))
+        self.last_speech_or_heartbeat_time: float = time.time()
 
     def transcribe_buffer(self) -> Optional[str]:
         """Convert accumulated audio buffer to numpy and run mlx-whisper."""
@@ -314,6 +316,7 @@ class LocalSTTEngine(BaseSTTEngine):
             if is_speech:
                 self.silence_frames = 0
                 self.speech_frames += 1
+                self.last_speech_or_heartbeat_time = time.time()
             else:
                 self.silence_frames += 1
 
@@ -324,6 +327,18 @@ class LocalSTTEngine(BaseSTTEngine):
                 PRE_ROLL_BYTES = 32000
                 if len(self.audio_buffer) > PRE_ROLL_BYTES:
                     self.audio_buffer = self.audio_buffer[-PRE_ROLL_BYTES:]
+
+                now = time.time()
+                silence_s = now - self.last_speech_or_heartbeat_time
+                if silence_s >= self.silence_heartbeat_sec:
+                    self.last_speech_or_heartbeat_time = now
+                    print(f"[Local Heartbeat] Pipeline idle & healthy ({silence_s:.1f}s silence).")
+                    await self.engine.broadcast({
+                        "type": "heartbeat",
+                        "status": "ok",
+                        "latency_ms": 0,
+                        "timestamp": now,
+                    })
 
             silence_ms = self.silence_frames * FRAME_DURATION_MS
             buffer_duration_s = len(self.audio_buffer) / (SAMPLE_RATE * 2)

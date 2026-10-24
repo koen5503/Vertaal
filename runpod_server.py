@@ -224,6 +224,14 @@ async def websocket_endpoint(websocket: WebSocket):
                         reset_session_timer("Client config received")
                     elif data.get("action") == "reset_timer":
                         reset_session_timer("Client heartbeat/timer reset")
+                    elif data.get("action") == "probe":
+                        probe_id = data.get("id", f"probe_{int(time.time()*1000)}")
+                        reset_session_timer("Heartbeat probe")
+                        await websocket.send_json({
+                            "id": probe_id,
+                            "type": "probe_response",
+                            "status": "ok"
+                        })
                 except Exception as e:
                     logging.error(f"JSON parse error: {e}")
                     

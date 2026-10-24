@@ -23,6 +23,7 @@ except ImportError:
 from core.audio import FRAME_DURATION_MS, SAMPLE_RATE
 from core.stt.base import BaseSTTEngine
 from core.stt.local_engine import filter_anti_hallucination, TAIL_HALLUCINATION_PATTERN
+from core.translation import clean_translation_meta
 from core.utils import get_runpod_gpu_fallbacks
 
 
@@ -591,8 +592,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                                                 # RunPod translated the full segment (or chunk 1); direct replacement
                                                 full_col = incoming_col
 
+                                            # Strip LLM meta-commentary / conversational lecturing
+                                            cleaned_col = clean_translation_meta(full_col)
                                             # Strip trailing broadcast credits / noise artifacts
-                                            cleaned_col = TAIL_HALLUCINATION_PATTERN.sub("", full_col).strip()
+                                            cleaned_col = TAIL_HALLUCINATION_PATTERN.sub("", cleaned_col).strip()
                                             # Also strip any trailing Gelderland / station / year variations (including Cyrillic)
                                             cleaned_col = re.sub(
                                                 r"(?:\s*[\-\:\;]\s*|(?<=[\.\,\!\?])\s+|\s+|^)(?:tv|тв)?\s*(?:gelderland|gelreland|гельдерланд)(?:\s+\d{4})?[\.\,\!\?\s]*$",
@@ -602,14 +605,15 @@ class RunPodSTTEngine(BaseSTTEngine):
                                             ).strip()
 
                                             if cleaned_col != full_col:
-                                                print(f"[RunPod Trans] Trimmed trailing credit from {col_key}: '{full_col}' -> '{cleaned_col}'")
+                                                print(f"[RunPod Trans] Cleaned translation artifact from {col_key}: '{full_col}' -> '{cleaned_col}'")
 
                                             self.segment_translations.setdefault(client_seg_id, {})[col_key] = cleaned_col
                                             data[col_key] = cleaned_col
 
                                 if data.get("action") == "update_translation" and "text" in data and data["text"]:
                                     full_t = str(data["text"]).strip()
-                                    cleaned_t = TAIL_HALLUCINATION_PATTERN.sub("", full_t).strip()
+                                    cleaned_t = clean_translation_meta(full_t)
+                                    cleaned_t = TAIL_HALLUCINATION_PATTERN.sub("", cleaned_t).strip()
                                     cleaned_t = re.sub(
                                         r"(?:\s*[\-\:\;]\s*|(?<=[\.\,\!\?])\s+|\s+|^)(?:tv|тв)?\s*(?:gelderland|gelreland|гельдерланд)(?:\s+\d{4})?[\.\,\!\?\s]*$",
                                         "",

@@ -1120,6 +1120,38 @@ class TestCorePackage(unittest.TestCase):
         audio.is_connected = True
         self.assertTrue(audio.is_connected)
 
+    def test_clean_translation_meta_removes_commentary(self):
+        """clean_translation_meta strips LLM lecturing, disclaimers, and metadata."""
+        from core.translation import clean_translation_meta
+
+        # 1. Exact user example: trailing word lecturing
+        sample_meta = (
+            'And they read through that whole book, and they talk to each other. '
+            'The word "over" in Dutch translates directly to "over" in English. '
+            "However, without context, it's impossible to provide a complete and accurate "
+            "translation as per your strict requirements. Please provide the full sentence "
+            'or paragraph for a precise translation. For example, if the full sentence is '
+            '"De taak is over," the translation would be "The task is done.'
+        )
+        cleaned = clean_translation_meta(sample_meta)
+        self.assertEqual(cleaned, "And they read through that whole book, and they talk to each other.")
+
+        # 2. Leading intro stripping
+        intro_sample = "Here is the translation: And they talk to each other."
+        self.assertEqual(clean_translation_meta(intro_sample), "And they talk to each other.")
+
+        # 3. Trailing note stripping
+        note_sample = "And they talk to each other. Note: 'over' was translated literally."
+        self.assertEqual(clean_translation_meta(note_sample), "And they talk to each other.")
+
+        # 4. Pure disclaimer yields empty string
+        disclaimer_sample = "However, without context, it's impossible to provide a complete translation."
+        self.assertEqual(clean_translation_meta(disclaimer_sample), "")
+
+        # 5. Surrounding quotes stripped
+        quoted_sample = '"And they talk to each other."'
+        self.assertEqual(clean_translation_meta(quoted_sample), "And they talk to each other.")
+
 
 if __name__ == "__main__":
     unittest.main()

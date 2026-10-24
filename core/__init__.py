@@ -22,7 +22,7 @@ from core.stt import (
     RunPodSTTEngine,
     filter_anti_hallucination,
 )
-from core.translation import LANG_NAMES, Translator
+from core.translation import LANG_NAMES, META_PATTERNS, Translator, clean_translation_meta
 from core.utils import (
     get_runpod_gpu_fallbacks,
     load_environment,
@@ -52,6 +52,8 @@ __all__ = [
     "resample_for_stt",
     "validate_webrtc_frame",
     "LANG_NAMES",
+    "META_PATTERNS",
+    "clean_translation_meta",
     "resource_path",
     "load_environment",
     "parse_bool",

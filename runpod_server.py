@@ -177,35 +177,95 @@ def auto_shutdown():
 
 threading.Thread(target=auto_shutdown, daemon=True).start()
 
+LANG_NAMES = {
+    "nl": "Dutch", "en": "English", "de": "German", "ru": "Russian",
+    "fr": "French", "es": "Spanish", "it": "Italian", "uk": "Ukrainian"
+}
+
+META_PATTERNS = [
+    r'(?i)\bthe word\s+["\'\w]+(?:\s+in\s+\w+)?\s+translates\b.*',
+    r'(?i)\bhowever,?\s+without\s+context\b.*',
+    r'(?i)\bplease\s+provide\s+(?:the\s+)?(?:full|more|additional)\b.*',
+    r'(?i)\bwithout\s+(?:more\s+)?context\b.*',
+    r'(?i)\bas\s+per\s+your\s+strict\s+requirements\b.*',
+    r'(?i)\bfor\s+example,?\s+if\s+the\s+full\s+sentence\b.*',
+    r'(?i)\bnote:\s*.*',
+    r'(?i)\bexplanation:\s*.*',
+    r'(?i)\bcontext:\s*.*',
+    r'(?i)\bhere\s+is\s+the\s+translation:?\s*',
+]
+
+
+def clean_translation_meta(text: str) -> str:
+    """Strip conversational disclaimers, lecturing, and metadata from LLM translations."""
+    if not text:
+        return ""
+    cleaned = text.strip()
+
+    # Strip introductory markers like "Here is the translation:"
+    cleaned = re.sub(
+        r'(?i)^(?:here\s+is\s+the\s+translation:?\s*|translation:?\s*|translated\s+text:?\s*)',
+        '',
+        cleaned
+    ).strip()
+
+    # Find earliest trailing meta-commentary pattern
+    earliest_idx = len(cleaned)
+    for pat in META_PATTERNS:
+        if "here" in pat:
+            continue
+        m = re.search(pat, cleaned)
+        if m and m.start() < earliest_idx:
+            earliest_idx = m.start()
+
+    if earliest_idx < len(cleaned):
+        cleaned = cleaned[:earliest_idx].strip()
+
+    # Strip surrounding quotes if wrapped
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1].strip()
+
+    return cleaned
+
+
 async def translate_text(text: str, target_lang: str, source_lang: str):
     if not text or "***" in text:
         return text
     if not target_lang:
         return ""
         
-    source_code = source_lang.split("-")[0] if source_lang else "nl"
-    if target_lang == source_code:
+    source_code = source_lang.split("-")[0].lower() if source_lang else "nl"
+    target_code = target_lang.split("-")[0].lower() if target_lang else "en"
+    if target_code == source_code:
         return text
 
-    prompt = (
-        f"You are a professional, native translator. Translate the following text from {source_code} to {target_lang}.\n\n"
-        "Strict Requirements:\n"
+    source_lang_name = LANG_NAMES.get(source_code, source_code)
+    target_lang_name = LANG_NAMES.get(target_code, target_lang)
+
+    system_prompt = (
+        f"You are a real-time speech subtitle translator. Translate from {source_lang_name} to {target_lang_name}.\n\n"
+        "CRITICAL TRANSLATION INSTRUCTIONS:\n"
+        "- Output ONLY the direct translation. Absolutely zero notes, explanations, disclaimers, or conversation.\n"
         "- Translate accurately, completely, and faithfully without omissions.\n"
         "- Never omit proper names, biblical figures (e.g. David, Jesus, Moses, Paul), locations, numbers, or clauses.\n"
         "- Do not summarize, condense, or simplify the text.\n"
-        "- Do not add explanations, notes, or quotes. Output ONLY the raw translation text.\n\n"
-        f"Text to translate:\n{text}"
+        "- The input is real-time spoken audio and may contain pauses, sentence fragments, or trailing words (e.g. 'over.', 'en.', 'maar.').\n"
+        "- Translate incomplete thoughts and trailing words directly and literally as far as they go (e.g. 'over.' -> 'about.' or 'over.').\n"
+        "- NEVER explain words or state that context is missing. Never ask for more context.\n"
+        "- NEVER output phrases like 'However, without context...', 'The word... translates to...', or 'Please provide'."
     )
     
     try:
-        response = await client.generate(
+        response = await client.chat(
             model=OLLAMA_MODEL,
-            prompt=prompt,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ],
             options={'temperature': 0}
         )
-        t = response['response'].strip()
-        t = t.strip('"').strip("'").strip()
-        return t
+        t = response['message']['content'].strip()
+        return clean_translation_meta(t)
     except Exception as e:
         logging.error(f"Translation Error: {e}")
         return f"[Translation Error: {e}]"

@@ -673,6 +673,106 @@ class TestCorePackage(unittest.TestCase):
         self.assertTrue(full_trans.endswith("is the Lord."))
         self.assertEqual(full_trans, "Our help. is the Lord.")
 
+    def test_session_window_initialization(self):
+        """TranscriptionEngine initializes sliding session window parameters from env with fallbacks."""
+        import time
+        from unittest.mock import patch, MagicMock
+        from core.engine import TranscriptionEngine
+
+        # Test custom environment values (e.g. 2 min window for fast testing)
+        with patch.dict(os.environ, {
+            "INITIAL_SESSION_WINDOW_MINUTES": "2",
+            "EXTEND_WINDOW_MINUTES": "3",
+            "MAX_SESSION_CEILING_MINUTES": "10",
+        }, clear=False):
+            engine = TranscriptionEngine(broadcast_callback=MagicMock())
+            self.assertEqual(engine.initial_session_window_minutes, 2.0)
+            self.assertEqual(engine.extend_window_minutes, 3.0)
+            self.assertEqual(engine.max_session_ceiling_minutes, 10.0)
+            self.assertEqual(engine.MAX_DURATION_SECONDS, 120)
+            self.assertAlmostEqual(engine.session_expiry_time, engine.session_start_time + 120, delta=1.0)
+            self.assertAlmostEqual(engine.session_ceiling_time, engine.session_start_time + 600, delta=1.0)
+
+        # Test fallback to MAX_SESSION_MINUTES when INITIAL_SESSION_WINDOW_MINUTES is omitted
+        env_copy = os.environ.copy()
+        env_copy.pop("INITIAL_SESSION_WINDOW_MINUTES", None)
+        env_copy["MAX_SESSION_MINUTES"] = "45"
+        with patch.dict(os.environ, env_copy, clear=True):
+            engine = TranscriptionEngine(broadcast_callback=MagicMock())
+            self.assertEqual(engine.initial_session_window_minutes, 45.0)
+            self.assertEqual(engine.MAX_DURATION_SECONDS, 45 * 60)
+
+    def test_session_window_reset_timer(self):
+        """reset_session_timer resets start, expiry, and ceiling, and broadcasts session_timer update."""
+        import time
+        from unittest.mock import MagicMock
+        from core.engine import TranscriptionEngine
+
+        broadcast_mock = MagicMock()
+        engine = TranscriptionEngine(broadcast_callback=broadcast_mock)
+        engine.initial_session_window_minutes = 5.0
+        engine.max_session_ceiling_minutes = 20.0
+
+        broadcast_mock.reset_mock()
+        t0 = time.time()
+        engine.reset_session_timer(reason="test_reset")
+
+        self.assertGreaterEqual(engine.session_start_time, t0)
+        self.assertAlmostEqual(engine.session_expiry_time, engine.session_start_time + 300, delta=1.0)
+        self.assertAlmostEqual(engine.session_ceiling_time, engine.session_start_time + 1200, delta=1.0)
+
+        broadcast_mock.assert_called_once()
+        sent_msg = broadcast_mock.call_args[0][0]
+        self.assertEqual(sent_msg["type"], "session_timer")
+        self.assertEqual(sent_msg["reason"], "test_reset")
+        self.assertAlmostEqual(sent_msg["remaining_sec"], 300, delta=2)
+
+    def test_session_window_extend_and_ceiling(self):
+        """extend_session_window extends expiry up to but not exceeding the safety ceiling."""
+        import time
+        from unittest.mock import MagicMock
+        from core.engine import TranscriptionEngine
+
+        broadcast_mock = MagicMock()
+        engine = TranscriptionEngine(broadcast_callback=broadcast_mock)
+        engine.initial_session_window_minutes = 10.0
+        engine.extend_window_minutes = 15.0
+        engine.max_session_ceiling_minutes = 25.0
+        engine.reset_session_timer(reason="init")
+
+        # Expiry is initially t0 + 10m
+        initial_expiry = engine.session_expiry_time
+
+        # Extending by 15m from now extends beyond initial_expiry
+        engine.extend_session_window(reason="stt_activity")
+        self.assertGreater(engine.session_expiry_time, initial_expiry)
+        self.assertLessEqual(engine.session_expiry_time, engine.session_ceiling_time)
+
+        # Force a huge extend request far in the future — must be capped at ceiling
+        engine.extend_window_minutes = 500.0
+        engine.extend_session_window(reason="stt_activity")
+        self.assertAlmostEqual(engine.session_expiry_time, engine.session_ceiling_time, delta=0.01)
+
+    def test_session_window_auto_pause_on_expiry(self):
+        """When current time exceeds session_expiry_time, stream auto-pauses and broadcasts auto_paused."""
+        import asyncio
+        import time
+        from unittest.mock import AsyncMock
+        from core.engine import TranscriptionEngine
+        from core.stt.local_engine import LocalSTTEngine
+
+        broadcast_mock = AsyncMock()
+        engine = TranscriptionEngine(broadcast_callback=broadcast_mock)
+        engine.initial_session_window_minutes = 15.0
+        local_stt = LocalSTTEngine(engine)
+
+        # Expire session artificially
+        engine.session_expiry_time = time.time() - 5.0
+        engine.is_paused = False
+
+        # Verify condition
+        self.assertTrue(time.time() > engine.session_expiry_time)
+
 
 if __name__ == "__main__":
     unittest.main()

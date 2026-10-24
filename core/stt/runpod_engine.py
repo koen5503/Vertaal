@@ -381,7 +381,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                 async with websockets.connect(wss_url, ping_interval=None) as ws:
                     print("Connected to RunPod.")
 
-                    self.engine.session_start_time = time.time()
+                    self.engine.reset_session_timer(reason="runpod_connected")
                     await ws.send(json.dumps({
                         "action": "config",
                         "reset_timer": True,
@@ -393,7 +393,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                         "enable_trans_3": getattr(self.engine, 'enable_trans_3', True),
                         "enable_trans_4": getattr(self.engine, 'enable_trans_4', True)
                     }))
-                    print("[RunPod] Connected & Session timer reset (full 2-hour window started).")
+                    print(f"[RunPod] Connected & Session timer reset ({int(self.engine.initial_session_window_minutes)}m sliding window started).")
 
                     async def ws_receiver():
                         try:
@@ -449,6 +449,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                                             oldest_suppressed = next(iter(self.suppressed_seg_ids))
                                             self.suppressed_seg_ids.discard(oldest_suppressed)
                                         continue
+
+                                    self.engine.extend_session_window(reason="stt_activity")
 
                                     # Determine if RunPod server trimmed overlap on this chunk (making STT and its translations delta tails)
                                     is_delta_chunk = bool(prev_text and incoming_text != full_text)
@@ -584,9 +586,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                             await asyncio.sleep(0.1)
                             continue
 
-                        if time.time() - self.engine.session_start_time > self.engine.MAX_DURATION_SECONDS:
+                        if time.time() > self.engine.session_expiry_time:
+                            print(f"[RunPod] TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing.")
                             self.engine.is_paused = True
-                            await self.engine.broadcast({"action": "auto_paused", "reason": f"{int(self.engine.MAX_DURATION_SECONDS / 60)}_min_limit"})
+                            await self.engine.broadcast({"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"})
                             continue
 
                         chunk = await loop.run_in_executor(None, self.engine.audio_stream.read_chunk)
@@ -655,6 +658,8 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                             audio_np = np.frombuffer(self.audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
                             await ws.send(audio_np.tobytes())
+                            await ws.send(json.dumps({"action": "reset_timer"}))
+                            self.engine.extend_session_window(reason="stt_activity")
 
                             self.audio_buffer = bytearray()
                             self.silence_frames = 0
@@ -673,6 +678,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                             print(f"[RunPod] Interim update for {self.active_seg_id} (dur={buffer_duration_s:.1f}s, speech={self.speech_frames}f)...")
                             audio_np = np.frombuffer(self.audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
                             await ws.send(audio_np.tobytes())
+                            await ws.send(json.dumps({"action": "reset_timer"}))
+                            self.engine.extend_session_window(reason="stt_activity")
 
                             self.last_interim_s = buffer_duration_s
 

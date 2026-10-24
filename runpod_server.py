@@ -93,10 +93,12 @@ MAX_RUN_TIME = int(os.getenv("MAX_RUN_TIME_SEC", "5400"))
 import time
 
 last_activity_time = time.time()
+last_logged_activity = 0.0
 
 def reset_session_timer(reason: str = "activity"):
-    global last_activity_time
+    global last_activity_time, last_logged_activity
     last_activity_time = time.time()
+    last_logged_activity = last_activity_time
     logging.info(f"SHUTDOWN TIMER: Reset triggered ({reason}). Auto-shutdown postponed by {MAX_RUN_TIME/60:.1f} minutes.")
 
 @app.get("/reset_timer")
@@ -228,9 +230,11 @@ async def websocket_endpoint(websocket: WebSocket):
             elif "bytes" in message:
                 audio_bytes = message["bytes"]
                 if len(audio_bytes) > 0:
-                    # Keep session alive during active speech without spamming logs
-                    if time.time() - last_activity_time > 60:
-                        reset_session_timer("Active audio streaming")
+                    global last_activity_time, last_logged_activity
+                    last_activity_time = time.time()
+                    if time.time() - last_logged_activity > 60:
+                        last_logged_activity = time.time()
+                        logging.info(f"SHUTDOWN TIMER: Active audio streaming. Auto-shutdown postponed by {MAX_RUN_TIME/60:.1f} minutes.")
                         
                     audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
                     

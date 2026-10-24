@@ -41,8 +41,21 @@ class TranscriptionEngine:
         self.translate_interval = int(os.getenv("TRANSLATE_INTERVAL_SEC", "10"))
         self.silence_threshold_ms = int(os.getenv("SILENCE_THRESHOLD_MS", "500"))
         self.translate_count = 0
-        self.session_start_time = time.time()
-        self.MAX_DURATION_SECONDS = int(os.getenv("MAX_SESSION_MINUTES", "30")) * 60
+
+        # Dynamic sliding session window configuration
+        initial_min = os.getenv("INITIAL_SESSION_WINDOW_MINUTES")
+        if initial_min is None:
+            initial_min = os.getenv("MAX_SESSION_MINUTES", "15")
+        self.initial_session_window_minutes = float(initial_min)
+        self.extend_window_minutes = float(os.getenv("EXTEND_WINDOW_MINUTES", "15"))
+        self.max_session_ceiling_minutes = float(os.getenv("MAX_SESSION_CEILING_MINUTES", "180"))
+        self.MAX_DURATION_SECONDS = int(self.initial_session_window_minutes * 60)
+
+        now = time.time()
+        self.session_start_time = now
+        self.session_expiry_time = now + self.initial_session_window_minutes * 60
+        self.session_ceiling_time = now + self.max_session_ceiling_minutes * 60
+
         self.min_local_chunk_s = float(os.getenv("MIN_LOCAL_CHUNK_S", "3.5"))
         self.interim_chunk_s = float(os.getenv("INTERIM_CHUNK_S", "5.0"))
         self.max_local_chunk_s = float(os.getenv("MAX_LOCAL_CHUNK_S", "25.0"))
@@ -80,6 +93,42 @@ class TranscriptionEngine:
         else:
             self.stt_engine = LocalSTTEngine(self)
 
+    # --- Dynamic Sliding Session Timer ---
+
+    def reset_session_timer(self, reason: str = "manual_start") -> None:
+        """Reset session start, expiry, and ceiling timestamps."""
+        now = time.time()
+        self.session_start_time = now
+        self.session_expiry_time = now + self.initial_session_window_minutes * 60
+        self.session_ceiling_time = now + self.max_session_ceiling_minutes * 60
+        self._broadcast_timer_update(reason=reason)
+
+    def extend_session_window(self, reason: str = "stt_activity") -> None:
+        """Extend sliding session window up to the maximum ceiling."""
+        now = time.time()
+        proposed_expiry = min(now + self.extend_window_minutes * 60, self.session_ceiling_time)
+        self.session_expiry_time = min(max(self.session_expiry_time, proposed_expiry), self.session_ceiling_time)
+        self._broadcast_timer_update(reason=reason)
+
+    def _broadcast_timer_update(self, reason: str) -> None:
+        """Broadcast session timer update to connected clients."""
+        remaining_sec = max(0, int(self.session_expiry_time - time.time()))
+        msg = {
+            "type": "session_timer",
+            "remaining_sec": remaining_sec,
+            "reason": reason,
+        }
+        try:
+            res = self.broadcast(msg)
+            if asyncio.iscoroutine(res):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(res)
+                except RuntimeError:
+                    pass
+        except Exception:
+            pass
+
     # --- Backward-compatible helpers & config updates ---
 
     def _setup_recognition_config(self) -> None:
@@ -97,7 +146,7 @@ class TranscriptionEngine:
             self.is_paused = config["paused"]
             self.audio_stream.playback_paused = self.is_paused
             if was_paused and not self.is_paused:
-                self.session_start_time = time.time()
+                self.reset_session_timer(reason="unpause")
 
         if "source_lang" in config and config["source_lang"] != self.source_lang:
             self.source_lang = config["source_lang"]
@@ -222,5 +271,6 @@ class TranscriptionEngine:
     async def run(self) -> None:
         """Main loop — activates audio stream and executes selected STT engine."""
         print("Starting Audio Stream...")
+        self.reset_session_timer(reason="start_streaming")
         self.audio_stream.start()
         await self.stt_engine.run()

@@ -95,17 +95,17 @@ class CloudSTTEngine(BaseSTTEngine):
             chunk_count = 0
 
             if not self.engine.is_paused and chunk_count == 0:
-                self.engine.session_start_time = time.time()
+                self.engine.reset_session_timer(reason="cloud_stream_start")
 
             while not generator_stop:
                 if self.engine.restart_required or self.engine.is_paused:
                     generator_stop = True
                     return
 
-                if time.time() - self.engine.session_start_time > self.engine.MAX_DURATION_SECONDS:
-                    print(f"TIMEOUT REACHED ({self.engine.MAX_DURATION_SECONDS}s). Auto-pausing.")
+                if time.time() > self.engine.session_expiry_time:
+                    print(f"TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing.")
                     self.engine.is_paused = True
-                    msg = {"action": "auto_paused", "reason": f"{int(self.engine.MAX_DURATION_SECONDS / 60)}_min_limit"}
+                    msg = {"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"}
                     asyncio.run_coroutine_threadsafe(self.engine.broadcast(msg), loop=loop)
                     stop_event.set()
                     return
@@ -169,6 +169,7 @@ class CloudSTTEngine(BaseSTTEngine):
                     "status": status,
                     "col1_text": transcript,
                 }
+                self.engine.extend_session_window(reason="stt_activity")
                 asyncio.run_coroutine_threadsafe(self.engine.broadcast(msg), loop=loop)
 
                 now = time.time()

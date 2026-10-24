@@ -1,6 +1,7 @@
 """RunPod remote GPU WebSocket streaming STT engine with auto-discovery and deployment."""
 
 import asyncio
+import difflib
 import json
 import os
 import re
@@ -27,6 +28,24 @@ from core.translation import clean_translation_meta
 from core.utils import get_runpod_gpu_fallbacks
 
 
+def is_word_stem_match(w1: str, w2: str) -> bool:
+    """Return True if two words share a common root or one is an incomplete/truncated form of the other."""
+    if w1 == w2:
+        return True
+    min_len = min(len(w1), len(w2))
+    if min_len < 3:
+        return False
+    # If one starts with the other (e.g. bepalen / bepalend, geloof / gelovige, etc.)
+    if w1.startswith(w2) or w2.startswith(w1):
+        return True
+    # Shared prefix of >= 2 chars and high similarity ratio (e.g. paas / pasen, lez / lezen)
+    if w1[:2] == w2[:2]:
+        ratio = difflib.SequenceMatcher(None, w1, w2).ratio()
+        if ratio >= 0.65:
+            return True
+    return False
+
+
 def restitch_segment_text(prev_text: str, incoming_text: str) -> str:
     """Restitch incoming transcript or translation against previous text without duplication."""
     if not prev_text:
@@ -39,6 +58,7 @@ def restitch_segment_text(prev_text: str, incoming_text: str) -> str:
 
     prev_words = prev_clean.split()
     inc_words = inc_clean.split()
+    orig_prev_words = prev_text.strip().split()
     orig_inc_words = incoming_text.strip().split()
 
     if not prev_words:
@@ -65,14 +85,22 @@ def restitch_segment_text(prev_text: str, incoming_text: str) -> str:
         if len(prev_set.intersection(inc_set)) / len(prev_set) >= 0.5:
             return incoming_text.strip()
 
-    # 2. Incoming is a tail delta: find exact word overlap between end of prev_words and start of inc_words
+    # 2. Exact word overlap between end of prev_words and start of inc_words
     max_overlap = min(len(prev_words), len(inc_words))
     for i in range(max_overlap, 0, -1):
         if prev_words[-i:] == inc_words[:i]:
             tail = " ".join(orig_inc_words[i:])
             return f"{prev_text} {tail}".strip() if tail else prev_text
 
-    # 3. Fuzzy tail overlap (tail sub-sequence appearing near start of incoming)
+    # 3. Stem / truncated boundary word overlap (e.g. "... Alles bepalen." + "bepalend." -> "... Alles bepalend.")
+    for i in range(min(5, len(prev_words), len(inc_words)), 0, -1):
+        earlier_match = (i == 1) or (prev_words[-i:-1] == inc_words[:i-1])
+        if earlier_match and is_word_stem_match(prev_words[-1], inc_words[i-1]):
+            trimmed_prev = " ".join(orig_prev_words[:-i])
+            tail = " ".join(orig_inc_words)
+            return f"{trimmed_prev} {tail}".strip() if trimmed_prev else tail
+
+    # 4. Fuzzy tail overlap (tail sub-sequence appearing near start of incoming)
     for k in range(min(5, len(prev_words)), 1, -1):
         tail_sub = prev_words[-k:]
         search_limit = min(len(inc_words) - k + 1, 5)
@@ -81,7 +109,7 @@ def restitch_segment_text(prev_text: str, incoming_text: str) -> str:
                 tail = " ".join(orig_inc_words[start_idx + k:])
                 return f"{prev_text} {tail}".strip() if tail else prev_text
 
-    # 4. Independent appended clause
+    # 5. Independent appended clause
     return f"{prev_text} {incoming_text.strip()}".strip()
 
 

@@ -432,6 +432,25 @@ class TestCorePackage(unittest.TestCase):
         stitched_trans = restitch_segment_text(prev_trans, revised_trans)
         self.assertEqual(stitched_trans, "The church as a gondola, which is somewhat exaggerated.")
 
+        # 5. Word-boundary stem/incomplete word refinement (e.g. "bepalen." -> "bepalend.")
+        prev_stem = "En het begint telkens weer bij de overwinning van de Heer Jezus Christus. Het fundament van ons geloof. Alles bepalen."
+        inc_stem = "bepalend."
+        stitched_stem = restitch_segment_text(prev_stem, inc_stem)
+        self.assertEqual(
+            stitched_stem,
+            "En het begint telkens weer bij de overwinning van de Heer Jezus Christus. Het fundament van ons geloof. Alles bepalend."
+        )
+        self.assertNotIn("bepalen. bepalend", stitched_stem)
+
+        # 6. Truncated word plus continuation (e.g. "na paas." -> "Pasen en de Heer...")
+        prev_cutoff = "Het gaat vandaag over de derde zondag na paas."
+        inc_cont = "Pasen en de Heer verheugt zich."
+        stitched_cont = restitch_segment_text(prev_cutoff, inc_cont)
+        self.assertEqual(
+            stitched_cont,
+            "Het gaat vandaag over de derde zondag na Pasen en de Heer verheugt zich."
+        )
+
     def test_runpod_hallucination_and_translation_suppression(self):
         """RunPodSTTEngine drops noise hallucinations and suppresses associated subsequent translations."""
         broadcast_messages = []

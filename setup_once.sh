@@ -28,26 +28,30 @@ echo "=== [4/8] Installing Python Packages in /root/venv ==="
 /root/venv/bin/pip install --no-cache-dir \
     fastapi uvicorn websockets faster-whisper ollama numpy huggingface_hub
 
-echo "=== [5/8] Downloading Faster-Whisper large-v3 on local NVMe SSD ==="
-# Clean up any stale partial files from prior failed runs
-rm -rf /workspace/models/ollama /workspace/models/faster-whisper-large-v3 /tmp/whisper_model
-mkdir -p /tmp/whisper_model /workspace/models/faster-whisper-large-v3
-/root/venv/bin/python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-large-v3', local_dir='/tmp/whisper_model')"
-cp -r --no-preserve=mode,ownership /tmp/whisper_model/* /workspace/models/faster-whisper-large-v3/
-rm -rf /tmp/whisper_model
+if [ -f "/workspace/models/faster-whisper-large-v3/model.bin" ] && [ $(stat -c%s "/workspace/models/faster-whisper-large-v3/model.bin" 2>/dev/null || stat -f%z "/workspace/models/faster-whisper-large-v3/model.bin" 2>/dev/null || echo 0) -gt 1000000000 ]; then
+    echo "=== [5/8] Faster-Whisper large-v3 already present on /workspace (skipping download) ==="
+else
+    echo "=== [5/8] Downloading Faster-Whisper large-v3 on local NVMe SSD ==="
+    mkdir -p /tmp/whisper_model /workspace/models/faster-whisper-large-v3
+    /root/venv/bin/python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-large-v3', local_dir='/tmp/whisper_model')"
+    python3 -c "import shutil; shutil.copytree('/tmp/whisper_model', '/workspace/models/faster-whisper-large-v3', dirs_exist_ok=True, copy_function=shutil.copyfile)"
+    rm -rf /tmp/whisper_model
+fi
 
-echo "=== [6/8] Pulling Ollama aya-expanse:8b on local NVMe SSD and copying to /workspace ==="
-mkdir -p /root/.ollama/models /workspace/models/ollama
-export OLLAMA_MODELS=/root/.ollama/models
-pkill -9 -f "ollama serve" 2>/dev/null || true
-ollama serve &
-OLLAMA_PID=$!
-sleep 4
-ollama pull aya-expanse:8b
-kill -9 "$OLLAMA_PID" 2>/dev/null || pkill -9 -f "ollama" || true
-wait "$OLLAMA_PID" 2>/dev/null || true
-# Copy clean verified models without preserving POSIX permissions (avoids chmod on FUSE)
-cp -r --no-preserve=mode,ownership /root/.ollama/models/* /workspace/models/ollama/
+if [ -d "/workspace/models/ollama/manifests" ] && [ -d "/workspace/models/ollama/blobs" ] && [ "$(ls -A /workspace/models/ollama/blobs 2>/dev/null)" ]; then
+    echo "=== [6/8] Ollama aya-expanse:8b already present on /workspace (skipping pull) ==="
+else
+    echo "=== [6/8] Pulling Ollama aya-expanse:8b on local NVMe SSD and copying to /workspace ==="
+    mkdir -p /root/.ollama/models /workspace/models/ollama
+    pkill -9 -f "ollama" 2>/dev/null || true
+    ollama serve &
+    OLLAMA_PID=$!
+    sleep 4
+    ollama pull aya-expanse:8b
+    kill -9 "$OLLAMA_PID" 2>/dev/null || pkill -9 -f "ollama" || true
+    wait "$OLLAMA_PID" 2>/dev/null || true
+    python3 -c "import shutil; shutil.copytree('/root/.ollama/models', '/workspace/models/ollama', dirs_exist_ok=True, copy_function=shutil.copyfile)"
+fi
 
 echo "=== [7/8] Archiving /root/venv into /workspace/venv_bundle.tar ==="
 tar -cf /workspace/venv_bundle.tar -C /root venv

@@ -52,8 +52,34 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
 
     full_text = " ".join(clean_lines).lower()
 
-    if any(k in full_text for k in ["fastapi", "application startup complete", "listening on", "uvicorn running", "uvicorn"]):
+    # Look for the most recent step header, e.g. "=== [5/8] Downloading Faster-Whisper large-v3 on local NVMe SSD ==="
+    latest_step = None
+    step_pattern = re.compile(r'===+\s*(\[\d+/\d+\].*?)\s*===+', re.IGNORECASE)
+    for line in clean_lines:
+        m = step_pattern.search(line)
+        if m:
+            latest_step = m.group(1).strip()
+
+    # Check for active Ollama pull / verification details to append to the stage badge
+    progress_info = None
+    for line in reversed(clean_lines[-4:]):
+        l_lower = line.lower()
+        if "verifying sha256" in l_lower:
+            progress_info = "Verifiëren van checksums (SHA256)"
+            break
+        elif "pulling manifest" in l_lower or "writing manifest" in l_lower:
+            progress_info = "Ollama manifest bijwerken"
+            break
+        elif ("pulling" in l_lower or "downloading" in l_lower) and not line.startswith("==="):
+            progress_info = line[:55].strip()
+            break
+
+    if any(k in full_text for k in ["fastapi", "application startup complete", "listening on", "uvicorn running", "uvicorn", "launching live translation server"]):
         stage = "Server operationeel op poort 8000"
+    elif latest_step:
+        stage = f"Initialisatie {latest_step}"
+        if progress_info and progress_info.lower() not in latest_step.lower():
+            stage += f" ({progress_info})"
     elif any(k in full_text for k in ["automated setup_once", "first run detected"]):
         stage = "Automatische eerste initialisatie van Global Volume (duurt ~3-5m)..."
     elif any(k in full_text for k in ["faster-whisper", "whisper model loaded", "loading faster-whisper", "aya-expanse", "model list cache"]):

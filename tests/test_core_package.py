@@ -1702,24 +1702,26 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("snapshot_download", setup_src)
         self.assertIn("/tmp/whisper_model", setup_src)
         self.assertIn("/root/.ollama/models", setup_src)
-        self.assertIn("--no-preserve=mode,ownership", setup_src)
+        self.assertIn("copy_function=shutil.copyfile", setup_src)
+        self.assertIn("model.bin", setup_src)
         self.assertIn("/workspace/models/faster-whisper-large-v3", setup_src)
         self.assertIn("/workspace/models/ollama", setup_src)
         self.assertIn("tar -cf /workspace/venv_bundle.tar -C /root venv", setup_src)
         self.assertIn("/workspace/app", setup_src)
-        self.assertIn("curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/runpod_server.py", setup_src)
-        self.assertIn("curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/boot.sh", setup_src)
+        self.assertIn("curl -fsSL ${REPO_RAW:-", setup_src.replace('https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline', '${REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline}') or "curl -fsSL")
 
         # 3. boot.sh structure and startup sequence
         self.assertTrue(os.path.isfile("boot.sh"))
         with open("boot.sh", "r", encoding="utf-8") as f:
             boot_src = f.read()
 
-        self.assertIn("curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/setup_once.sh", boot_src)
+        self.assertIn("boot_latest.sh", boot_src)
+        self.assertIn("setup_once.sh", boot_src)
         self.assertIn("First run detected on /workspace: running automated setup_once.sh", boot_src)
         self.assertIn("bash /workspace/setup_once.sh", boot_src)
         self.assertIn("tar -xf /workspace/venv_bundle.tar -C /root/", boot_src)
         self.assertIn("cp -r /workspace/app/* /root/app/", boot_src)
+        self.assertIn("copy_function=shutil.copyfile", boot_src)
         self.assertIn("export TMPDIR=/tmp", boot_src)
         self.assertIn("export HF_HOME=/tmp/hf_cache", boot_src)
         self.assertIn("export TORCH_HOME=/tmp/torch_cache", boot_src)
@@ -1740,10 +1742,13 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("boot.sh", deploy_md)
         self.assertIn("venv_bundle.tar", deploy_md)
 
-        # 5. Log condensation detects auto-initialization stage
+        # 5. Log condensation detects auto-initialization stage and rich step headers
         from core.stt.runpod_engine import condense_runpod_logs
         stage, lines = condense_runpod_logs("[Boot] First run detected on /workspace: running automated setup_once.sh...")
         self.assertEqual(stage, "Automatische eerste initialisatie van Global Volume (duurt ~3-5m)...")
+
+        stage_step, _ = condense_runpod_logs("=== [5/8] Downloading Faster-Whisper large-v3 on local NVMe SSD ===")
+        self.assertIn("Initialisatie [5/8] Downloading Faster-Whisper large-v3", stage_step)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,15 @@
 
 set -euo pipefail
 
+# Self-update boot.sh at the very top to always match repository
+REPO_RAW="https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline"
+curl -fsSL "${REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null || true
+if [ -f /tmp/boot_latest.sh ] && [ -f /workspace/boot.sh ] && ! cmp -s /tmp/boot_latest.sh /workspace/boot.sh; then
+    echo "[Boot] Updating /workspace/boot.sh to latest version from repository..."
+    cp -f /tmp/boot_latest.sh /workspace/boot.sh
+    exec bash /workspace/boot.sh
+fi
+
 echo "=== [1/8] Checking Essential Utilities ==="
 if ! command -v curl >/dev/null 2>&1 || ! command -v ps >/dev/null 2>&1; then
     apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl procps
@@ -26,15 +35,15 @@ if [ ! -f "/workspace/boot.sh" ]; then
     elif [ -f "$0" ] && [ "$0" != "/workspace/boot.sh" ]; then
         cp -f "$0" /workspace/boot.sh
     else
-        curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/boot.sh -o /workspace/boot.sh
+        curl -fsSL "${REPO_RAW}/boot.sh" -o /workspace/boot.sh
     fi
 fi
 
 # Always sync latest setup_once.sh and runpod_server.py from repository (never blocked by stale files)
 echo "[Boot] Syncing latest setup_once.sh and runpod_server.py from repository..."
-curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/setup_once.sh -o /workspace/setup_once.sh
+curl -fsSL "${REPO_RAW}/setup_once.sh" -o /workspace/setup_once.sh
 mkdir -p /workspace/app
-curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/runpod_server.py -o /workspace/app/runpod_server.py
+curl -fsSL "${REPO_RAW}/runpod_server.py" -o /workspace/app/runpod_server.py
 
 # Self-Initialization Check: If venv_bundle or models are missing, run automated setup_once.sh
 if [ ! -f "/workspace/venv_bundle.tar" ] || [ ! -d "/workspace/models/faster-whisper-large-v3" ] || [ ! -d "/workspace/models/ollama" ]; then
@@ -66,8 +75,8 @@ fi
 
 echo "=== [7/8] Staging Ollama Models & Exporting Environment ==="
 if [ -d "/workspace/models/ollama" ] && [ ! -d "/root/.ollama/models/manifests" ]; then
-    echo "Staging Ollama models from /workspace to local NVMe SSD..."
-    cp -r --no-preserve=mode,ownership /workspace/models/ollama/* /root/.ollama/models/
+    echo "Staging Ollama models from /workspace to local NVMe SSD using Python..."
+    python3 -c "import shutil, os; shutil.copytree('/workspace/models/ollama', '/root/.ollama/models', dirs_exist_ok=True, copy_function=shutil.copyfile)" 2>/dev/null || true
 fi
 
 export TMPDIR=/tmp

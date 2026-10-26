@@ -1677,6 +1677,56 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn('podTerminate(input: {{podId: "{pod_id}"}})', server_src)
         self.assertNotIn('podStop(input: {{podId: "{pod_id}"}})', server_src)
 
+    def test_runpod_mini_pod_deployment_scripts_and_paths(self):
+        """Mini-Pod + Global Volume deployment scripts, server path resolution, and documentation exist and match specs."""
+        # 1. runpod_server.py path and cache configurations
+        with open("runpod_server.py", "r", encoding="utf-8") as f:
+            server_src = f.read()
+
+        self.assertIn("resolve_whisper_model_path", server_src)
+        self.assertIn("local_files_only=True", server_src)
+        self.assertIn('os.environ.setdefault("TMPDIR", "/tmp")', server_src)
+        self.assertIn('os.environ.setdefault("HF_HOME", "/tmp/hf_cache")', server_src)
+        self.assertIn('os.environ.setdefault("TORCH_HOME", "/tmp/torch_cache")', server_src)
+        self.assertIn('os.environ.setdefault("OLLAMA_MODELS", "/workspace/models/ollama")', server_src)
+
+        # 2. setup_once.sh structure and critical flags
+        self.assertTrue(os.path.isfile("setup_once.sh"))
+        with open("setup_once.sh", "r", encoding="utf-8") as f:
+            setup_src = f.read()
+
+        self.assertIn("--local-dir-use-symlinks False", setup_src)
+        self.assertIn("/workspace/models/faster-whisper-large-v3", setup_src)
+        self.assertIn("/workspace/models/ollama", setup_src)
+        self.assertIn("tar -cf /workspace/venv_bundle.tar -C /root venv", setup_src)
+        self.assertIn("/workspace/app", setup_src)
+
+        # 3. boot.sh structure and startup sequence
+        self.assertTrue(os.path.isfile("boot.sh"))
+        with open("boot.sh", "r", encoding="utf-8") as f:
+            boot_src = f.read()
+
+        self.assertIn("tar -xf /workspace/venv_bundle.tar -C /root/", boot_src)
+        self.assertIn("cp -r /workspace/app/* /root/app/", boot_src)
+        self.assertIn("export TMPDIR=/tmp", boot_src)
+        self.assertIn("export HF_HOME=/tmp/hf_cache", boot_src)
+        self.assertIn("export TORCH_HOME=/tmp/torch_cache", boot_src)
+        self.assertIn("export OLLAMA_MODELS=/workspace/models/ollama", boot_src)
+        self.assertIn("export WHISPER_MODEL=/workspace/models/faster-whisper-large-v3", boot_src)
+        self.assertIn("ollama serve &", boot_src)
+        self.assertIn("exec /root/venv/bin/python3 runpod_server.py", boot_src)
+
+        # 4. DEPLOYMENT.md architecture documentation
+        self.assertTrue(os.path.isfile("DEPLOYMENT.md"))
+        with open("DEPLOYMENT.md", "r", encoding="utf-8") as f:
+            deploy_md = f.read()
+
+        self.assertIn("runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04", deploy_md)
+        self.assertIn("Mini-Pod + Global Volume", deploy_md)
+        self.assertIn("setup_once.sh", deploy_md)
+        self.assertIn("boot.sh", deploy_md)
+        self.assertIn("venv_bundle.tar", deploy_md)
+
 
 if __name__ == "__main__":
     unittest.main()

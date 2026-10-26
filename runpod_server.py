@@ -9,7 +9,7 @@ import re
 import string
 import threading
 import time
-from typing import Set
+from typing import Set, Optional
 import urllib.request
 
 import numpy as np
@@ -78,21 +78,52 @@ TAIL_HALLUCINATION_PATTERN = re.compile(
 
 app = FastAPI()
 
+# Temporary directory and cache isolation (prevent writing small files/cache to FUSE /workspace)
+os.environ.setdefault("TMPDIR", "/tmp")
+os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
+os.environ.setdefault("TORCH_HOME", "/tmp/torch_cache")
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
+os.environ.setdefault("OLLAMA_MODELS", "/workspace/models/ollama")
+
+# Ensure volatile local SSD cache directories exist
+os.makedirs("/tmp/hf_cache", exist_ok=True)
+os.makedirs("/tmp/torch_cache", exist_ok=True)
+
 # Configurable settings via env
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small") # small, medium, large-v3
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small") # small, medium, large-v3, or path
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "aya-expanse:8b")
+OLLAMA_MODELS = os.getenv("OLLAMA_MODELS", "/workspace/models/ollama")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
+def resolve_whisper_model_path(model_name_or_path: str) -> Optional[str]:
+    """Resolve local flat model directory in /workspace/models or filesystem if present."""
+    if os.path.isdir(model_name_or_path):
+        return model_name_or_path
+    candidates = [
+        os.path.join("/workspace/models", model_name_or_path),
+        os.path.join("/workspace/models", f"faster-whisper-{model_name_or_path}"),
+    ]
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return None
+
 def load_whisper_model(model_name: str, device: str = "cuda", compute_type: str = "float16"):
-    """Load Faster-Whisper model with self-healing recovery against partial/corrupt downloads."""
+    """Load Faster-Whisper model from flat directory if present, else fallback with self-healing."""
+    resolved_dir = resolve_whisper_model_path(model_name)
+    if resolved_dir:
+        print(f"Loading faster-whisper model from local directory: {resolved_dir}")
+        return WhisperModel(resolved_dir, device=device, compute_type=compute_type, local_files_only=True)
+
     try:
         print(f"Loading faster-whisper model: {model_name}")
         return WhisperModel(model_name, device=device, compute_type=compute_type)
     except Exception as e:
         print(f"Warning: Failed to load faster-whisper model ({e}). Purging corrupted model cache...")
         cache_patterns = [
-            "/workspace/huggingface/hub/models--Systran--faster-whisper*",
+            "/tmp/hf_cache/hub/models--Systran--faster-whisper*",
             os.path.expanduser("~/.cache/huggingface/hub/models--Systran--faster-whisper*"),
+            "/workspace/huggingface/hub/models--Systran--faster-whisper*",
         ]
         purged = False
         for pattern in cache_patterns:

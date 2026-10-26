@@ -875,6 +875,12 @@ class RunPodSTTEngine(BaseSTTEngine):
                                         self.heartbeat_seg_ids.discard(client_seg_id)
                                     continue
 
+                                # Unsuppress segment immediately if incoming message contains valid candidate speech
+                                if "col1_text" in data and client_seg_id:
+                                    candidate_text = data["col1_text"].strip()
+                                    if candidate_text and candidate_text != "***":
+                                        self.suppressed_seg_ids.discard(client_seg_id)
+
                                 if client_seg_id and client_seg_id in self.suppressed_seg_ids:
                                     print(f"[RunPod STT] Dropping message for suppressed segment '{client_seg_id}'")
                                     continue
@@ -919,12 +925,16 @@ class RunPodSTTEngine(BaseSTTEngine):
                                     )
 
                                     if not filtered_text:
-                                        print(f"[RunPod STT] Suppressed hallucination segment '{client_seg_id}': '{full_text}'")
-                                        self.suppressed_seg_ids.add(client_seg_id)
-                                        if len(self.suppressed_seg_ids) > 200:
-                                            oldest_suppressed = next(iter(self.suppressed_seg_ids))
-                                            self.suppressed_seg_ids.discard(oldest_suppressed)
+                                        print(f"[RunPod STT] Suppressed hallucination chunk for '{client_seg_id}': '{full_text}' (is_final={is_final})")
+                                        if is_final:
+                                            self.suppressed_seg_ids.add(client_seg_id)
+                                            if len(self.suppressed_seg_ids) > 200:
+                                                oldest_suppressed = next(iter(self.suppressed_seg_ids))
+                                                self.suppressed_seg_ids.discard(oldest_suppressed)
                                         continue
+
+                                    # Valid speech confirmed: unsuppress segment so translations pass through
+                                    self.suppressed_seg_ids.discard(client_seg_id)
 
                                     self.engine.extend_session_window(reason="stt_activity")
 

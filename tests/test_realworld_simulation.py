@@ -335,6 +335,159 @@ Your new public key is: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
         self.assertEqual(col4_messages[0]["status"], "final")
         self.assertEqual(col4_messages[0]["col4_text"], "[nl:[en:final audio]]")
 
+    def test_interim_hallucination_does_not_suppress_subsequent_chunks(self):
+        """Verify that an interim chunk producing a hallucination ('***') does NOT suppress subsequent speech and translations."""
+        import asyncio
+        import time
+
+        broadcast_events = []
+        mock_engine = MagicMock()
+        async def mock_broadcast(msg):
+            broadcast_events.append(msg)
+        mock_engine.broadcast = mock_broadcast
+        mock_engine.source_lang = "nl"
+        mock_engine.target_lang_1 = "en"
+        mock_engine.target_lang_2 = "ru"
+        mock_engine.target_lang_3 = "nl"
+        mock_engine.target_lang_4 = "nl"
+        mock_engine.enable_trans_3 = True
+        mock_engine.enable_trans_4 = True
+        mock_engine.restart_required = False
+        mock_engine.is_paused = False
+        mock_engine.session_expiry_time = time.time() + 3600
+        mock_engine.initial_session_window_minutes = 15
+        mock_engine.glossary_phrases = None
+        mock_audio_stream = MagicMock()
+        mock_audio_stream.running = True
+        mock_audio_stream.read_chunk.return_value = None
+        mock_audio_stream.calculate_rms.return_value = 0.0
+        mock_audio_stream.is_speech.return_value = False
+        mock_engine.audio_stream = mock_audio_stream
+
+        stt_engine = RunPodSTTEngine(engine=mock_engine)
+        stt_engine.active_pod_id = "pod-hallucination-test"
+        stt_engine.discover_runpod_url = MagicMock(return_value="ws://127.0.0.1:8000/stream")
+
+        messages = [
+            # 1. First interim chunk generates hallucination '***'
+            json.dumps({"id": "seg_100", "status": "interim", "col1_text": "***"}),
+            # 2. Second interim chunk contains legitimate partial speech
+            json.dumps({"id": "seg_100", "status": "interim", "col1_text": "Neem die vraag mee"}),
+            # 3. Final chunk contains full speech
+            json.dumps({"id": "seg_100", "status": "final", "col1_text": "Neem die vraag mee. En dat zijn de woorden fundament."}),
+            # 4. Final translation message
+            json.dumps({"id": "seg_100", "status": "final", "col2_text": "Take that question with you. And those are the words foundation."}),
+        ]
+
+        class MockWS:
+            def __init__(self, msgs):
+                self.msgs = msgs
+
+            async def send(self, data):
+                pass
+
+            def __aiter__(self):
+                self._iter = iter(self.msgs)
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._iter)
+                except StopIteration:
+                    mock_engine.restart_required = True
+                    await asyncio.sleep(0.05)
+                    raise asyncio.CancelledError()
+
+        class MockConnectCM:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return MockWS(messages)
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        mock_ws_module = MagicMock()
+        mock_ws_module.connect = MockConnectCM
+
+        with patch("core.stt.runpod_engine.websockets", mock_ws_module):
+            async def run_with_timeout():
+                try:
+                    await asyncio.wait_for(stt_engine.run(), timeout=0.1)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+            asyncio.run(run_with_timeout())
+
+        # 1. Segment must NOT be suppressed
+        self.assertNotIn("seg_100", stt_engine.suppressed_seg_ids)
+
+        # 2. Verify broadcast received the legitimate speech and translation
+        col1_broadcasts = [e["col1_text"] for e in broadcast_events if "col1_text" in e]
+        self.assertIn("Neem die vraag mee", col1_broadcasts)
+        self.assertIn("Neem die vraag mee. En dat zijn de woorden fundament.", col1_broadcasts)
+        self.assertNotIn("***", col1_broadcasts)
+
+        col2_broadcasts = [e["col2_text"] for e in broadcast_events if "col2_text" in e]
+        self.assertIn("Take that question with you. And those are the words foundation.", col2_broadcasts)
+
+        # 3. Verify genuine final hallucination suppression
+        mock_engine.restart_required = False
+        stt_engine_final = RunPodSTTEngine(engine=mock_engine)
+        stt_engine_final.active_pod_id = "pod-hallucination-final-test"
+        stt_engine_final.discover_runpod_url = MagicMock(return_value="ws://127.0.0.1:8000/stream")
+
+        final_messages = [
+            json.dumps({"id": "seg_fake", "status": "final", "col1_text": "Ondertiteling: TV Gelderland"}),
+            json.dumps({"id": "seg_fake", "status": "final", "col2_text": "Subtitles: TV Gelderland"}),
+        ]
+
+        class MockFinalWS:
+            def __init__(self, msgs):
+                self.msgs = msgs
+
+            async def send(self, data):
+                pass
+
+            def __aiter__(self):
+                self._iter = iter(self.msgs)
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._iter)
+                except StopIteration:
+                    await asyncio.sleep(0.02)
+                    raise asyncio.CancelledError()
+
+        class MockFinalConnectCM:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return MockFinalWS(final_messages)
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        mock_ws_final = MagicMock()
+        mock_ws_final.connect = MockFinalConnectCM
+
+        broadcast_events.clear()
+        with patch("core.stt.runpod_engine.websockets", mock_ws_final):
+            async def run_final_with_timeout():
+                try:
+                    await asyncio.wait_for(stt_engine_final.run(), timeout=0.1)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+            asyncio.run(run_final_with_timeout())
+
+        self.assertIn("seg_fake", stt_engine_final.suppressed_seg_ids)
+        subtitle_events = [e for e in broadcast_events if "col1_text" in e or "col2_text" in e]
+        self.assertEqual(len(subtitle_events), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

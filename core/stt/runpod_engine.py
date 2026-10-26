@@ -191,6 +191,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.segment_stt_time: Dict[str, float] = {}
         self.last_stt_latency_ms: Optional[int] = None
         self.last_trans_latency_ms: Optional[int] = None
+        self.active_gpu_name: Optional[str] = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
         if self.engine and hasattr(self.engine, "audio_stream"):
             self.engine.audio_stream.is_connected = False
 
@@ -212,6 +213,9 @@ class RunPodSTTEngine(BaseSTTEngine):
               id
               name
               desiredStatus
+              machine {
+                gpuDisplayName
+              }
               runtime {
                 ports {
                   ip
@@ -261,14 +265,18 @@ class RunPodSTTEngine(BaseSTTEngine):
                         ip = port_map.get('ip')
                         public_port = port_map.get('publicPort')
 
+                        # Extract GPU model name from pod machine metadata
+                        pod_gpu = pod.get("machine", {}).get("gpuDisplayName") if isinstance(pod.get("machine"), dict) else None
+                        self.active_gpu_name = pod_gpu or self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+
                         if ip and port_map.get('isIpPublic') and public_port:
                             link = f"ws://{ip}:{public_port}/stream"
-                            print(f"[RunPod Auto-Discovery] Found TCP Link: {link}")
+                            print(f"[RunPod Auto-Discovery] Found TCP Link: {link} (GPU: {self.active_gpu_name})")
                             self.active_pod_id = pod_id
                             return link
                         else:
                             link = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
-                            print(f"[RunPod Auto-Discovery] Found WSS HTTP Proxy Link: {link}")
+                            print(f"[RunPod Auto-Discovery] Found WSS HTTP Proxy Link: {link} (GPU: {self.active_gpu_name})")
                             self.active_pod_id = pod_id
                             return link
 
@@ -324,6 +332,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                         pod_id = res.get("id") or (res.get("data", {}).get("id") if isinstance(res.get("data"), dict) else None)
                         if pod_id:
                             self.active_pod_id = str(pod_id)
+                            self.active_gpu_name = gpu_id
                         print(f"[RunPod Deploy v2] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
                         return True
                 except urllib.error.HTTPError as he:
@@ -381,6 +390,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                         pod_id = res.get("data", {}).get("podFindAndDeployOnDemand", {}).get("id")
                         if pod_id:
                             self.active_pod_id = str(pod_id)
+                            self.active_gpu_name = gpu_id
                         print(f"[RunPod Deploy GraphQL] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
                         return True
                 except Exception as e:
@@ -625,6 +635,7 @@ class RunPodSTTEngine(BaseSTTEngine):
             "stage": stage,
             "status": status or "INITIALIZING",
             "logs": logs or [],
+            "gpu_name": self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090"),
         }
         if self.engine:
             if hasattr(self.engine, "last_boot_telemetry"):
@@ -838,6 +849,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                                         "stt_latency_ms": stt_latency_ms,
                                         "trans_latency_ms": self.last_trans_latency_ms,
                                         "pod_id": self.active_pod_id,
+                                        "gpu_name": self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090"),
                                         "pipeline_mode": getattr(self.engine, "pipeline_mode", "runpod"),
                                     })
 
@@ -891,6 +903,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                                                     "stt_latency_ms": self.last_stt_latency_ms,
                                                     "trans_latency_ms": trans_latency_ms,
                                                     "pod_id": self.active_pod_id,
+                                                    "gpu_name": self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090"),
                                                     "pipeline_mode": getattr(self.engine, "pipeline_mode", "runpod"),
                                                 })
 

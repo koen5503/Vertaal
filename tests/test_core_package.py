@@ -112,11 +112,11 @@ class TestCorePackage(unittest.TestCase):
     def test_runpod_engine_gpu_ordering(self):
         """RunPodSTTEngine GPU list preserves preferred GPU priority."""
         default_gpus = get_runpod_gpu_fallbacks()
-        self.assertEqual(default_gpus[0], "NVIDIA GeForce RTX 3090")
-        self.assertIn("NVIDIA GeForce RTX 4090", default_gpus)
+        self.assertEqual(default_gpus[0], "NVIDIA GeForce RTX 4090")
+        self.assertIn("NVIDIA GeForce RTX 3090", default_gpus)
 
-        gpus = get_runpod_gpu_fallbacks("NVIDIA RTX A5000")
-        self.assertEqual(gpus[0], "NVIDIA RTX A5000")
+        gpus = get_runpod_gpu_fallbacks("NVIDIA RTX 6000 Ada Generation")
+        self.assertEqual(gpus[0], "NVIDIA RTX 6000 Ada Generation")
         self.assertEqual(len(gpus), len(set(gpus)))
 
     def test_incremental_interim_and_final_chunking_triggers(self):
@@ -1388,6 +1388,7 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("trans-latency", html)
         self.assertIn("net-latency", html)
         self.assertIn("pipeline-mode-badge", html)
+        self.assertIn("telemetry-gpu-name", html)
         self.assertIn("updateSessionCountdown", html)
         self.assertIn("telemetry_vad", html)
 
@@ -1421,6 +1422,7 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("target_lang_1", snapshot)
         self.assertIn("remaining_sec", snapshot)
         self.assertIn("session_window_minutes", snapshot)
+        self.assertIn("gpu_name", snapshot)
 
         # 5. RunPodSTTEngine latency measurement calculation
         runpod = RunPodSTTEngine(engine)
@@ -1597,6 +1599,7 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn('boot-log-box', tmpl_src)
         self.assertIn('updateBootTelemetry', tmpl_src)
         self.assertIn('telemetry_boot', tmpl_src)
+        self.assertIn('id="telemetry-gpu-name"', tmpl_src)
 
     def test_runpod_pod_terminate_and_cleanup_zombies(self):
         """Test RunPod pod termination, zombie cleanup, and stop_runpod_pod using podTerminate."""

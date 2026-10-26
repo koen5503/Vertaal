@@ -429,6 +429,10 @@
                     <span class="metric-value" id="pipeline-mode-text">RunPod Remote GPU</span>
                 </div>
                 <div class="metric-row">
+                    <span class="metric-label">GPU Model</span>
+                    <span class="metric-value" id="telemetry-gpu-name">NVIDIA GeForce RTX 4090</span>
+                </div>
+                <div class="metric-row">
                     <span class="metric-label">Audio Ingang</span>
                     <span class="metric-value" id="audio-device-text">Standaard Microfoon</span>
                 </div>
@@ -570,6 +574,11 @@
                     document.getElementById('target-langs-text').innerText = langs.join(', ');
                 }
 
+                if (data.gpu_name) {
+                    const gpuEl = document.getElementById('telemetry-gpu-name');
+                    if (gpuEl) gpuEl.innerText = data.gpu_name;
+                }
+
                 if (data.remaining_sec !== undefined) {
                     remainingSeconds = data.remaining_sec;
                     updateSessionCountdown();
@@ -590,6 +599,10 @@
                 document.getElementById('target-langs-text').innerText = `${t1}, ${t2}`;
                 if (data.device_index !== undefined) {
                     document.getElementById('audio-device-text').innerText = `Device #${data.device_index}`;
+                }
+                if (data.gpu_name) {
+                    const gpuEl = document.getElementById('telemetry-gpu-name');
+                    if (gpuEl) gpuEl.innerText = data.gpu_name;
                 }
             }
 
@@ -616,6 +629,11 @@
             const statusText = document.getElementById('boot-status-text');
             const connIndicator = document.getElementById('boot-connection-indicator');
             const logBox = document.getElementById('boot-logs');
+            const gpuEl = document.getElementById('telemetry-gpu-name');
+
+            if (data.gpu_name && gpuEl) {
+                gpuEl.innerText = data.gpu_name;
+            }
 
             if (data.status) {
                 statusText.innerText = String(data.status).toUpperCase();

@@ -294,10 +294,12 @@ class TranscriptionEngine:
         pod_id = getattr(stt, "active_pod_id", None)
         stt_latency_ms = getattr(stt, "last_stt_latency_ms", None)
         trans_latency_ms = getattr(stt, "last_trans_latency_ms", None)
-        remaining_sec = max(0, int(self.session_expiry_time - time.time())) if self.session_expiry_time else 0
+        remaining_sec = max(0, int(self.session_expiry_time - time.time())) if getattr(self, "session_expiry_time", 0) else 0
+        gpu_name = getattr(stt, "active_gpu_name", None) or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
         return {
             "type": "telemetry",
             "pod_id": pod_id,
+            "gpu_name": gpu_name,
             "stt_latency_ms": stt_latency_ms,
             "trans_latency_ms": trans_latency_ms,
             "pipeline_mode": getattr(self, "pipeline_mode", "local"),

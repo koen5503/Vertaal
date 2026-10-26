@@ -28,17 +28,28 @@ echo "=== [4/8] Installing Python Packages in /root/venv ==="
 /root/venv/bin/pip install --no-cache-dir \
     fastapi uvicorn websockets faster-whisper ollama numpy huggingface_hub
 
-if [ -f "/workspace/models/faster-whisper-large-v3/model.bin" ] && [ $(stat -c%s "/workspace/models/faster-whisper-large-v3/model.bin" 2>/dev/null || stat -f%z "/workspace/models/faster-whisper-large-v3/model.bin" 2>/dev/null || echo 0) -gt 1000000000 ]; then
+if [ -f "/workspace/models/faster-whisper-large-v3/model.bin" ]; then
     echo "=== [5/8] Faster-Whisper large-v3 already present on /workspace (skipping download) ==="
 else
     echo "=== [5/8] Downloading Faster-Whisper large-v3 on local NVMe SSD ==="
     mkdir -p /tmp/whisper_model /workspace/models/faster-whisper-large-v3
     /root/venv/bin/python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-large-v3', local_dir='/tmp/whisper_model')"
-    python3 -c "import shutil; shutil.copytree('/tmp/whisper_model', '/workspace/models/faster-whisper-large-v3', dirs_exist_ok=True, copy_function=shutil.copyfile)"
+    python3 -c "
+import os, shutil
+for root, dirs, files in os.walk('/tmp/whisper_model'):
+    rel = os.path.relpath(root, '/tmp/whisper_model')
+    tdir = os.path.join('/workspace/models/faster-whisper-large-v3', rel) if rel != '.' else '/workspace/models/faster-whisper-large-v3'
+    os.makedirs(tdir, exist_ok=True)
+    for f in files:
+        s = os.path.join(root, f)
+        d = os.path.join(tdir, f)
+        if os.path.exists(d) and os.path.getsize(d) == os.path.getsize(s): continue
+        with open(s, 'rb') as fin, open(d, 'wb') as fout: shutil.copyfileobj(fin, fout, length=16*1024*1024)
+"
     rm -rf /tmp/whisper_model
 fi
 
-if [ -d "/workspace/models/ollama/manifests" ] && [ -d "/workspace/models/ollama/blobs" ] && [ "$(ls -A /workspace/models/ollama/blobs 2>/dev/null)" ]; then
+if [ -d "/workspace/models/ollama/blobs" ] && [ -n "$(ls -A /workspace/models/ollama/blobs 2>/dev/null)" ] && [ -d "/workspace/models/ollama/manifests" ]; then
     echo "=== [6/8] Ollama aya-expanse:8b already present on /workspace (skipping pull) ==="
 else
     echo "=== [6/8] Pulling Ollama aya-expanse:8b on local NVMe SSD and copying to /workspace ==="
@@ -50,7 +61,18 @@ else
     ollama pull aya-expanse:8b
     kill -9 "$OLLAMA_PID" 2>/dev/null || pkill -9 -f "ollama" || true
     wait "$OLLAMA_PID" 2>/dev/null || true
-    python3 -c "import shutil; shutil.copytree('/root/.ollama/models', '/workspace/models/ollama', dirs_exist_ok=True, copy_function=shutil.copyfile)"
+    python3 -c "
+import os, shutil
+for root, dirs, files in os.walk('/root/.ollama/models'):
+    rel = os.path.relpath(root, '/root/.ollama/models')
+    tdir = os.path.join('/workspace/models/ollama', rel) if rel != '.' else '/workspace/models/ollama'
+    os.makedirs(tdir, exist_ok=True)
+    for f in files:
+        s = os.path.join(root, f)
+        d = os.path.join(tdir, f)
+        if os.path.exists(d) and os.path.getsize(d) == os.path.getsize(s): continue
+        with open(s, 'rb') as fin, open(d, 'wb') as fout: shutil.copyfileobj(fin, fout, length=16*1024*1024)
+"
 fi
 
 echo "=== [7/8] Archiving /root/venv into /workspace/venv_bundle.tar ==="

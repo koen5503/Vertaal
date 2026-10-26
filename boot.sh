@@ -76,7 +76,18 @@ fi
 echo "=== [7/8] Staging Ollama Models & Exporting Environment ==="
 if [ -d "/workspace/models/ollama" ] && [ ! -d "/root/.ollama/models/manifests" ]; then
     echo "Staging Ollama models from /workspace to local NVMe SSD using Python..."
-    python3 -c "import shutil, os; shutil.copytree('/workspace/models/ollama', '/root/.ollama/models', dirs_exist_ok=True, copy_function=shutil.copyfile)" 2>/dev/null || true
+    python3 -c "
+import os, shutil
+for root, dirs, files in os.walk('/workspace/models/ollama'):
+    rel = os.path.relpath(root, '/workspace/models/ollama')
+    tdir = os.path.join('/root/.ollama/models', rel) if rel != '.' else '/root/.ollama/models'
+    os.makedirs(tdir, exist_ok=True)
+    for f in files:
+        s = os.path.join(root, f)
+        d = os.path.join(tdir, f)
+        if os.path.exists(d) and os.path.getsize(d) == os.path.getsize(s): continue
+        with open(s, 'rb') as fin, open(d, 'wb') as fout: shutil.copyfileobj(fin, fout, length=16*1024*1024)
+" 2>/dev/null || true
 fi
 
 export TMPDIR=/tmp

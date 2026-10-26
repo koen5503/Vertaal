@@ -69,7 +69,7 @@ if ! command -v ollama >/dev/null 2>&1; then
 fi
 
 echo "=== [4/8] Creating Volatile Local SSD Directories ==="
-mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama/models /root/models
+mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama /root/models
 
 echo "=== [5/8] Extracting Python Virtual Environment to NVMe SSD (/root/venv) ==="
 if [ -f "/workspace/venv_bundle.tar" ]; then
@@ -85,20 +85,11 @@ if [ -d "/workspace/app" ]; then
 fi
 
 echo "=== [7/8] Staging Models & Exporting Environment ==="
-if [ -d "/workspace/models/ollama" ] && [ ! -d "/root/.ollama/models/manifests" ]; then
-    echo "Staging Ollama models from /workspace to local NVMe SSD using Python..."
-    python3 -c "
-import os, shutil
-for root, dirs, files in os.walk('/workspace/models/ollama'):
-    rel = os.path.relpath(root, '/workspace/models/ollama')
-    tdir = os.path.join('/root/.ollama/models', rel) if rel != '.' else '/root/.ollama/models'
-    os.makedirs(tdir, exist_ok=True)
-    for f in files:
-        s = os.path.join(root, f)
-        d = os.path.join(tdir, f)
-        if os.path.exists(d) and os.path.getsize(d) == os.path.getsize(s): continue
-        with open(s, 'rb') as fin, open(d, 'wb') as fout: shutil.copyfileobj(fin, fout, length=16*1024*1024)
-" 2>/dev/null || true
+if [ -d "/workspace/models/ollama" ]; then
+    echo "Linking Ollama models from /workspace to local SSD (/root/.ollama/models)..."
+    mkdir -p /root/.ollama
+    rm -rf /root/.ollama/models
+    ln -sfn /workspace/models/ollama /root/.ollama/models
 fi
 
 if [ -d "/workspace/models/faster-whisper-large-v3" ] && [ ! -f "/root/models/faster-whisper-large-v3/model.bin" ]; then

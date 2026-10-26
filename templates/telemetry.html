@@ -269,6 +269,32 @@
             border: 1px solid #555;
         }
 
+        /* Pod Boot Monitor */
+        .pulse-anim {
+            animation: pulse-glow 1.5s infinite;
+        }
+
+        @keyframes pulse-glow {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.98); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        .boot-log-box {
+            background: #0d1117;
+            color: #58a6ff;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+            font-size: 0.85rem;
+            padding: 10px;
+            border-radius: 6px;
+            max-height: 140px;
+            overflow-y: auto;
+            border: 1px solid #30363d;
+            white-space: pre-wrap;
+            word-break: break-all;
+            line-height: 1.4;
+        }
+
         footer {
             text-align: center;
             padding: 16px;
@@ -350,7 +376,27 @@
                 </div>
             </div>
 
-            <!-- Card 3: Latenties & Prestaties -->
+            <!-- Card 3: Pod Opstart-monitor & Container Logs -->
+            <div class="card" id="boot-card">
+                <div class="card-header">
+                    <div class="card-title">🚀 Pod Opstart-monitor & Container Logs</div>
+                    <span id="boot-stage-badge" class="badge normal pulse-anim">⏳ Pod initialiseren...</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Container Status</span>
+                    <span class="metric-value" id="boot-status-text">INITIALIZING</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Status Details</span>
+                    <span class="metric-value" id="boot-connection-indicator">Wachten op live feed...</span>
+                </div>
+                <div class="vu-container">
+                    <div class="metric-label" style="margin-bottom: 4px;">Recente Container Console Logs:</div>
+                    <div id="boot-logs" class="boot-log-box">[System] Wachten op RunPod status...</div>
+                </div>
+            </div>
+
+            <!-- Card 4: Latenties & Prestaties -->
             <div class="card">
                 <div class="card-header">
                     <div class="card-title">⚡ Prestaties & Latentie</div>
@@ -552,6 +598,56 @@
                 document.getElementById('session-state').innerText = 'Gepauzeerd (Time-out)';
                 document.getElementById('session-countdown').innerText = '00:00';
                 document.getElementById('session-progress').style.width = '0%';
+            }
+
+            // 8. Pod Boot Telemetry
+            if (data.type === 'telemetry_boot') {
+                updateBootTelemetry(data);
+            }
+
+            if (data.type === 'telemetry' && data.boot_telemetry) {
+                updateBootTelemetry(data.boot_telemetry);
+            }
+        }
+
+        function updateBootTelemetry(data) {
+            if (!data) return;
+            const badge = document.getElementById('boot-stage-badge');
+            const statusText = document.getElementById('boot-status-text');
+            const connIndicator = document.getElementById('boot-connection-indicator');
+            const logBox = document.getElementById('boot-logs');
+
+            if (data.status) {
+                statusText.innerText = String(data.status).toUpperCase();
+            }
+
+            if (data.stage) {
+                badge.innerText = data.stage;
+                const stageLower = data.stage.toLowerCase();
+                const statusUpper = String(data.status || '').toUpperCase();
+                const isReady = statusUpper === 'CONNECTED' ||
+                                stageLower.includes('operationeel') ||
+                                stageLower.includes('server operationeel');
+                if (isReady) {
+                    badge.className = 'badge fast';
+                    connIndicator.innerText = '✅ Systeem verbonden en gereed';
+                } else if (statusUpper === 'ERROR' || stageLower.includes('fout') || stageLower.includes('mislukt')) {
+                    badge.className = 'badge slow';
+                    connIndicator.innerText = '⚠️ Fout tijdens opstarten';
+                } else {
+                    badge.className = 'badge normal pulse-anim';
+                    connIndicator.innerText = '⏳ Bezig met initialiseren / opstarten...';
+                }
+            }
+
+            if (data.logs && Array.isArray(data.logs)) {
+                if (data.logs.length > 0) {
+                    logBox.innerText = data.logs.join('\n');
+                    logBox.scrollTop = logBox.scrollHeight;
+                }
+            } else if (typeof data.logs === 'string' && data.logs.trim().length > 0) {
+                logBox.innerText = data.logs;
+                logBox.scrollTop = logBox.scrollHeight;
             }
         }
 

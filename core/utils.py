@@ -61,17 +61,17 @@ def get_runpod_gpu_fallbacks(preferred_gpu_or_env: Any = None) -> List[str]:
     Accepts an explicit GPU string, an environment dictionary, or defaults to os.environ.
     """
     if isinstance(preferred_gpu_or_env, dict):
-        preferred_gpu = preferred_gpu_or_env.get("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+        preferred_gpu = preferred_gpu_or_env.get("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 3090")
     elif isinstance(preferred_gpu_or_env, str):
         preferred_gpu = preferred_gpu_or_env
     else:
-        preferred_gpu = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+        preferred_gpu = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 3090")
 
     candidate_gpus = [
         preferred_gpu,
-        "NVIDIA GeForce RTX 4090",
         "NVIDIA GeForce RTX 3090",
         "NVIDIA RTX A5000",
+        "NVIDIA GeForce RTX 4090",
         "NVIDIA RTX A4000",
         "NVIDIA RTX A4500",
         "NVIDIA GeForce RTX 4080",

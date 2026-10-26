@@ -146,11 +146,11 @@ class TestConfigModes(unittest.TestCase):
     # RunPod GPU Fallback Hierarchy
     # ------------------------------------------------------------------------
     def test_runpod_gpu_fallbacks_default_contains_all_models(self):
-        """Default GPU fallback list must start with RTX 4090 and contain all models deduplicated."""
+        """Default GPU fallback list must start with RTX 3090 and contain all models deduplicated."""
         expected_gpus = [
-            "NVIDIA GeForce RTX 4090",
             "NVIDIA GeForce RTX 3090",
             "NVIDIA RTX A5000",
+            "NVIDIA GeForce RTX 4090",
             "NVIDIA RTX A4000",
             "NVIDIA RTX A4500",
             "NVIDIA GeForce RTX 4080",

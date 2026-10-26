@@ -9,7 +9,7 @@ import string
 import time
 import urllib.error
 import urllib.request
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 try:
     import numpy as np
@@ -26,6 +26,48 @@ from core.stt.base import BaseSTTEngine
 from core.stt.local_engine import filter_anti_hallucination, TAIL_HALLUCINATION_PATTERN
 from core.translation import clean_translation_meta
 from core.utils import get_runpod_gpu_fallbacks
+
+
+def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
+    """Clean ANSI codes and raw cursor moves from RunPod container logs, detect boot stage, and return last lines."""
+    if not raw_logs or not isinstance(raw_logs, str):
+        return "Pod initialiseren...", []
+
+    clean_lines: List[str] = []
+    ansi_regex = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+
+    raw_split = re.split(r'[\r\n]+', raw_logs)
+    last_line = None
+    for raw_line in raw_split:
+        line = ansi_regex.sub('', raw_line).strip()
+        if not line:
+            continue
+        # Ignore pure progress-bar lines
+        if re.search(r'^\d+%.*\[.*it/s\]', line) or re.search(r'^[█▉▊▋▌▍▎▏\s\|]+$', line):
+            continue
+        if line == last_line:
+            continue
+        last_line = line
+        clean_lines.append(line)
+
+    full_text = " ".join(clean_lines).lower()
+
+    if any(k in full_text for k in ["fastapi", "application startup complete", "listening on", "uvicorn running", "uvicorn"]):
+        stage = "Server operationeel op poort 8000"
+    elif any(k in full_text for k in ["faster-whisper", "whisper model loaded", "loading faster-whisper", "aya-expanse", "model list cache"]):
+        stage = "AI-modellen laden in GPU VRAM (large-v3 / aya-expanse)"
+    elif any(k in full_text for k in ["start container", "create container", "starting container", "created container"]):
+        stage = "Container starten op host"
+    elif any(k in full_text for k in ["mounting at /workspace", "global store"]):
+        stage = "Global storage koppelen aan /workspace"
+    elif any(k in full_text for k in ["pulling", "download", "extracting", "docker", "layers"]):
+        stage = "Docker container layers downloaden"
+    elif any(k in full_text for k in ["discovering available gpus", "nvidia-smi", "nvidia"]):
+        stage = "GPU initialisatie"
+    else:
+        stage = "Pod initialiseren..."
+
+    return stage, clean_lines[-6:]
 
 
 def is_word_stem_match(w1: str, w2: str) -> bool:
@@ -388,23 +430,25 @@ class RunPodSTTEngine(BaseSTTEngine):
                         return True
                     else:
                         err_msg = res["errors"][0].get("message", "")
-                        print(f"[RunPod Deploy] Notice: Could not resume {pod_id} (Reason: {err_msg}). Leaving pod intact.")
+                        print(f"[RunPod Deploy] Notice: Could not resume {pod_id} (Reason: {err_msg}). Terminating zombie pod...")
+                        self.terminate_runpod_pod(pod_id)
             except Exception as e:
                 print(f"[RunPod Deploy] System error while managing pod {pod_id}: {e}")
+                self.terminate_runpod_pod(pod_id)
                 continue
 
-        print("[RunPod Deploy] No paused pods could be resumed. Falling back to renting a fresh pod...")
+        print("[RunPod Deploy] No paused pods could be resumed. Cleaning up any remaining zombie pods...")
+        self.cleanup_exited_pods()
+        print("[RunPod Deploy] Falling back to renting a fresh pod...")
         return await self.deploy_runpod_pod()
 
-    async def stop_runpod_pod(self) -> bool:
-        """Stop the currently active RunPod pod via GraphQL mutation to avoid runaway cloud costs."""
+    def terminate_runpod_pod(self, pod_id: str) -> bool:
+        """Terminate a RunPod pod completely via GraphQL mutation."""
         api_key = os.getenv("RUNPOD_API_KEY")
-        if not self.active_pod_id or not api_key:
+        if not api_key or not pod_id:
             return False
 
-        self.intentional_shutdown = True
         api_key = api_key.strip().strip('\'" ')
-        pod_id = self.active_pod_id
         url = f"https://api.runpod.io/graphql?api_key={api_key}"
         headers = {
             "Content-Type": "application/json",
@@ -412,33 +456,186 @@ class RunPodSTTEngine(BaseSTTEngine):
         }
         mutation = f'''
         mutation {{
-          podStop(input: {{podId: "{pod_id}"}}) {{
-            id
-            desiredStatus
-          }}
+          podTerminate(input: {{podId: "{pod_id}"}})
         }}
         '''
         data = json.dumps({"query": mutation}).encode('utf-8')
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
-        def _do_stop() -> bool:
-            try:
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    res = json.loads(response.read().decode('utf-8'))
-                    if "errors" in res:
-                        print(f"[RunPod] Error executing podStop for pod {pod_id}: {res['errors']}")
-                        return False
-                    status = res.get("data", {}).get("podStop", {}).get("desiredStatus", "EXITED")
-                    print(f"[RunPod] Sent podStop for pod {pod_id}. DesiredStatus: {status}")
-                    return True
-            except Exception as e:
-                print(f"[RunPod] Failed to stop pod {pod_id}: {e}")
-                return False
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                res = json.loads(response.read().decode('utf-8'))
+                if "errors" in res:
+                    print(f"[RunPod Terminate] Error terminating pod {pod_id}: {res['errors']}")
+                    return False
+                print(f"[RunPod Terminate] Successfully terminated pod {pod_id}.")
+                return True
+        except Exception as e:
+            print(f"[RunPod Terminate] Failed to terminate pod {pod_id}: {e}")
+            return False
 
+    def cleanup_exited_pods(self) -> int:
+        """Query account for EXITED zombie pods and terminate them completely."""
+        api_key = os.getenv("RUNPOD_API_KEY")
+        if not api_key:
+            return 0
+
+        api_key = api_key.strip().strip('\'" ')
+        url = f"https://api.runpod.io/graphql?api_key={api_key}"
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        query = '{ myself { pods { id name desiredStatus } } }'
+        req = urllib.request.Request(url, data=json.dumps({"query": query}).encode('utf-8'), headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                pods = json.loads(response.read().decode('utf-8')).get('data', {}).get('myself', {}).get('pods', [])
+        except Exception as e:
+            print(f"[RunPod Cleanup] Error querying pods: {e}")
+            return 0
+
+        terminated_count = 0
+        for pod in pods:
+            if pod.get('desiredStatus') == 'EXITED':
+                pod_id = pod.get('id')
+                pod_name = pod.get('name', '')
+                if pod_id and self.terminate_runpod_pod(pod_id):
+                    print(f"[RunPod Cleanup] Terminated zombie pod {pod_id} ({pod_name})")
+                    terminated_count += 1
+
+        return terminated_count
+
+    async def stop_runpod_pod(self) -> bool:
+        """Stop and terminate the currently active RunPod pod via GraphQL mutation to avoid runaway cloud costs and zombie pods."""
+        api_key = os.getenv("RUNPOD_API_KEY")
+        if not self.active_pod_id or not api_key:
+            return False
+
+        self.intentional_shutdown = True
+        pod_id = self.active_pod_id
         loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, _do_stop)
+        success = await loop.run_in_executor(None, self.terminate_runpod_pod, pod_id)
         self.active_pod_id = None
         return success
+
+    condense_runpod_logs = staticmethod(condense_runpod_logs)
+
+    def fetch_pod_logs(self, pod_id: str) -> Tuple[Optional[str], Optional[str], str]:
+        """Fetch pod status and runtime container & system logs from RunPod REST API v2 streaming endpoint."""
+        api_key = os.getenv("RUNPOD_API_KEY")
+        if not api_key or not pod_id:
+            return None, None, ""
+
+        api_key = api_key.strip().strip('\'" ')
+
+        # 1. Fetch Pod Desired Status via lightweight GraphQL query
+        desired_status: Optional[str] = None
+        try:
+            status_query = 'query { myself { pods { id desiredStatus } } }'
+            status_data = json.dumps({"query": status_query}).encode('utf-8')
+            status_headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            }
+            status_req = urllib.request.Request(
+                f"https://api.runpod.io/graphql?api_key={api_key}",
+                data=status_data,
+                headers=status_headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(status_req, timeout=4) as status_resp:
+                res = json.loads(status_resp.read().decode('utf-8'))
+                pods = res.get('data', {}).get('myself', {}).get('pods', [])
+                for p in pods:
+                    if p.get('id') == pod_id:
+                        desired_status = p.get('desiredStatus')
+                        break
+        except Exception:
+            pass
+
+        # 2. Fetch live logs from RunPod REST API v2 streaming endpoint
+        logs_url = f"https://api.runpod.io/v2/pods/{pod_id}/logs"
+        logs_headers = {
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        logs_req = urllib.request.Request(logs_url, headers=logs_headers, method="GET")
+
+        clean_lines: List[str] = []
+        last_msg: Optional[str] = None
+        start_time = time.time()
+
+        try:
+            with urllib.request.urlopen(logs_req, timeout=3.0) as response:
+                for raw in response:
+                    if (time.time() - start_time) > 3.0 or len(clean_lines) >= 40:
+                        break
+                    line_str = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, (bytes, bytearray)) else str(raw).strip()
+                    if not line_str:
+                        continue
+
+                    # Handle SSE format (lines beginning with 'data:')
+                    if line_str.startswith("data:"):
+                        payload_str = line_str[5:].strip()
+                        if not payload_str:
+                            continue
+                        try:
+                            payload = json.loads(payload_str)
+                            source = (payload.get("source") or "system").upper()
+                            text = payload.get("line") or payload.get("message") or ""
+                            text = text.strip()
+                            if text:
+                                # Deduplicate consecutive identical messages
+                                if text == last_msg:
+                                    continue
+                                last_msg = text
+                                clean_lines.append(f"[{source}] {text}")
+                        except json.JSONDecodeError:
+                            if payload_str != last_msg:
+                                last_msg = payload_str
+                                clean_lines.append(payload_str)
+                    else:
+                        # Raw log line without SSE 'data:' prefix
+                        if line_str != last_msg:
+                            last_msg = line_str
+                            clean_lines.append(line_str)
+        except Exception:
+            # Normal for streaming endpoints upon timeout or connection termination
+            pass
+
+        clean_logs_text = "\n".join(clean_lines)
+
+        # Derive runtime status from desired_status and log stage
+        stage, _ = self.condense_runpod_logs(clean_logs_text)
+        if "Server operationeel" in stage:
+            derived_status = "CONNECTED"
+        elif any(k in stage for k in ["AI-modellen", "Container starten", "storage", "layers", "GPU initialisatie"]):
+            derived_status = desired_status or "RUNNING"
+        else:
+            derived_status = desired_status or "INITIALIZING"
+
+        return derived_status, desired_status, clean_logs_text
+
+    async def broadcast_boot_telemetry(self, pod_id: Optional[str], stage: str, status: Optional[str] = None, logs: Optional[List[str]] = None):
+        """Broadcast boot telemetry to connected clients and store snapshot on engine."""
+        boot_data = {
+            "type": "telemetry_boot",
+            "pod_id": pod_id,
+            "stage": stage,
+            "status": status or "INITIALIZING",
+            "logs": logs or [],
+        }
+        if self.engine:
+            if hasattr(self.engine, "last_boot_telemetry"):
+                self.engine.last_boot_telemetry = boot_data
+            if hasattr(self.engine, "broadcast") and callable(self.engine.broadcast):
+                try:
+                    res = self.engine.broadcast(boot_data)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception as e:
+                    print(f"[RunPod Boot Telemetry] Error broadcasting: {e}")
 
     async def stop(self) -> None:
         """Stop streaming and terminate remote RunPod pod."""
@@ -446,16 +643,25 @@ class RunPodSTTEngine(BaseSTTEngine):
 
     async def run(self) -> None:
         """Stream VAD-segmented audio to remote NVIDIA RunPod engine."""
+        loop = asyncio.get_event_loop()
         wss_url = self.discover_runpod_url()
         auto_deploy_val = os.getenv("AUTO_DEPLOY_RUNPOD", "false").lower()
         if not wss_url and auto_deploy_val == "true":
             print("[RunPod] No active pod found. Attempting Auto-Deployment/Resume...")
+            await self.broadcast_boot_telemetry(self.active_pod_id, "Pod provisioning via REST/GraphQL API...", "STARTING", ["Auto-deployment geactiveerd. Pod aanmaken..."])
             if await self.manage_runpod_deployment():
                 print("[RunPod] Deployment successful. Waiting for pod to initialize (this can take 1-3 minutes)...")
+                await self.broadcast_boot_telemetry(self.active_pod_id, "Pod initialiseren...", "INITIALIZING", ["Pod aangemaakt. Wachten op netwerk en containers..."])
                 for i in range(30):
                     await asyncio.sleep(10)
+                    if self.active_pod_id:
+                        last_status, desired_status, raw_logs = await loop.run_in_executor(None, self.fetch_pod_logs, self.active_pod_id)
+                        stage, clean_lines = self.condense_runpod_logs(raw_logs)
+                        await self.broadcast_boot_telemetry(self.active_pod_id, stage, last_status or desired_status, clean_lines)
                     wss_url = self.discover_runpod_url()
                     if wss_url:
+                        stage = "AI-modellen laden in GPU VRAM (large-v3 / aya-expanse)"
+                        await self.broadcast_boot_telemetry(self.active_pod_id, stage, "RUNNING", ["Netwerk poort 8000 bereikbaar.", "Wachten op GPU AI-modellen..."])
                         print("[RunPod] Pod network is ready. Waiting 20s extra for Whisper models to load...")
                         await asyncio.sleep(20)
                         print(f"[RunPod] Ready to connect after {(i + 1) * 10 + 20}s!")
@@ -464,8 +670,10 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                 if not wss_url:
                     print("[RunPod] Timeout: Pod did not become ready in time.")
+                    await self.broadcast_boot_telemetry(self.active_pod_id, "Time-out: Pod niet tijdig gereed", "TIMEOUT", ["Time-out bereikt na 300s."])
             else:
                 print("[RunPod] Auto-Deployment failed.")
+                await self.broadcast_boot_telemetry(self.active_pod_id, "Auto-Deployment mislukt", "FAILED", ["Kon pod niet provisioneren op RunPod."])
 
         if not wss_url:
             wss_url = os.getenv("RUNPOD_WSS_URL")
@@ -474,7 +682,6 @@ class RunPodSTTEngine(BaseSTTEngine):
             wss_url = "ws://127.0.0.1:8888/stream"
             print("No RUNPOD_API_KEY or RUNPOD_WSS_URL found. Defaulting to local.")
 
-        loop = asyncio.get_event_loop()
         if self.engine and hasattr(self.engine, "audio_stream"):
             self.engine.audio_stream.is_connected = False
 
@@ -489,6 +696,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                     max_size=10_000_000,
                 ) as ws:
                     print("Connected to RunPod.")
+                    await self.broadcast_boot_telemetry(self.active_pod_id, "Server operationeel op poort 8000", "CONNECTED", ["WebSocket verbonden op poort 8000. Pipeline actief."])
                     self.intentional_shutdown = False
                     self.last_speech_or_heartbeat_time = time.time()
 

@@ -1,5 +1,7 @@
 """Unit tests for the modular core package and its component engines."""
 
+import asyncio
+import json
 import os
 import time
 import unittest
@@ -12,6 +14,7 @@ from core import (
     LocalSTTEngine,
     CloudSTTEngine,
     RunPodSTTEngine,
+    condense_runpod_logs,
     filter_anti_hallucination,
     get_runpod_gpu_fallbacks,
     load_environment,
@@ -37,6 +40,7 @@ class TestCorePackage(unittest.TestCase):
         self.assertIsNotNone(LocalSTTEngine)
         self.assertIsNotNone(CloudSTTEngine)
         self.assertIsNotNone(RunPodSTTEngine)
+        self.assertIsNotNone(condense_runpod_logs)
         self.assertEqual(CHUNK_SIZE, 480)
         self.assertEqual(SAMPLE_RATE, 16000)
         self.assertEqual(CHANNELS, 1)
@@ -107,6 +111,10 @@ class TestCorePackage(unittest.TestCase):
 
     def test_runpod_engine_gpu_ordering(self):
         """RunPodSTTEngine GPU list preserves preferred GPU priority."""
+        default_gpus = get_runpod_gpu_fallbacks()
+        self.assertEqual(default_gpus[0], "NVIDIA GeForce RTX 3090")
+        self.assertIn("NVIDIA GeForce RTX 4090", default_gpus)
+
         gpus = get_runpod_gpu_fallbacks("NVIDIA RTX A5000")
         self.assertEqual(gpus[0], "NVIDIA RTX A5000")
         self.assertEqual(len(gpus), len(set(gpus)))
@@ -974,7 +982,7 @@ class TestCorePackage(unittest.TestCase):
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps({
-            "data": {"podStop": {"id": "pod-xyz-123", "desiredStatus": "EXITED"}}
+            "data": {"podTerminate": None}
         }).encode("utf-8")
         mock_resp.__enter__.return_value = mock_resp
 
@@ -990,7 +998,7 @@ class TestCorePackage(unittest.TestCase):
                 # Verify payload sent to RunPod GraphQL API
                 sent_req = mock_urlopen.call_args[0][0]
                 sent_body = json.loads(sent_req.data.decode("utf-8"))
-                self.assertIn("podStop", sent_body["query"])
+                self.assertIn("podTerminate", sent_body["query"])
                 self.assertIn("pod-xyz-123", sent_body["query"])
 
     def test_runpod_active_pod_id_tracking(self):
@@ -1453,6 +1461,218 @@ class TestCorePackage(unittest.TestCase):
         runpod.speech_frames = 15
         silence_sec = round((runpod.silence_frames * 30) / 1000.0, 1)
         self.assertEqual(silence_sec, 1.2)
+
+    def test_runpod_condense_logs_and_telemetry(self):
+        """Test condensing RunPod container startup logs, telemetry broadcasting, and template markup."""
+        # 1. Condense logs: ANSI stripping and carriage return cleaning
+        raw_logs = (
+            "\x1b[32mINFO:\x1b[0m Initializing pod container\r\n"
+            "Step 1: discovering available GPUs nvidia-smi\r\n"
+            "Step 2: docker pulling fs layer a1b2c3d4\r\n"
+            "Downloading: 100%|██████████| 10/10 [00:01<00:00, 8.5it/s]\r"
+            "Step 3: Loading faster-whisper large-v3 model into GPU VRAM\r\n"
+            "Step 4: Loading aya-expanse translation model into GPU VRAM\r\n"
+            "Step 5: Application startup complete. Uvicorn running on http://0.0.0.0:8000\r\n"
+        )
+        stage, clean_lines = condense_runpod_logs(raw_logs)
+        self.assertEqual(stage, "Server operationeel op poort 8000")
+        self.assertLessEqual(len(clean_lines), 6)
+        # Verify ANSI codes stripped
+        for line in clean_lines:
+            self.assertNotIn("\x1b[", line)
+            self.assertNotIn("\r", line)
+
+        # 2. Stage detection variations
+        # Pulling layers
+        stage_pull, _ = condense_runpod_logs("docker pulling fs layer 9abc\r\nExtracting image...")
+        self.assertEqual(stage_pull, "Docker container layers downloaden")
+
+        # Global storage mounting
+        stage_mount, _ = condense_runpod_logs("[SYSTEM] Global store: mounting at /workspace")
+        self.assertEqual(stage_mount, "Global storage koppelen aan /workspace")
+
+        # Container starting
+        stage_start, _ = condense_runpod_logs("[SYSTEM] start container")
+        self.assertEqual(stage_start, "Container starten op host")
+
+        # Loading models
+        stage_models, _ = condense_runpod_logs("Loading faster-whisper large-v3 model in float16")
+        self.assertEqual(stage_models, "AI-modellen laden in GPU VRAM (large-v3 / aya-expanse)")
+
+        # GPU initialization
+        stage_gpu, _ = condense_runpod_logs("discovering available gpus nvidia driver loaded")
+        self.assertEqual(stage_gpu, "GPU initialisatie")
+
+        # Generic or empty
+        stage_empty, lines_empty = condense_runpod_logs("")
+        self.assertEqual(stage_empty, "Pod initialiseren...")
+        self.assertEqual(lines_empty, [])
+
+        # 3. Test fetch_pod_logs with REST API v2 streaming endpoint mock
+        engine = TranscriptionEngine(broadcast_callback=lambda msg: None)
+        runpod = RunPodSTTEngine(engine)
+
+        class MockHTTPResponse:
+            def __init__(self, lines):
+                self._lines = lines
+
+            def __iter__(self):
+                return iter(self._lines)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            def read(self):
+                return b'{"data": {"myself": {"pods": [{"id": "pod-test-1", "desiredStatus": "RUNNING"}]}}}'
+
+        def mock_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "graphql" in url:
+                return MockHTTPResponse([])
+            elif "/v2/pods/" in url and "/logs" in url:
+                sse_data = [
+                    b'data: {"source": "system", "line": "270c7bdac026 Extracting"}\n',
+                    b'data: {"source": "system", "line": "270c7bdac026 Extracting"}\n',  # Duplicate line to test deduplication
+                    b'data: {"source": "system", "line": "Global store: mounting at /workspace"}\n',
+                    b'data: {"source": "system", "line": "start container"}\n',
+                    b'data: {"source": "container", "line": "Whisper model loaded."}\n',
+                ]
+                return MockHTTPResponse(sse_data)
+            return MockHTTPResponse([])
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "test_api_key"}):
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+                last_st, desired_st, clean_logs = runpod.fetch_pod_logs("pod-test-1")
+                self.assertEqual(last_st, "RUNNING")
+                self.assertEqual(desired_st, "RUNNING")
+                self.assertIn("[SYSTEM] 270c7bdac026 Extracting", clean_logs)
+                self.assertIn("[SYSTEM] Global store: mounting at /workspace", clean_logs)
+                self.assertIn("[SYSTEM] start container", clean_logs)
+                self.assertIn("[CONTAINER] Whisper model loaded.", clean_logs)
+                # Verify consecutive duplicate lines were deduplicated
+                self.assertEqual(clean_logs.count("270c7bdac026 Extracting"), 1)
+
+        # 4. Telemetry broadcast integration
+        broadcasts = []
+        engine = TranscriptionEngine(broadcast_callback=lambda msg: broadcasts.append(msg))
+        runpod = RunPodSTTEngine(engine)
+
+        asyncio.run(
+            runpod.broadcast_boot_telemetry(
+                pod_id="pod-xyz-123",
+                stage="AI-modellen laden in GPU VRAM (large-v3 / aya-expanse)",
+                status="INITIALIZING",
+                logs=["Loading faster-whisper", "Model loaded in 1.4s"],
+            )
+        )
+
+        self.assertEqual(len(broadcasts), 1)
+        boot_msg = broadcasts[0]
+        self.assertEqual(boot_msg.get("type"), "telemetry_boot")
+        self.assertEqual(boot_msg.get("pod_id"), "pod-xyz-123")
+        self.assertEqual(boot_msg.get("stage"), "AI-modellen laden in GPU VRAM (large-v3 / aya-expanse)")
+        self.assertEqual(boot_msg.get("status"), "INITIALIZING")
+        self.assertEqual(len(boot_msg.get("logs")), 2)
+
+        # Verify engine.last_boot_telemetry and snapshot
+        self.assertIsNotNone(engine.last_boot_telemetry)
+        self.assertEqual(engine.last_boot_telemetry["pod_id"], "pod-xyz-123")
+        snapshot = engine.get_telemetry_snapshot()
+        self.assertIn("boot_telemetry", snapshot)
+        self.assertEqual(snapshot["boot_telemetry"]["stage"], "AI-modellen laden in GPU VRAM (large-v3 / aya-expanse)")
+
+        # 4. Telemetry template markup and handlers
+        with open("templates/telemetry.html", "r", encoding="utf-8") as f:
+            tmpl_src = f.read()
+
+        self.assertIn('id="boot-card"', tmpl_src)
+        self.assertIn('id="boot-stage-badge"', tmpl_src)
+        self.assertIn('id="boot-status-text"', tmpl_src)
+        self.assertIn('id="boot-logs"', tmpl_src)
+        self.assertIn('id="boot-connection-indicator"', tmpl_src)
+        self.assertIn('pulse-anim', tmpl_src)
+        self.assertIn('boot-log-box', tmpl_src)
+        self.assertIn('updateBootTelemetry', tmpl_src)
+        self.assertIn('telemetry_boot', tmpl_src)
+
+    def test_runpod_pod_terminate_and_cleanup_zombies(self):
+        """Test RunPod pod termination, zombie cleanup, and stop_runpod_pod using podTerminate."""
+        engine = TranscriptionEngine(broadcast_callback=lambda msg: None)
+        runpod = RunPodSTTEngine(engine)
+
+        sent_queries = []
+
+        class MockResponse:
+            def __init__(self, json_data):
+                self._data = json_data
+
+            def read(self):
+                return json.dumps(self._data).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        def mock_urlopen(req, *args, **kwargs):
+            if hasattr(req, "data") and req.data:
+                payload = json.loads(req.data.decode("utf-8"))
+                query_str = payload.get("query", "")
+                sent_queries.append(query_str)
+
+                if "podTerminate" in query_str:
+                    return MockResponse({"data": {"podTerminate": None}})
+                elif "myself" in query_str and "pods" in query_str:
+                    return MockResponse({
+                        "data": {
+                            "myself": {
+                                "pods": [
+                                    {"id": "pod-zombie-1", "name": "pod-1", "desiredStatus": "EXITED"},
+                                    {"id": "pod-active-2", "name": "pod-2", "desiredStatus": "RUNNING"},
+                                    {"id": "pod-zombie-3", "name": "pod-3", "desiredStatus": "EXITED"},
+                                ]
+                            }
+                        }
+                    })
+            return MockResponse({})
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "test_api_key"}):
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+                # 1. Test direct pod termination
+                sent_queries.clear()
+                res = runpod.terminate_runpod_pod("pod-single-term")
+                self.assertTrue(res)
+                self.assertEqual(len(sent_queries), 1)
+                self.assertIn('podTerminate(input: {podId: "pod-single-term"})', sent_queries[0])
+
+                # 2. Test cleanup_exited_pods
+                sent_queries.clear()
+                cleaned_count = runpod.cleanup_exited_pods()
+                self.assertEqual(cleaned_count, 2)
+                # Should have 1 query for myself.pods, and 2 terminate mutations
+                self.assertEqual(len(sent_queries), 3)
+                self.assertIn("pod-zombie-1", sent_queries[1])
+                self.assertIn("pod-zombie-3", sent_queries[2])
+
+                # 3. Test stop_runpod_pod executes podTerminate and clears active_pod_id
+                sent_queries.clear()
+                runpod.active_pod_id = "pod-active-999"
+                stop_res = asyncio.run(runpod.stop_runpod_pod())
+                self.assertTrue(stop_res)
+                self.assertIsNone(runpod.active_pod_id)
+                self.assertTrue(runpod.intentional_shutdown)
+                self.assertEqual(len(sent_queries), 1)
+                self.assertIn('podTerminate(input: {podId: "pod-active-999"})', sent_queries[0])
+
+        # 4. Verify runpod_server.py auto_shutdown uses podTerminate
+        with open("runpod_server.py", "r", encoding="utf-8") as f:
+            server_src = f.read()
+        self.assertIn('podTerminate(input: {{podId: "{pod_id}"}})', server_src)
+        self.assertNotIn('podStop(input: {{podId: "{pod_id}"}})', server_src)
 
 
 if __name__ == "__main__":

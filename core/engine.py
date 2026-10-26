@@ -85,6 +85,7 @@ class TranscriptionEngine:
 
         # Translation tasks tracking (for cancellation of superseded in-flight translations)
         self.active_translation_tasks: Dict[str, asyncio.Task] = {}
+        self.last_boot_telemetry: Optional[dict] = None
 
         # Initialize appropriate STT engine
         if self.pipeline_mode == "cloud":
@@ -311,4 +312,5 @@ class TranscriptionEngine:
             "session_expiry_time": getattr(self, "session_expiry_time", 0),
             "session_start_time": getattr(self, "session_start_time", 0),
             "is_paused": self.is_paused,
+            "boot_telemetry": getattr(self, "last_boot_telemetry", None),
         }

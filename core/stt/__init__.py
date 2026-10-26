@@ -9,13 +9,14 @@ from core.stt.local_engine import (
     LocalSTTEngine,
     filter_anti_hallucination,
 )
-from core.stt.runpod_engine import RunPodSTTEngine
+from core.stt.runpod_engine import RunPodSTTEngine, condense_runpod_logs
 
 __all__ = [
     "BaseSTTEngine",
     "LocalSTTEngine",
     "CloudSTTEngine",
     "RunPodSTTEngine",
+    "condense_runpod_logs",
     "filter_anti_hallucination",
     "NOISE_HALLUCINATION_PHRASES",
     "BROADCAST_CREDIT_PATTERN",

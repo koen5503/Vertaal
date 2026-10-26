@@ -20,6 +20,7 @@ from core.stt import (
     CloudSTTEngine,
     LocalSTTEngine,
     RunPodSTTEngine,
+    condense_runpod_logs,
     filter_anti_hallucination,
 )
 from core.translation import LANG_NAMES, META_PATTERNS, Translator, clean_translation_meta
@@ -39,6 +40,7 @@ __all__ = [
     "LocalSTTEngine",
     "CloudSTTEngine",
     "RunPodSTTEngine",
+    "condense_runpod_logs",
     "filter_anti_hallucination",
     "NOISE_HALLUCINATION_PHRASES",
     "BROADCAST_CREDIT_PATTERN",

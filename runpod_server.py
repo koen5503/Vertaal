@@ -152,10 +152,7 @@ def auto_shutdown():
             url = "https://api.runpod.io/graphql"
             mutation = f"""
             mutation {{
-                podStop(input: {{podId: "{pod_id}"}}) {{
-                    id
-                    desiredStatus
-                }}
+                podTerminate(input: {{podId: "{pod_id}"}})
             }}
             """
             data = json.dumps({"query": mutation}).encode("utf-8")
@@ -166,7 +163,7 @@ def auto_shutdown():
             }
             req = urllib.request.Request(url, data=data, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as response:
-                print("RunPod Stop API Response:", response.read().decode())
+                print("RunPod Terminate API Response:", response.read().decode())
         except Exception as e:
             print(f"Failed to call RunPod API: {e}")
     else:

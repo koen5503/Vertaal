@@ -1719,6 +1719,7 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("setup_once.sh", boot_src)
         self.assertIn("First run detected on /workspace: running automated setup_once.sh", boot_src)
         self.assertIn("bash /workspace/setup_once.sh", boot_src)
+        self.assertIn("zstd", boot_src)
         self.assertIn("tar -xf /workspace/venv_bundle.tar -C /root/", boot_src)
         self.assertIn("cp -r /workspace/app/* /root/app/", boot_src)
         self.assertIn("copyfileobj", boot_src)

@@ -236,6 +236,23 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("appendBootLogs", telemetry_src)
         self.assertIn("accumulatedBootLogs", telemetry_src)
 
+    def test_runpod_faster_whisper_latency_and_logging_configuration(self):
+        """Verify Faster-Whisper greedy decoding parameters and latency timing logs in runpod_server.py."""
+        runpod_server_path = os.path.join(self.project_root, "runpod_server.py")
+        with open(runpod_server_path, "r", encoding="utf-8") as f:
+            server_src = f.read()
+
+        # Faster-Whisper greedy decoding for low-latency live streaming
+        self.assertIn('"beam_size": 1', server_src)
+        self.assertIn('"best_of": 1', server_src)
+        self.assertIn('"temperature": 0.0', server_src)
+        self.assertIn('"condition_on_previous_text": False', server_src)
+        self.assertIn('"vad_filter": False', server_src)
+
+        # STT and LLM latency timing logs
+        self.assertIn("[Whisper] Transcribed", server_src)
+        self.assertIn("[Ollama] Translated", server_src)
+
 
 if __name__ == "__main__":
     unittest.main()

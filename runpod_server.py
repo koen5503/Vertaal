@@ -313,6 +313,7 @@ async def translate_text(text: str, target_lang: str, source_lang: str):
         "7. Do not summarize, condense, or simplify the text.\n"
     )
     
+    t_trans_start = time.time()
     try:
         response = await client.chat(
             model=OLLAMA_MODEL,
@@ -323,7 +324,10 @@ async def translate_text(text: str, target_lang: str, source_lang: str):
             options={'temperature': 0}
         )
         t = response['message']['content'].strip()
-        return clean_translation_meta(t)
+        trans_elapsed = time.time() - t_trans_start
+        cleaned = clean_translation_meta(t)
+        logging.info(f"[Ollama] Translated ({source_code}->{target_code}) in {trans_elapsed:.3f}s: '{cleaned}'")
+        return cleaned
     except Exception as e:
         logging.error(f"Translation Error: {e}")
         return f"[Translation Error: {e}]"
@@ -399,18 +403,27 @@ async def websocket_endpoint(websocket: WebSocket):
                     source_code = config["source_lang"].split("-")[0]
                     transcribe_args = {
                         "language": source_code,
-                        "task": "transcribe"
+                        "task": "transcribe",
+                        "beam_size": 1,
+                        "best_of": 1,
+                        "temperature": 0.0,
+                        "condition_on_previous_text": False,
+                        "vad_filter": False,
                     }
                     
                     if last_transcript:
                         transcribe_args["initial_prompt"] = last_transcript
                         
+                    t_stt_start = time.time()
                     loop = asyncio.get_running_loop()
                     def _transcribe():
                         segments, info = model.transcribe(audio_np, **transcribe_args)
                         return "".join(segment.text for segment in segments).strip()
 
                     text = await loop.run_in_executor(None, _transcribe)
+                    stt_elapsed = time.time() - t_stt_start
+                    audio_dur = len(audio_np) / 16000.0 if len(audio_np) > 0 else 0.0
+                    logging.info(f"[Whisper] Transcribed {audio_dur:.2f}s audio in {stt_elapsed:.3f}s: '{text}'")
                     
                     # Anti-Hallucination
                     if text:

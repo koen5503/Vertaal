@@ -307,136 +307,139 @@
                     handleMessage(data);
                 }
             };
-            // Controls
-            const sourceSelect = document.getElementById('source-lang');
-            const target1Select = document.getElementById('target-lang-1');
-            const target2Select = document.getElementById('target-lang-2');
-            const target3Select = document.getElementById('target-lang-3');
-            const target4Select = document.getElementById('target-lang-4');
-            const audioSelect = document.getElementById('audio-device');
-            const pauseBtn = document.getElementById('pause-btn');
-            const rescanBtn = document.getElementById('rescan-btn');
-
-            let isPaused = false;
-
-            const LANG_DISPLAY = {
-                'nl': 'Nederlands', 'nl-nl': 'Nederlands',
-                'en': 'English', 'en-us': 'English', 'en-gb': 'English',
-                'de': 'Deutsch', 'fr': 'Français', 'es': 'Español',
-                'ru': 'Русский', 'uk': 'Українська', 'fa': 'فارسی', 'ar': 'العربية'
-            };
-            function getLangLabel(code, fallback) {
-                if (!code) return fallback;
-                const clean = String(code).toLowerCase().trim();
-                return LANG_DISPLAY[clean] || LANG_DISPLAY[clean.split('-')[0]] || code.toUpperCase();
-            }
-
-            function updateColumnHeaders(src, t1, t3, t2, t4) {
-                const s = src || (sourceSelect ? sourceSelect.value : '');
-                const v1 = t1 || (target1Select ? target1Select.value : '');
-                const v3 = t3 || (target3Select ? target3Select.value : '');
-                const v2 = t2 || (target2Select ? target2Select.value : '');
-                const v4 = t4 || (target4Select ? target4Select.value : '');
-
-                if (s) {
-                    const el = document.getElementById('header-source');
-                    if (el) el.innerText = `${getLangLabel(s, 'Nederlands')} (Bron)`;
-                }
-                if (v1) {
-                    const el = document.getElementById('header-trans1');
-                    if (el) el.innerText = `${getLangLabel(v1, 'English')}`;
-                }
-                if (v3) {
-                    const el = document.getElementById('header-trans3');
-                    if (el) el.innerText = `${getLangLabel(v3, 'Deutsch')}`;
-                }
-                if (v2) {
-                    const el = document.getElementById('header-trans2');
-                    if (el) el.innerText = `${getLangLabel(v2, 'Русский')}`;
-                }
-                if (v4) {
-                    const el = document.getElementById('header-trans4');
-                    if (el) el.innerText = `${getLangLabel(v4, 'Nederlands')}`;
-                }
-            }
-
-            function setSelectValue(selectElem, val) {
-                if (!selectElem || !val) return;
-                for (let i = 0; i < selectElem.options.length; i++) {
-                    if (selectElem.options[i].value.toLowerCase() === val.toLowerCase() ||
-                        selectElem.options[i].value.toLowerCase().split('-')[0] === val.toLowerCase().split('-')[0]) {
-                        selectElem.selectedIndex = i;
-                        return;
-                    }
-                }
-                const opt = document.createElement('option');
-                opt.value = val;
-                opt.text = `${getLangLabel(val, val)} (${val})`;
-                selectElem.appendChild(opt);
-                selectElem.value = val;
-            }
-
-            function sendConfig() {
-                updateColumnHeaders(sourceSelect.value, target1Select.value, target3Select.value, target2Select.value, target4Select.value);
-                if (socket.readyState === WebSocket.OPEN) {
-                    const config = {
-                        action: "update_config",
-                        source_lang: sourceSelect.value,
-                        target_lang_1: target1Select.value,
-                        target_lang_2: target2Select.value,
-                        target_lang_3: target3Select.value,
-                        target_lang_4: target4Select.value,
-                        enable_trans_3: document.getElementById('enable-trans-3').checked,
-                        enable_trans_4: document.getElementById('enable-trans-4').checked,
-                        paused: isPaused,
-                        device_index: audioSelect.value
-                    };
-                    socket.send(JSON.stringify(config));
-                }
-            }
-
-            function onSelectChange() {
-                updateColumnHeaders(sourceSelect.value, target1Select.value, target3Select.value, target2Select.value, target4Select.value);
-                sendConfig();
-            }
-
-            sourceSelect.addEventListener('change', onSelectChange);
-            target1Select.addEventListener('change', onSelectChange);
-            target2Select.addEventListener('change', onSelectChange);
-            target3Select.addEventListener('change', onSelectChange);
-            target4Select.addEventListener('change', onSelectChange);
-            document.getElementById('enable-trans-3').addEventListener('change', sendConfig);
-            document.getElementById('enable-trans-4').addEventListener('change', sendConfig);
-            audioSelect.addEventListener('change', sendConfig);
-
-            // Initial header sync
-            updateColumnHeaders(sourceSelect.value, target1Select.value, target3Select.value, target2Select.value, target4Select.value);
-
-            rescanBtn.addEventListener('click', () => {
-                if (socket.readyState === WebSocket.OPEN) {
-                    socket.send(JSON.stringify({ action: "get_devices" }));
-                }
-            });
-
-            pauseBtn.addEventListener('click', () => {
-                isPaused = !isPaused;
-                pauseBtn.innerText = isPaused ? "Resume" : "Pause";
-                pauseBtn.style.background = isPaused ? "#dc3545" : "#007bff"; // Red when paused
-                sendConfig();
-            });
-
-            document.getElementById('stop-btn').addEventListener('click', () => {
-                if (confirm('Weet je zeker dat je de server wilt stoppen?')) {
-                    if (socket.readyState === WebSocket.OPEN) {
-                        socket.send(JSON.stringify({ action: "shutdown" }));
-                    }
-                    document.getElementById('status').textContent = 'Server gestopt';
-                    document.getElementById('status').className = 'disconnected';
-                }
-            });
-
-            // Removed initial Trigger to allow server-side auto-selection to stick
         }
+
+        // Controls
+        const sourceSelect = document.getElementById('source-lang');
+        const target1Select = document.getElementById('target-lang-1');
+        const target2Select = document.getElementById('target-lang-2');
+        const target3Select = document.getElementById('target-lang-3');
+        const target4Select = document.getElementById('target-lang-4');
+        const audioSelect = document.getElementById('audio-device');
+        const pauseBtn = document.getElementById('pause-btn');
+        const rescanBtn = document.getElementById('rescan-btn');
+
+        let isPaused = false;
+
+        const LANG_DISPLAY = {
+            'nl': 'Nederlands', 'nl-nl': 'Nederlands',
+            'en': 'English', 'en-us': 'English', 'en-gb': 'English',
+            'de': 'Deutsch', 'fr': 'Français', 'es': 'Español',
+            'ru': 'Русский', 'uk': 'Українська', 'fa': 'فارسی', 'ar': 'العربية'
+        };
+        function getLangLabel(code, fallback) {
+            if (!code) return fallback;
+            const clean = String(code).toLowerCase().trim();
+            return LANG_DISPLAY[clean] || LANG_DISPLAY[clean.split('-')[0]] || code.toUpperCase();
+        }
+
+        function updateColumnHeaders(src, t1, t3, t2, t4) {
+            const s = src || (sourceSelect ? sourceSelect.value : '');
+            const v1 = t1 || (target1Select ? target1Select.value : '');
+            const v3 = t3 || (target3Select ? target3Select.value : '');
+            const v2 = t2 || (target2Select ? target2Select.value : '');
+            const v4 = t4 || (target4Select ? target4Select.value : '');
+
+            if (s) {
+                const el = document.getElementById('header-source');
+                if (el) el.innerText = `${getLangLabel(s, 'Nederlands')} (Bron)`;
+            }
+            if (v1) {
+                const el = document.getElementById('header-trans1');
+                if (el) el.innerText = `${getLangLabel(v1, 'English')}`;
+            }
+            if (v3) {
+                const el = document.getElementById('header-trans3');
+                if (el) el.innerText = `${getLangLabel(v3, 'Deutsch')}`;
+            }
+            if (v2) {
+                const el = document.getElementById('header-trans2');
+                if (el) el.innerText = `${getLangLabel(v2, 'Русский')}`;
+            }
+            if (v4) {
+                const el = document.getElementById('header-trans4');
+                if (el) el.innerText = `${getLangLabel(v4, 'Nederlands')}`;
+            }
+        }
+
+        function setSelectValue(selectElem, val) {
+            if (!selectElem || !val) return;
+            const cleanVal = String(val).toLowerCase().trim();
+            for (let i = 0; i < selectElem.options.length; i++) {
+                const optVal = selectElem.options[i].value.toLowerCase().trim();
+                if (optVal === cleanVal || optVal.split('-')[0] === cleanVal.split('-')[0]) {
+                    selectElem.selectedIndex = i;
+                    return;
+                }
+            }
+            const opt = document.createElement('option');
+            opt.value = val;
+            opt.text = `${getLangLabel(val, val)} (${val})`;
+            selectElem.appendChild(opt);
+            selectElem.value = val;
+        }
+
+        function sendConfig() {
+            updateColumnHeaders(sourceSelect.value, target1Select.value, target3Select.value, target2Select.value, target4Select.value);
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                const config = {
+                    action: "update_config",
+                    source_lang: sourceSelect.value,
+                    target_lang_1: target1Select.value,
+                    target_lang_2: target2Select.value,
+                    target_lang_3: target3Select.value,
+                    target_lang_4: target4Select.value,
+                    enable_trans_3: document.getElementById('enable-trans-3').checked,
+                    enable_trans_4: document.getElementById('enable-trans-4').checked,
+                    paused: isPaused,
+                    device_index: audioSelect.value
+                };
+                socket.send(JSON.stringify(config));
+            }
+        }
+
+        function onSelectChange() {
+            updateColumnHeaders(sourceSelect.value, target1Select.value, target3Select.value, target2Select.value, target4Select.value);
+            sendConfig();
+        }
+
+        sourceSelect.addEventListener('change', onSelectChange);
+        target1Select.addEventListener('change', onSelectChange);
+        target2Select.addEventListener('change', onSelectChange);
+        target3Select.addEventListener('change', onSelectChange);
+        target4Select.addEventListener('change', onSelectChange);
+        document.getElementById('enable-trans-3').addEventListener('change', sendConfig);
+        document.getElementById('enable-trans-4').addEventListener('change', sendConfig);
+        audioSelect.addEventListener('change', sendConfig);
+
+        // Initial header sync
+        updateColumnHeaders(sourceSelect.value, target1Select.value, target3Select.value, target2Select.value, target4Select.value);
+        document.addEventListener('DOMContentLoaded', () => {
+            updateColumnHeaders(sourceSelect.value, target1Select.value, target3Select.value, target2Select.value, target4Select.value);
+        });
+
+        rescanBtn.addEventListener('click', () => {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ action: "get_devices" }));
+            }
+        });
+
+        pauseBtn.addEventListener('click', () => {
+            isPaused = !isPaused;
+            pauseBtn.innerText = isPaused ? "Resume" : "Pause";
+            pauseBtn.style.background = isPaused ? "#dc3545" : "#007bff"; // Red when paused
+            sendConfig();
+        });
+
+        document.getElementById('stop-btn').addEventListener('click', () => {
+            if (confirm('Weet je zeker dat je de server wilt stoppen?')) {
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ action: "shutdown" }));
+                }
+                document.getElementById('status').textContent = 'Server gestopt';
+                document.getElementById('status').className = 'disconnected';
+            }
+        });
 
         function updateColumnVisibility(e3, e4) {
             document.getElementById('col-trans3').style.display = e3 ? 'flex' : 'none';

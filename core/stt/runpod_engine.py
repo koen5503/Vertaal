@@ -110,7 +110,17 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
     error_line = None
     for line in reversed(clean_lines[-30:]):
         l_lower = line.lower()
-        if (
+
+        # 1. Skip benign INFO logs or harmless operational notes
+        if "level=info" in l_lower or "[info]" in l_lower or "couldn't find '/root/.ollama/id_ed25519'" in l_lower:
+            continue
+
+        # 2. Skip harmless zero failure counts or retry mentions
+        if any(ok in l_lower for ok in ["0 failed", "failed: 0", "failed\":0", "failures=0", "failures: 0", "failures\":0", "consecutive_failures=0", "retry", "fallback"]):
+            continue
+
+        # 3. Check for genuine fatal errors
+        has_fatal = (
             "error:" in l_lower
             or "traceback (most recent call last)" in l_lower
             or "modulenotfounderror:" in l_lower
@@ -119,8 +129,10 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
             or "fatal:" in l_lower
             or "command not found" in l_lower
             or "killed" in l_lower.split()
-            or (("failed" in l_lower or "failure" in l_lower) and not any(ok in l_lower for ok in ["0 failed", "failed: 0", "retry", "fallback"]))
-        ):
+            or any(f_pat in l_lower for f_pat in ["failed to ", "failed:", "failure:", ": failed", "build failed", "operation failed", "setup failed", "install failed"])
+        )
+
+        if has_fatal:
             error_line = line.strip()
             break
 

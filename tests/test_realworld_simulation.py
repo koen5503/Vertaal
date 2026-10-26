@@ -79,6 +79,27 @@ bash: /workspace/install.sh: Permission denied: cannot execute
         self.assertTrue(stage_3.startswith("Fout in container:"), f"Expected error escalation, got: {stage_3}")
         self.assertIn("Permission denied", stage_3)
 
+    def test_false_positive_error_detection_prevention(self):
+        """Verify benign INFO logs and zero failure metrics do not trigger error badges."""
+        # 1. Ollama model recommendations info log with consecutive_failures=0
+        info_logs_1 = """
+=== [8/8] Starting Services ===
+level=INFO source=model_recommendations.go:177 msg="model recommendations cache sleep scheduled" wait=3h consecutive_failures=0
+"""
+        stage_1, _ = condense_runpod_logs(info_logs_1)
+        self.assertFalse(stage_1.startswith("Fout in container:"), f"False-positive error triggered on: {stage_1}")
+        self.assertIn("[8/8]", stage_1)
+
+        # 2. Ollama private key generation note
+        info_logs_2 = """
+=== [8/8] Starting Services ===
+Couldn't find '/root/.ollama/id_ed25519'. Generating new private key.
+Your new public key is: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
+"""
+        stage_2, _ = condense_runpod_logs(info_logs_2)
+        self.assertFalse(stage_2.startswith("Fout in container:"), f"False-positive error triggered on: {stage_2}")
+        self.assertIn("[8/8]", stage_2)
+
     def test_all_steps_1_through_8_tracking(self):
         """Verify each phase [1/8] through [8/8] in boot.sh and setup_once.sh is correctly tracked."""
         steps = [

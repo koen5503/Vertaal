@@ -53,14 +53,18 @@ fi
 
 echo "=== [3/8] Verifying Ollama Installation in Container OS ==="
 if ! command -v ollama >/dev/null 2>&1; then
-    if [ -f "/workspace/ollama_bundle.tar" ]; then
+    if [ -s "/workspace/ollama_bundle.tar" ]; then
         echo "Restoring Ollama engine from Global Volume cache (1-2s)..."
         tar -xf /workspace/ollama_bundle.tar -C /usr/local/
     else
         echo "Installing Ollama engine into container (first-time install)..."
         curl -fsSL https://ollama.com/install.sh | sh
-        echo "Caching Ollama engine to /workspace/ollama_bundle.tar..."
-        tar -cf /workspace/ollama_bundle.tar -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
+        echo "Caching Ollama engine to /workspace/ollama_bundle.tar via /tmp..."
+        tar -cf /tmp/ollama_bundle.tar -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
+        if [ -s "/tmp/ollama_bundle.tar" ]; then
+            cp -f /tmp/ollama_bundle.tar /workspace/ollama_bundle.tar
+            rm -f /tmp/ollama_bundle.tar
+        fi
     fi
 fi
 

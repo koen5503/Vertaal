@@ -22,9 +22,13 @@ echo "=== [2/8] Installing Ollama ==="
 if ! command -v ollama >/dev/null 2>&1; then
     curl -fsSL https://ollama.com/install.sh | sh
 fi
-if [ ! -f "/workspace/ollama_bundle.tar" ] && [ -f "/usr/local/bin/ollama" ]; then
-    echo "Caching Ollama binaries to /workspace/ollama_bundle.tar..."
-    tar -cf /workspace/ollama_bundle.tar -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
+if [ ! -s "/workspace/ollama_bundle.tar" ] && [ -f "/usr/local/bin/ollama" ]; then
+    echo "Caching Ollama binaries to /workspace/ollama_bundle.tar via /tmp..."
+    tar -cf /tmp/ollama_bundle.tar -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
+    if [ -s "/tmp/ollama_bundle.tar" ]; then
+        cp -f /tmp/ollama_bundle.tar /workspace/ollama_bundle.tar
+        rm -f /tmp/ollama_bundle.tar
+    fi
 fi
 
 echo "=== [3/8] Creating Python Virtual Environment in /root/venv ==="

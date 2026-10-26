@@ -157,6 +157,21 @@ class TestDeploymentContract(unittest.TestCase):
             self.boot_src,
             "boot.sh must restore Ollama binaries from /workspace/ollama_bundle.tar",
         )
+        self.assertIn(
+            '[ -s "/workspace/ollama_bundle.tar" ]',
+            self.boot_src,
+            "boot.sh must verify that ollama_bundle.tar is non-empty before extracting",
+        )
+        self.assertIn(
+            "/tmp/ollama_bundle.tar",
+            self.setup_src,
+            "setup_once.sh must stage ollama_bundle.tar via /tmp to prevent partial writes",
+        )
+        self.assertIn(
+            "/tmp/ollama_bundle.tar",
+            self.boot_src,
+            "boot.sh must stage ollama_bundle.tar via /tmp to prevent partial writes",
+        )
 
     # --------------------------------------------------------------------------
     # Contract 4: Shell Syntax Verification

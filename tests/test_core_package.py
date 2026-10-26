@@ -1092,7 +1092,10 @@ class TestCorePackage(unittest.TestCase):
 
                 sent_req = mock_urlopen.call_args[0][0]
                 payload = json.loads(sent_req.data.decode("utf-8"))
-                self.assertEqual(payload["cmd"], [RUNPOD_BOOT_CMD])
+                self.assertNotIn("entrypoint", payload)
+                self.assertNotIn("cmd", payload)
+                self.assertEqual(payload["templateId"], "tmpl-1")
+                self.assertEqual(payload["mounts"]["global"][0]["volumeId"], "cmu-vol-1")
 
     def test_silence_heartbeat_probe_generation(self):
         """RunPodSTTEngine identifies prolonged silence and triggers heartbeat probe state."""

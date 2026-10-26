@@ -322,9 +322,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                     "gpu": {"id": gpu_id, "count": 1},
                     "mounts": {
                         "global": [{"volumeId": volume_id, "path": "/workspace"}]
-                    },
-                    "entrypoint": ["/bin/bash", "-c"],
-                    "cmd": [RUNPOD_BOOT_CMD]
+                    }
                 }
                 data = json.dumps(payload).encode('utf-8')
                 req = urllib.request.Request(v2_url, data=data, headers=v2_headers, method="POST")

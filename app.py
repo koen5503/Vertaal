@@ -227,7 +227,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     await manager.broadcast({
                         "action": "init_config",
                         "enable_trans_3": getattr(engine, 'enable_trans_3', True),
-                        "enable_trans_4": getattr(engine, 'enable_trans_4', True)
+                        "enable_trans_4": getattr(engine, 'enable_trans_4', True),
+                        "source_lang": engine.source_lang,
+                        "target_lang_1": engine.target_lang_1,
+                        "target_lang_2": engine.target_lang_2,
+                        "target_lang_3": engine.target_lang_3,
+                        "target_lang_4": engine.target_lang_4,
+                        "device_index": getattr(engine.audio_stream, 'current_device_index', None)
                     })
                 elif msg.get("action") == "get_devices":
                     devices = engine.get_input_devices()

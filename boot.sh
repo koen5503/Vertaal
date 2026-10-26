@@ -22,8 +22,8 @@ if [ -f /tmp/boot_latest.sh ] && [ -f /workspace/boot.sh ] && ! cmp -s /tmp/boot
 fi
 
 echo "=== [1/8] Checking Essential Utilities ==="
-if ! command -v curl >/dev/null 2>&1 || ! command -v ps >/dev/null 2>&1 || ! command -v zstd >/dev/null 2>&1; then
-    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl procps zstd
+if ! command -v curl >/dev/null 2>&1 || ! command -v ps >/dev/null 2>&1 || ! command -v zstd >/dev/null 2>&1 || ! command -v ffmpeg >/dev/null 2>&1; then
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl procps zstd ffmpeg libsndfile1
 fi
 
 echo "=== [2/8] Self-Healing: Syncing Global Volume Files on /workspace ==="

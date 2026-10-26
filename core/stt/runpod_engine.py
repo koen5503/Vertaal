@@ -54,6 +54,8 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
 
     if any(k in full_text for k in ["fastapi", "application startup complete", "listening on", "uvicorn running", "uvicorn"]):
         stage = "Server operationeel op poort 8000"
+    elif any(k in full_text for k in ["automated setup_once", "first run detected"]):
+        stage = "Automatische eerste initialisatie van Global Volume (duurt ~3-5m)..."
     elif any(k in full_text for k in ["faster-whisper", "whisper model loaded", "loading faster-whisper", "aya-expanse", "model list cache"]):
         stage = "AI-modellen laden in GPU VRAM (large-v3 / aya-expanse)"
     elif any(k in full_text for k in ["start container", "create container", "starting container", "created container"]):
@@ -155,7 +157,8 @@ def restitch_segment_text(prev_text: str, incoming_text: str) -> str:
     return f"{prev_text} {incoming_text.strip()}".strip()
 
 
-RUNPOD_OVERRIDE_CMD = "[ -f /workspace/runpod_server.py ] && cp -f /workspace/runpod_server.py /app/runpod_server.py; rm -rf /workspace/huggingface/hub/models--Systran--faster-whisper* && exec /app/start.sh"
+RUNPOD_BOOT_CMD = '[ -f /workspace/boot.sh ] && bash /workspace/boot.sh || (curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/boot.sh -o /tmp/boot.sh && bash /tmp/boot.sh)'
+RUNPOD_OVERRIDE_CMD = RUNPOD_BOOT_CMD
 
 
 class RunPodSTTEngine(BaseSTTEngine):
@@ -321,7 +324,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                         "global": [{"volumeId": volume_id, "path": "/workspace"}]
                     },
                     "entrypoint": ["/bin/bash", "-c"],
-                    "cmd": [RUNPOD_OVERRIDE_CMD]
+                    "cmd": [RUNPOD_BOOT_CMD]
                 }
                 data = json.dumps(payload).encode('utf-8')
                 req = urllib.request.Request(v2_url, data=data, headers=v2_headers, method="POST")

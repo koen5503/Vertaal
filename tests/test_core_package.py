@@ -1066,11 +1066,12 @@ class TestCorePackage(unittest.TestCase):
         import asyncio
         import json
         from unittest.mock import MagicMock, patch
-        from core.stt.runpod_engine import RunPodSTTEngine, RUNPOD_OVERRIDE_CMD
+        from core.stt.runpod_engine import RunPodSTTEngine, RUNPOD_BOOT_CMD, RUNPOD_OVERRIDE_CMD
 
-        self.assertIn("[ -f /workspace/runpod_server.py ]", RUNPOD_OVERRIDE_CMD)
-        self.assertIn("cp -f /workspace/runpod_server.py /app/runpod_server.py", RUNPOD_OVERRIDE_CMD)
-        self.assertIn("exec /app/start.sh", RUNPOD_OVERRIDE_CMD)
+        self.assertIn("[ -f /workspace/boot.sh ] && bash /workspace/boot.sh", RUNPOD_BOOT_CMD)
+        self.assertIn("curl -fsSL", RUNPOD_BOOT_CMD)
+        self.assertIn("boot.sh -o /tmp/boot.sh && bash /tmp/boot.sh", RUNPOD_BOOT_CMD)
+        self.assertEqual(RUNPOD_OVERRIDE_CMD, RUNPOD_BOOT_CMD)
 
         engine = MagicMock()
         runpod = RunPodSTTEngine(engine)
@@ -1091,7 +1092,7 @@ class TestCorePackage(unittest.TestCase):
 
                 sent_req = mock_urlopen.call_args[0][0]
                 payload = json.loads(sent_req.data.decode("utf-8"))
-                self.assertEqual(payload["cmd"], [RUNPOD_OVERRIDE_CMD])
+                self.assertEqual(payload["cmd"], [RUNPOD_BOOT_CMD])
 
     def test_silence_heartbeat_probe_generation(self):
         """RunPodSTTEngine identifies prolonged silence and triggers heartbeat probe state."""
@@ -1700,12 +1701,17 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("/workspace/models/ollama", setup_src)
         self.assertIn("tar -cf /workspace/venv_bundle.tar -C /root venv", setup_src)
         self.assertIn("/workspace/app", setup_src)
+        self.assertIn("curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/runpod_server.py", setup_src)
+        self.assertIn("curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/boot.sh", setup_src)
 
         # 3. boot.sh structure and startup sequence
         self.assertTrue(os.path.isfile("boot.sh"))
         with open("boot.sh", "r", encoding="utf-8") as f:
             boot_src = f.read()
 
+        self.assertIn("curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/setup_once.sh", boot_src)
+        self.assertIn("First run detected on /workspace: running automated setup_once.sh", boot_src)
+        self.assertIn("bash /workspace/setup_once.sh", boot_src)
         self.assertIn("tar -xf /workspace/venv_bundle.tar -C /root/", boot_src)
         self.assertIn("cp -r /workspace/app/* /root/app/", boot_src)
         self.assertIn("export TMPDIR=/tmp", boot_src)
@@ -1726,6 +1732,11 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("setup_once.sh", deploy_md)
         self.assertIn("boot.sh", deploy_md)
         self.assertIn("venv_bundle.tar", deploy_md)
+
+        # 5. Log condensation detects auto-initialization stage
+        from core.stt.runpod_engine import condense_runpod_logs
+        stage, lines = condense_runpod_logs("[Boot] First run detected on /workspace: running automated setup_once.sh...")
+        self.assertEqual(stage, "Automatische eerste initialisatie van Global Volume (duurt ~3-5m)...")
 
 
 if __name__ == "__main__":

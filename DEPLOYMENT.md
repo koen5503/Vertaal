@@ -1,6 +1,6 @@
 # RunPod Mini-Pod + Global Volume Deployment Guide
 
-This guide documents the architecture, configuration, and operational workflow for running the Ondertitels live transcription & translation backend on RunPod using the **Mini-Pod + Global Volume** pattern.
+This guide documents the architecture, configuration, and **100% automated self-initializing deployment pipeline** for running the Ondertitels live transcription & translation backend on RunPod using the **Mini-Pod + Global Volume** pattern.
 
 ---
 
@@ -17,7 +17,7 @@ The **Mini-Pod + Global Volume** architecture separates persistent state from vo
 2. **Volatile Container NVMe SSD (`/root` & `/tmp`)**:
    - The Python virtual environment is extracted to `/root/venv` on the host's high-speed local NVMe disk.
    - All caches and temporary files are strictly bound to `/tmp` (`TMPDIR=/tmp`, `HF_HOME=/tmp/hf_cache`, `TORCH_HOME=/tmp/torch_cache`).
-   - Pod boot-up time is slashed to **< 15 seconds**.
+   - Pod boot-up time is slashed to **< 15 seconds** for daily operations.
 
 ```
 +-----------------------------------------------------------------------+
@@ -58,9 +58,9 @@ The RunPod Global Volume (`/workspace`) is an S3-backed Object Storage system mo
 
 ---
 
-## 3. Pod Configuration Specifications
+## 3. Pod Configuration Specifications (RunPod Template)
 
-When creating the RunPod Template or deploying a Pod on the RunPod Console:
+Configure your RunPod Template once on the RunPod Console:
 
 | Setting | Recommended Value | Notes |
 | :--- | :--- | :--- |
@@ -68,59 +68,49 @@ When creating the RunPod Template or deploying a Pod on the RunPod Console:
 | **Container Disk** | `20 GB` | Local NVMe space for `/root/venv` (~5 GB unpacked) and `/tmp` buffers. |
 | **Volume Disk** | Attach your **Global Volume** | Mounted at `/workspace` (e.g. 50 GB capacity). |
 | **Expose HTTP Ports** | `8000` | Port used by FastAPI & WebSocket server. |
-| **Docker Start Command** | `bash -c "bash /workspace/boot.sh"` | Starts Ollama, unpacks venv, and launches `runpod_server.py`. |
+| **Docker Start Command** | `bash -c "[ -f /workspace/boot.sh ] && bash /workspace/boot.sh \|\| (curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/boot.sh -o /tmp/boot.sh && bash /tmp/boot.sh)"` | Self-seeding bootstrap command. |
 
 ---
 
-## 4. One-Time Setup Procedure (`setup_once.sh`)
+## 4. 100% Automated Deployment Lifecycle
 
-Follow this procedure **only once** when initializing a fresh Global Volume:
+**Zero manual SSH or terminal commands are required.** The entire lifecycle is managed automatically by `app.py` and `core/stt/runpod_engine.py`:
 
-1. Deploy a temporary Pod with your Global Volume mounted at `/workspace`.
-2. Copy `setup_once.sh`, `boot.sh`, and `runpod_server.py` to `/workspace/`:
-   ```bash
-   scp setup_once.sh boot.sh runpod_server.py <pod-ip>:/workspace/
-   ```
-   *(Alternatively, clone the repository directly into `/workspace`)*.
-3. Open a Web Terminal or SSH session on the Pod and run:
-   ```bash
-   bash /workspace/setup_once.sh
-   ```
-4. `setup_once.sh` will automatically:
-   - Install system dependencies (`zstd`, `curl`, `procps`, `ffmpeg`, `libsndfile1`).
-   - Install the Ollama engine.
-   - Build `/root/venv` with all necessary packages (`faster-whisper`, `ollama`, `fastapi`, `uvicorn`, etc.).
-   - Download Faster-Whisper `large-v3` flat to `/workspace/models/faster-whisper-large-v3` without symlinks.
-   - Pull `aya-expanse:8b` directly into `/workspace/models/ollama`.
-   - Archive `/root/venv` to `/workspace/venv_bundle.tar`.
-   - Copy `runpod_server.py` into `/workspace/app/runpod_server.py`.
-5. Terminate the setup pod once the script outputs: `=== One-time setup completed successfully! ===`.
+### First Run on Clean / Empty Global Volume (~3–5 minutes):
+1. When `app.py` starts in `runpod` mode, it auto-rents an available GPU pod with your Global Volume mounted.
+2. The pod starts with the self-seeding Docker command.
+3. If `/workspace/boot.sh` is missing, `boot.sh` downloads itself from GitHub into `/workspace/boot.sh`.
+4. `boot.sh` detects that `/workspace` is brand new (missing `venv_bundle.tar` or models).
+5. It automatically triggers `setup_once.sh`:
+   - Installs OS tools (`ffmpeg`, `libsndfile1`, `curl`, `procps`, `zstd`).
+   - Installs Ollama.
+   - Builds `/root/venv` and installs packages (`fastapi`, `uvicorn`, `faster-whisper`, etc.).
+   - Downloads Faster-Whisper `large-v3` flat to `/workspace/models/faster-whisper-large-v3`.
+   - Pulls `aya-expanse:8b` directly to `/workspace/models/ollama`.
+   - Archives `/root/venv` into `/workspace/venv_bundle.tar`.
+   - Copies `runpod_server.py` to `/workspace/app/runpod_server.py`.
+6. `condense_runpod_logs()` detects this phase and reports:
+   `"Automatische eerste initialisatie van Global Volume (duurt ~3-5m)..."` directly in the Telemetry dashboard.
+7. Once finished, the server begins streaming immediately.
 
----
-
-## 5. Daily Operation & Fast Boot (< 15 seconds)
-
-For normal live subtitle sessions:
-1. Launch any high-bandwidth GPU pod (RTX 4090, RTX 6000 Ada, RTX 4080, RTX 3090) with the Global Volume attached.
-2. Set the Container Start Command:
-   ```bash
-   bash -c "bash /workspace/boot.sh"
-   ```
-3. `boot.sh` will:
-   - Unpack `/workspace/venv_bundle.tar` into local NVMe `/root/venv` in ~5 seconds.
-   - Sync `/workspace/app/*` into `/root/app/`.
-   - Start Ollama against `/workspace/models/ollama`.
-   - Launch `runpod_server.py` with instant local load of Faster-Whisper and Ollama.
+### Subsequent Daily Runs (< 15 seconds):
+1. `app.py` discovers or rents a GPU pod.
+2. `boot.sh` executes immediately from `/workspace/boot.sh`.
+3. It detects that `venv_bundle.tar` and models already exist:
+   - Unpacks `/workspace/venv_bundle.tar` to `/root/venv` in ~5 seconds.
+   - Syncs `/workspace/app/*` to `/root/app/`.
+   - Starts Ollama daemon.
+   - Launches `runpod_server.py` on port 8000.
 4. Total ready-to-serve time is **under 15 seconds**.
 
 ---
 
-## 6. Zero-Rebuild Code Updates
+## 5. Zero-Rebuild Code Updates
 
 When making changes to `runpod_server.py`:
 - You do **not** need to rebuild the venv, download models, or recreate templates.
-- Simply update `/workspace/app/runpod_server.py`:
+- Update `/workspace/app/runpod_server.py` directly:
   ```bash
   cp runpod_server.py /workspace/app/runpod_server.py
   ```
-- Any newly started pod will immediately sync and run the updated server code.
+- Or commit to GitHub: upon container restart or deployment, `boot.sh` automatically ensures the latest code is synced to `/root/app/`.

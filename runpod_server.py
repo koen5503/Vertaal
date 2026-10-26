@@ -9,7 +9,7 @@ import re
 import string
 import threading
 import time
-from typing import Set, Optional
+from typing import Dict, Optional, Set
 import urllib.request
 
 import numpy as np
@@ -371,6 +371,7 @@ async def websocket_endpoint(websocket: WebSocket):
     current_seg_id = None
     current_status = "final"
     last_processed_seg_id = None
+    active_chain_tasks: Dict[str, asyncio.Task] = {}
     
     # Default configs
     config = {
@@ -430,7 +431,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     source_code = config["source_lang"].split("-")[0]
                     transcribe_args = {
                         "language": source_code,
-                        "task": "transcribe"
+                        "task": "transcribe",
+                        "temperature": 0.0,
+                        "condition_on_previous_text": False,
                     }
                     
                     if last_transcript:
@@ -519,50 +522,52 @@ async def websocket_endpoint(websocket: WebSocket):
                         "col1_text": text
                     })
                     
-                    # Dispatch parallel translation chains
+                    # Dispatch parallel translation chains with debouncing and back-translation on final only
                     async def process_translation_chain(col_key_1, lang_1, col_key_2, lang_2, segment_id, segment_status):
-                        # First translation (e.g. NL -> EN)
-                        text_1 = await translate_text(text, lang_1, config["source_lang"])
-                        col_idx_1 = "col2_text" if col_key_1 == "trans1" else "col3_text"
-                        
-                        await websocket.send_json({
-                            "id": segment_id,
-                            "status": segment_status,
-                            "is_delta": False,
-                            col_idx_1: text_1
-                        })
-                        
-                        # Second translation (Back-translation: EN -> NL)
-                        if col_key_2 and lang_2:
-                            text_2 = await translate_text(text_1, lang_2, lang_1)
-                            col_idx_2 = "col4_text" if col_key_2 == "trans3" else "col5_text"
+                        try:
+                            # First translation (e.g. NL -> EN)
+                            text_1 = await translate_text(text, lang_1, config["source_lang"])
+                            col_idx_1 = "col2_text" if col_key_1 == "trans1" else "col3_text"
+                            
                             await websocket.send_json({
                                 "id": segment_id,
                                 "status": segment_status,
                                 "is_delta": False,
-                                col_idx_2: text_2
+                                col_idx_1: text_1
                             })
+                            
+                            # Second translation (Back-translation: e.g. EN -> NL) - ONLY on final chunks
+                            if col_key_2 and lang_2 and segment_status == "final":
+                                text_2 = await translate_text(text_1, lang_2, lang_1)
+                                col_idx_2 = "col4_text" if col_key_2 == "trans3" else "col5_text"
+                                await websocket.send_json({
+                                    "id": segment_id,
+                                    "status": segment_status,
+                                    "is_delta": False,
+                                    col_idx_2: text_2
+                                })
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as ex:
+                            logging.error(f"Error in translation chain {col_key_1}: {ex}", exc_info=True)
 
-                    tasks = []
-                    
                     # Chain 1: trans1 -> trans3 (Back-translation 1)
+                    if "trans1" in active_chain_tasks and not active_chain_tasks["trans1"].done():
+                        active_chain_tasks["trans1"].cancel()
                     c3_key = "trans3" if config.get("enable_trans_3") else None
                     c3_lang = config.get("target_lang_3") if config.get("enable_trans_3") else None
-                    tasks.append(process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status))
-                    
+                    active_chain_tasks["trans1"] = asyncio.create_task(
+                        process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status)
+                    )
+
                     # Chain 2: trans2 -> trans4 (Back-translation 2)
+                    if "trans2" in active_chain_tasks and not active_chain_tasks["trans2"].done():
+                        active_chain_tasks["trans2"].cancel()
                     c4_key = "trans4" if config.get("enable_trans_4") else None
                     c4_lang = config.get("target_lang_4") if config.get("enable_trans_4") else None
-                    tasks.append(process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id, status))
-                        
-                    async def _dispatch_translations(task_list):
-                        try:
-                            await asyncio.gather(*task_list)
-                        except Exception as ex:
-                            logging.error(f"Error in translation background task: {ex}", exc_info=True)
-
-                    if tasks:
-                        asyncio.create_task(_dispatch_translations(tasks))
+                    active_chain_tasks["trans2"] = asyncio.create_task(
+                        process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id, status)
+                    )
                 except Exception as e:
                     logging.error(f"Error processing audio chunk: {e}", exc_info=True)
 
@@ -570,6 +575,10 @@ async def websocket_endpoint(websocket: WebSocket):
         logging.info("Client disconnected.")
     except Exception as e:
         logging.error(f"Unexpected WS Error: {e}")
+    finally:
+        for t in active_chain_tasks.values():
+            if not t.done():
+                t.cancel()
 
 if __name__ == "__main__":
     uvicorn.run(

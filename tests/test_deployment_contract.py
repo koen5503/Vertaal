@@ -278,10 +278,17 @@ class TestDeploymentContract(unittest.TestCase):
         # Whisper maintains full accuracy (standard beam search and prompt context preserved)
         self.assertIn('"task": "transcribe"', server_src)
         self.assertIn('transcribe_args["initial_prompt"] = last_transcript', server_src)
+        self.assertIn('"temperature": 0.0', server_src)
+        self.assertIn('"condition_on_previous_text": False', server_src)
 
         # STT and LLM latency timing logs
         self.assertIn("[Whisper] Transcribed", server_src)
         self.assertIn("[Ollama] Translated", server_src)
+
+        # Translation debouncing and back-translation gating
+        self.assertIn("active_chain_tasks", server_src)
+        self.assertIn('segment_status == "final"', server_src)
+        self.assertIn("export OLLAMA_NUM_PARALLEL=2", self.boot_src)
 
     def test_whisper_nvme_staging_and_path_resolution(self):
         """Verify Faster-Whisper is staged to local NVMe SSD in boot.sh and resolved with local_files_only."""

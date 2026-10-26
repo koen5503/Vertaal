@@ -228,6 +228,96 @@ Your new public key is: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
                 break
         self.assertTrue(found_step_5, "Telemetry did not broadcast step [5/8] during connection retries")
 
+    def test_interim_translation_debouncing_and_backtranslation_gating(self):
+        """Simulate translation chain cancellation of in-flight interim tasks and back-translation gating on final only."""
+        import asyncio
+
+        sent_messages = []
+        mock_websocket = MagicMock()
+        async def mock_send_json(payload):
+            sent_messages.append(payload)
+        mock_websocket.send_json = mock_send_json
+
+        config = {
+            "source_lang": "nl",
+            "target_lang_1": "en",
+            "target_lang_2": "ru",
+            "target_lang_3": "nl",
+            "target_lang_4": "nl",
+            "enable_trans_3": True,
+            "enable_trans_4": True,
+        }
+
+        async def mock_translate_text(text, target, source):
+            if "interim_1" in text:
+                # Simulate slow translation that gets cancelled
+                await asyncio.sleep(0.5)
+            return f"[{target}:{text}]"
+
+        active_chain_tasks = {}
+
+        async def run_simulation():
+            # Helper replicating runpod_server.py dispatch logic
+            async def process_translation_chain(col_key_1, lang_1, col_key_2, lang_2, segment_id, segment_status, current_text):
+                try:
+                    text_1 = await mock_translate_text(current_text, lang_1, config["source_lang"])
+                    col_idx_1 = "col2_text" if col_key_1 == "trans1" else "col3_text"
+                    await mock_websocket.send_json({
+                        "id": segment_id,
+                        "status": segment_status,
+                        "is_delta": False,
+                        col_idx_1: text_1
+                    })
+                    if col_key_2 and lang_2 and segment_status == "final":
+                        text_2 = await mock_translate_text(text_1, lang_2, lang_1)
+                        col_idx_2 = "col4_text" if col_key_2 == "trans3" else "col5_text"
+                        await mock_websocket.send_json({
+                            "id": segment_id,
+                            "status": segment_status,
+                            "is_delta": False,
+                            col_idx_2: text_2
+                        })
+                except asyncio.CancelledError:
+                    pass
+
+            def dispatch_segment(seg_id, status, text):
+                if "trans1" in active_chain_tasks and not active_chain_tasks["trans1"].done():
+                    active_chain_tasks["trans1"].cancel()
+                c3_key = "trans3" if config.get("enable_trans_3") else None
+                c3_lang = config.get("target_lang_3") if config.get("enable_trans_3") else None
+                active_chain_tasks["trans1"] = asyncio.create_task(
+                    process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status, text)
+                )
+
+            # 1. Dispatch first interim chunk (slow)
+            dispatch_segment("seg_1", "interim", "interim_1 audio")
+            await asyncio.sleep(0.01)  # start task 1
+
+            # 2. Dispatch second interim chunk quickly (cancelling chunk 1)
+            dispatch_segment("seg_1", "interim", "interim_2 audio")
+            await asyncio.sleep(0.05)
+
+            # 3. Dispatch final chunk
+            dispatch_segment("seg_1", "final", "final audio")
+            await asyncio.sleep(0.05)
+
+            # Wait for any active tasks to complete
+            await asyncio.gather(*active_chain_tasks.values(), return_exceptions=True)
+
+        asyncio.run(run_simulation())
+
+        # Verify chunk 1 was debounced/cancelled (never sent to websocket)
+        sent_texts = [m.get("col2_text") for m in sent_messages if "col2_text" in m]
+        self.assertNotIn("[en:interim_1 audio]", sent_texts)
+        self.assertIn("[en:interim_2 audio]", sent_texts)
+        self.assertIn("[en:final audio]", sent_texts)
+
+        # Verify back-translation was ONLY sent for final status, never for interim
+        col4_messages = [m for m in sent_messages if "col4_text" in m]
+        self.assertEqual(len(col4_messages), 1)
+        self.assertEqual(col4_messages[0]["status"], "final")
+        self.assertEqual(col4_messages[0]["col4_text"], "[nl:[en:final audio]]")
+
 
 if __name__ == "__main__":
     unittest.main()

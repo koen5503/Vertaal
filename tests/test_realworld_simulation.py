@@ -147,6 +147,67 @@ bash: /workspace/install.sh: Permission denied: cannot execute
         # Stage and status derived correctly
         self.assertIn("Initialisatie [3/8]", engine.condense_runpod_logs(logs_text)[0])
 
+    def test_telemetry_continues_during_connection_refused(self):
+        """Verify telemetry broadcast and log polling continue actively while WebSocket connection refuses."""
+        import asyncio
+
+        mock_engine = MagicMock()
+        mock_engine.broadcast = MagicMock()
+
+        stt_engine = RunPodSTTEngine(engine=mock_engine)
+        stt_engine.active_pod_id = "pod-refuse-test"
+
+        # Mock fetch_pod_logs returning progress lines
+        stt_engine.fetch_pod_logs = MagicMock(return_value=(
+            "RUNNING", "RUNNING",
+            "=== [5/8] Extracting Python Virtual Environment to NVMe SSD (/root/venv) ===\nExtracting..."
+        ))
+
+        async def run_test():
+            attempts = 0
+
+            class MockConnectCM:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                async def __aenter__(self):
+                    nonlocal attempts
+                    attempts += 1
+                    if attempts <= 2:
+                        raise ConnectionRefusedError("Connection refused on port 8000")
+                    raise asyncio.CancelledError()
+
+                async def __aexit__(self, exc_type, exc_val, exc_tb):
+                    pass
+
+            mock_ws_module = MagicMock()
+            mock_ws_module.connect = MockConnectCM
+
+            async def mock_sleep(duration):
+                pass
+
+            with patch("core.stt.runpod_engine.websockets", mock_ws_module), \
+                 patch("asyncio.sleep", side_effect=mock_sleep):
+                try:
+                    await stt_engine.run()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(run_test())
+
+        # Verify broadcast was called during connection retries
+        self.assertGreaterEqual(mock_engine.broadcast.call_count, 2)
+        # Verify the stage contains [5/8]
+        found_step_5 = False
+        for call in mock_engine.broadcast.call_args_list:
+            args, kwargs = call
+            payload = args[0] if args else kwargs.get("data", {})
+            if "[5/8]" in str(payload):
+                found_step_5 = True
+                break
+        self.assertTrue(found_step_5, "Telemetry did not broadcast step [5/8] during connection retries")
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -765,11 +765,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                     wss_url = self.discover_runpod_url()
                     if wss_url:
                         elapsed_sec = int(time.time() - start_wait)
-                        stage = f"AI-modellen laden in GPU VRAM (large-v3 / aya-expanse) ({elapsed_sec}s verlopen)"
-                        await self.broadcast_boot_telemetry(self.active_pod_id, stage, "RUNNING", ["Netwerk poort 8000 bereikbaar.", "Wachten op GPU AI-modellen..."])
-                        print(f"[RunPod] Pod network is ready ({elapsed_sec}s). Waiting 15s extra for Whisper models to load...")
-                        await asyncio.sleep(15)
-                        print(f"[RunPod] Ready to connect after {elapsed_sec + 15}s!")
+                        print(f"[RunPod] Pod network port 8000 discovered ({elapsed_sec}s). Transitioning to live connection and boot log stream...")
                         break
                     print(f"  ...still waiting for network ({elapsed_sec}s)...")
 
@@ -798,6 +794,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         if self.engine and hasattr(self.engine, "audio_stream"):
             self.engine.audio_stream.is_connected = False
 
+        connect_start_time = time.time()
         while True:
             try:
                 print(f"Connecting to RunPod Server: {wss_url}")
@@ -1249,9 +1246,21 @@ class RunPodSTTEngine(BaseSTTEngine):
             except Exception as e:
                 if self.engine and hasattr(self.engine, "audio_stream"):
                     self.engine.audio_stream.is_connected = False
-                print(f"RunPod Server Connection Error. Retrying in 3s... ({e})")
+                print(f"RunPod Server Connection Error. Retrying in 4s... ({e})")
                 discovered = self.discover_runpod_url()
                 if discovered and discovered != wss_url:
                     print(f"[RunPod] Discovered direct accessible endpoint: {discovered}")
                     wss_url = discovered
-                await asyncio.sleep(3)
+
+                # Continuously stream live boot telemetry and container logs during connection retries
+                if self.active_pod_id:
+                    elapsed_sec = int(time.time() - connect_start_time)
+                    try:
+                        last_status, desired_status, raw_logs = await loop.run_in_executor(None, self.fetch_pod_logs, self.active_pod_id)
+                        stage, clean_lines = self.condense_runpod_logs(raw_logs)
+                        detailed_stage = f"{stage} ({elapsed_sec}s verlopen)" if "verlopen" not in stage else stage
+                        await self.broadcast_boot_telemetry(self.active_pod_id, detailed_stage, last_status or desired_status, clean_lines)
+                    except Exception as te:
+                        print(f"[RunPod Boot Telemetry] Error updating logs during retry: {te}")
+
+                await asyncio.sleep(4)

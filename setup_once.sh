@@ -28,19 +28,22 @@ echo "=== [4/8] Installing Python Packages in /root/venv ==="
 /root/venv/bin/pip install --no-cache-dir \
     fastapi uvicorn websockets faster-whisper ollama numpy huggingface_hub
 
-echo "=== [5/8] Downloading Faster-Whisper large-v3 flat to /workspace/models ==="
-mkdir -p /workspace/models/faster-whisper-large-v3
-/root/venv/bin/python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-large-v3', local_dir='/workspace/models/faster-whisper-large-v3', local_dir_use_symlinks=False)"
+echo "=== [5/8] Downloading Faster-Whisper large-v3 on local NVMe SSD ==="
+mkdir -p /tmp/whisper_model /workspace/models/faster-whisper-large-v3
+/root/venv/bin/python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-large-v3', local_dir='/tmp/whisper_model')"
+cp -r /tmp/whisper_model/* /workspace/models/faster-whisper-large-v3/
+rm -rf /tmp/whisper_model
 
-echo "=== [6/8] Pulling Ollama aya-expanse:8b model to /workspace/models/ollama ==="
+echo "=== [6/8] Pulling Ollama aya-expanse:8b on local NVMe SSD and copying to /workspace ==="
 mkdir -p /workspace/models/ollama
-export OLLAMA_MODELS=/workspace/models/ollama
+export OLLAMA_MODELS=/root/.ollama/models
 ollama serve &
 OLLAMA_PID=$!
 sleep 5
 ollama pull aya-expanse:8b
 kill -9 "$OLLAMA_PID" 2>/dev/null || pkill -9 -f "ollama" || true
 wait "$OLLAMA_PID" 2>/dev/null || true
+cp -r /root/.ollama/models/* /workspace/models/ollama/
 
 echo "=== [7/8] Archiving /root/venv into /workspace/venv_bundle.tar ==="
 tar -cf /workspace/venv_bundle.tar -C /root venv

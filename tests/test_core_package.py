@@ -1700,7 +1700,8 @@ class TestCorePackage(unittest.TestCase):
             setup_src = f.read()
 
         self.assertIn("snapshot_download", setup_src)
-        self.assertIn("local_dir_use_symlinks=False", setup_src)
+        self.assertIn("/tmp/whisper_model", setup_src)
+        self.assertIn("/root/.ollama/models", setup_src)
         self.assertIn("/workspace/models/faster-whisper-large-v3", setup_src)
         self.assertIn("/workspace/models/ollama", setup_src)
         self.assertIn("tar -cf /workspace/venv_bundle.tar -C /root venv", setup_src)

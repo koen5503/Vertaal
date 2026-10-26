@@ -220,6 +220,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.segment_stt_time: Dict[str, float] = {}
         self.last_stt_latency_ms: Optional[int] = None
         self.last_trans_latency_ms: Optional[int] = None
+        self.last_deploy_error: Optional[str] = None
         self.active_gpu_name: Optional[str] = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
         if self.engine and hasattr(self.engine, "audio_stream"):
             self.engine.audio_stream.is_connected = False
@@ -317,6 +318,7 @@ class RunPodSTTEngine(BaseSTTEngine):
 
     async def deploy_runpod_pod(self) -> bool:
         """Deploy a RunPod pod using REST API v2 (for Global Volumes) or legacy GraphQL mutation."""
+        self.last_deploy_error = None
         api_key = os.getenv("RUNPOD_API_KEY")
         template_id = os.getenv("RUNPOD_TEMPLATE_ID")
         volume_id = os.getenv("RUNPOD_VOLUME_ID")
@@ -327,6 +329,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         gpu_fallbacks = get_runpod_gpu_fallbacks(preferred_gpu)
 
         if not api_key or not template_id:
+            self.last_deploy_error = "Missing RUNPOD_API_KEY or RUNPOD_TEMPLATE_ID in environment."
             print("[RunPod Deploy] Error: Missing API_KEY or TEMPLATE_ID in .env")
             return False
 
@@ -365,11 +368,13 @@ class RunPodSTTEngine(BaseSTTEngine):
                 except urllib.error.HTTPError as he:
                     err_body = he.read().decode('utf-8', errors='ignore')
                     print(f"[RunPod Deploy v2] HTTP {he.code} for {gpu_id}: {err_body}")
+                    self.last_deploy_error = f"GPU {gpu_id}: HTTP {he.code} - {err_body}"
                     if "stock" in err_body.lower() or "supply" in err_body.lower() or "unavailable" in err_body.lower() or he.code == 400:
                         continue
                     return False
                 except Exception as e:
                     print(f"[RunPod Deploy v2] System Error trying {gpu_id}: {e}")
+                    self.last_deploy_error = f"GPU {gpu_id}: {e}"
                     continue
             else:
                 # Fallback to legacy GraphQL mutation
@@ -407,6 +412,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                         res = json.loads(f.read().decode('utf-8'))
                         if "errors" in res:
                             err_msg = res["errors"][0].get("message", "")
+                            self.last_deploy_error = f"GPU {gpu_id}: GraphQL error - {err_msg or res.get('errors')}"
                             if "SUPPLY_CONSTRAINT" in str(res) or "no longer any instances available" in err_msg:
                                 print(f"[RunPod Deploy GraphQL] {gpu_id} out of stock, trying next...")
                                 continue
@@ -422,13 +428,16 @@ class RunPodSTTEngine(BaseSTTEngine):
                         return True
                 except Exception as e:
                     print(f"[RunPod Deploy GraphQL] System Error trying {gpu_id}: {e}")
+                    self.last_deploy_error = f"GPU {gpu_id}: {e}"
                     continue
 
-        print("[RunPod Deploy] All attempted GPU types are currently unavailable.")
+        if not self.last_deploy_error:
+            self.last_deploy_error = f"Alle geprobeerde GPUs ({', '.join(gpu_fallbacks)}) zijn momenteel niet beschikbaar op RunPod."
+        print(f"[RunPod Deploy] Deployment failed: {self.last_deploy_error}")
         return False
 
     async def manage_runpod_deployment(self) -> bool:
-        """Attempt to resume paused pods, terminates them if unavailable, and deploys a new one if needed."""
+        """Adopts existing running pod if available, terminates exited pods, and rents a fresh pod."""
         api_key = os.getenv("RUNPOD_API_KEY")
         if not api_key:
             return False
@@ -440,43 +449,33 @@ class RunPodSTTEngine(BaseSTTEngine):
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
 
-        # 1. Get all EXITED pods
+        # 1. Fetch current pods
         query = '{ myself { pods { id name desiredStatus } } }'
         req = urllib.request.Request(url, data=json.dumps({"query": query}).encode('utf-8'), headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=10) as response:
                 pods = json.loads(response.read()).get('data', {}).get('myself', {}).get('pods', [])
         except Exception as e:
-            print(f"[RunPod Deploy] Error fetching pods for resume check: {e}")
+            print(f"[RunPod Deploy] Error fetching pods: {e}")
             pods = []
 
-        exited_pods = [p for p in pods if p.get('desiredStatus') == 'EXITED']
+        # 2. Check if an active pod is ALREADY RUNNING
+        running_pods = [
+            p for p in pods
+            if p.get('desiredStatus') == 'RUNNING' and ('ondertitels' in p.get('name', '').lower() or p.get('id') == self.active_pod_id)
+        ]
+        if running_pods:
+            existing_id = running_pods[0]['id']
+            print(f"[RunPod Deploy] Found existing active pod {existing_id}. Attaching to it...")
+            self.active_pod_id = str(existing_id)
+            return True
 
-        for pod in exited_pods:
-            pod_id = pod['id']
-            print(f"[RunPod Deploy] Attempting to resume paused pod {pod_id}...")
-
-            resume_query = f'mutation {{ podResume(input: {{ podId: "{pod_id}", gpuCount: 1 }}) {{ id desiredStatus }} }}'
-            req_resume = urllib.request.Request(url, data=json.dumps({"query": resume_query}).encode('utf-8'), headers=headers)
-            try:
-                with urllib.request.urlopen(req_resume, timeout=15) as f:
-                    res = json.loads(f.read().decode('utf-8'))
-                    if "errors" not in res:
-                        print(f"[RunPod Deploy] Successfully resumed pod {pod_id}!")
-                        self.active_pod_id = str(pod_id)
-                        return True
-                    else:
-                        err_msg = res["errors"][0].get("message", "")
-                        print(f"[RunPod Deploy] Notice: Could not resume {pod_id} (Reason: {err_msg}). Terminating zombie pod...")
-                        self.terminate_runpod_pod(pod_id)
-            except Exception as e:
-                print(f"[RunPod Deploy] System error while managing pod {pod_id}: {e}")
-                self.terminate_runpod_pod(pod_id)
-                continue
-
-        print("[RunPod Deploy] No paused pods could be resumed. Cleaning up any remaining zombie pods...")
+        # 3. Terminate any EXITED / stopped pods (Community Cloud pods cannot be resumed)
+        print("[RunPod Deploy] Cleaning up any stopped/zombie pods...")
         self.cleanup_exited_pods()
-        print("[RunPod Deploy] Falling back to renting a fresh pod...")
+
+        # 4. Rent fresh on-demand pod
+        print("[RunPod Deploy] Renting fresh pod...")
         return await self.deploy_runpod_pod()
 
     def terminate_runpod_pod(self, pod_id: str) -> bool:
@@ -686,32 +685,45 @@ class RunPodSTTEngine(BaseSTTEngine):
         auto_deploy_val = os.getenv("AUTO_DEPLOY_RUNPOD", "false").lower()
         if not wss_url and auto_deploy_val == "true":
             print("[RunPod] No active pod found. Attempting Auto-Deployment/Resume...")
-            await self.broadcast_boot_telemetry(self.active_pod_id, "Pod provisioning via REST/GraphQL API...", "STARTING", ["Auto-deployment geactiveerd. Pod aanmaken..."])
-            if await self.manage_runpod_deployment():
+            await self.broadcast_boot_telemetry(self.active_pod_id, "Pod provisioning via REST/GraphQL API...", "STARTING", ["Auto-deployment geactiveerd. Pod aanmaken of opzoeken..."])
+            deploy_success = await self.manage_runpod_deployment()
+            if deploy_success:
                 print("[RunPod] Deployment successful. Waiting for pod to initialize (this can take 1-3 minutes)...")
-                await self.broadcast_boot_telemetry(self.active_pod_id, "Pod initialiseren...", "INITIALIZING", ["Pod aangemaakt. Wachten op netwerk en containers..."])
-                for i in range(48):
-                    await asyncio.sleep(10)
+                start_wait = time.time()
+                await self.broadcast_boot_telemetry(self.active_pod_id, "Pod initialiseren... (0s verlopen)", "INITIALIZING", ["Pod actief/aangemaakt. Wachten op netwerk en containers..."])
+                for i in range(96):
+                    await asyncio.sleep(5)
+                    elapsed_sec = int(time.time() - start_wait)
                     if self.active_pod_id:
                         last_status, desired_status, raw_logs = await loop.run_in_executor(None, self.fetch_pod_logs, self.active_pod_id)
                         stage, clean_lines = self.condense_runpod_logs(raw_logs)
-                        await self.broadcast_boot_telemetry(self.active_pod_id, stage, last_status or desired_status, clean_lines)
+                        detailed_stage = f"{stage} ({elapsed_sec}s verlopen)" if "verlopen" not in stage else stage
+                        await self.broadcast_boot_telemetry(self.active_pod_id, detailed_stage, last_status or desired_status, clean_lines)
                     wss_url = self.discover_runpod_url()
                     if wss_url:
-                        stage = "AI-modellen laden in GPU VRAM (large-v3 / aya-expanse)"
+                        elapsed_sec = int(time.time() - start_wait)
+                        stage = f"AI-modellen laden in GPU VRAM (large-v3 / aya-expanse) ({elapsed_sec}s verlopen)"
                         await self.broadcast_boot_telemetry(self.active_pod_id, stage, "RUNNING", ["Netwerk poort 8000 bereikbaar.", "Wachten op GPU AI-modellen..."])
-                        print("[RunPod] Pod network is ready. Waiting 20s extra for Whisper models to load...")
-                        await asyncio.sleep(20)
-                        print(f"[RunPod] Ready to connect after {(i + 1) * 10 + 20}s!")
+                        print(f"[RunPod] Pod network is ready ({elapsed_sec}s). Waiting 15s extra for Whisper models to load...")
+                        await asyncio.sleep(15)
+                        print(f"[RunPod] Ready to connect after {elapsed_sec + 15}s!")
                         break
-                    print(f"  ...still waiting for network ({(i + 1) * 10}s)...")
+                    print(f"  ...still waiting for network ({elapsed_sec}s)...")
 
                 if not wss_url:
-                    print("[RunPod] Timeout: Pod did not become ready in time.")
-                    await self.broadcast_boot_telemetry(self.active_pod_id, "Time-out: Pod niet tijdig gereed", "TIMEOUT", ["Time-out bereikt na 480s."])
+                    elapsed_sec = int(time.time() - start_wait)
+                    print(f"[RunPod] Timeout: Pod did not become ready in time ({elapsed_sec}s).")
+                    await self.broadcast_boot_telemetry(self.active_pod_id, f"Time-out: Pod niet tijdig gereed ({elapsed_sec}s)", "TIMEOUT", [f"Time-out bereikt na {elapsed_sec}s."])
             else:
-                print("[RunPod] Auto-Deployment failed.")
-                await self.broadcast_boot_telemetry(self.active_pod_id, "Auto-Deployment mislukt", "FAILED", ["Kon pod niet provisioneren op RunPod."])
+                preferred_gpu = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+                err_detail = getattr(self, "last_deploy_error", None) or f"Kon pod niet provisioneren op RunPod (GPU: {self.active_gpu_name or preferred_gpu})."
+                print(f"[RunPod] Auto-Deployment failed: {err_detail}")
+                await self.broadcast_boot_telemetry(
+                    self.active_pod_id,
+                    f"Auto-Deployment mislukt: {self.active_gpu_name or preferred_gpu}",
+                    "FAILED",
+                    [f"Foutdetails: {err_detail}"]
+                )
 
         if not wss_url:
             wss_url = os.getenv("RUNPOD_WSS_URL")

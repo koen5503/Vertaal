@@ -387,6 +387,10 @@
                     <span class="metric-value" id="boot-status-text">INITIALIZING</span>
                 </div>
                 <div class="metric-row">
+                    <span class="metric-label">Verstreken Opstarttijd</span>
+                    <span class="metric-value" id="boot-timer-text">00:00 (0s)</span>
+                </div>
+                <div class="metric-row">
                     <span class="metric-label">Status Details</span>
                     <span class="metric-value" id="boot-connection-indicator">Wachten op live feed...</span>
                 </div>
@@ -569,9 +573,11 @@
                     document.getElementById('source-lang-text').innerText = data.source_lang;
                 }
 
-                if (data.target_lang_1 || data.target_lang_2) {
-                    const langs = [data.target_lang_1, data.target_lang_2].filter(Boolean).map(l => l.toUpperCase());
-                    document.getElementById('target-langs-text').innerText = langs.join(', ');
+                const targetLangs = [data.target_lang_1, data.target_lang_3, data.target_lang_2, data.target_lang_4]
+                    .filter(Boolean)
+                    .map(l => l.toUpperCase());
+                if (targetLangs.length > 0) {
+                    document.getElementById('target-langs-text').innerText = targetLangs.join(', ');
                 }
 
                 if (data.gpu_name) {
@@ -594,9 +600,10 @@
             // 6. Config Initializer
             if (data.action === 'init_config') {
                 if (data.source_lang) document.getElementById('source-lang-text').innerText = data.source_lang;
-                const t1 = data.target_lang_1 ? data.target_lang_1.toUpperCase() : 'EN';
-                const t2 = data.target_lang_2 ? data.target_lang_2.toUpperCase() : 'RU';
-                document.getElementById('target-langs-text').innerText = `${t1}, ${t2}`;
+                const tLangs = [data.target_lang_1, data.target_lang_3, data.target_lang_2, data.target_lang_4]
+                    .filter(Boolean)
+                    .map(l => l.toUpperCase());
+                document.getElementById('target-langs-text').innerText = tLangs.length ? tLangs.join(', ') : 'EN, DE, RU, NL';
                 if (data.device_index !== undefined) {
                     document.getElementById('audio-device-text').innerText = `Device #${data.device_index}`;
                 }
@@ -623,12 +630,61 @@
             }
         }
 
+        let bootStartTime = null;
+        let bootTimerInterval = null;
+        const accumulatedBootLogs = [];
+        const seenLogLines = new Set();
+
+        function startBootTimer() {
+            if (!bootStartTime) {
+                bootStartTime = Date.now();
+            }
+            if (!bootTimerInterval) {
+                bootTimerInterval = setInterval(updateBootTimerDisplay, 1000);
+            }
+        }
+
+        function stopBootTimer() {
+            if (bootTimerInterval) {
+                clearInterval(bootTimerInterval);
+                bootTimerInterval = null;
+            }
+        }
+
+        function updateBootTimerDisplay() {
+            if (!bootStartTime) return;
+            const elapsed = Math.floor((Date.now() - bootStartTime) / 1000);
+            const mins = Math.floor(elapsed / 60);
+            const secs = elapsed % 60;
+            const timerEl = document.getElementById('boot-timer-text');
+            if (timerEl) {
+                timerEl.innerText = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')} (${elapsed}s)`;
+            }
+        }
+
+        function appendBootLogs(newLogs) {
+            const logBox = document.getElementById('boot-logs');
+            const lines = Array.isArray(newLogs) ? newLogs : (typeof newLogs === 'string' ? newLogs.split('\n') : []);
+            let added = false;
+            lines.forEach(line => {
+                const trimmed = line.trim();
+                if (trimmed && !seenLogLines.has(trimmed)) {
+                    seenLogLines.add(trimmed);
+                    accumulatedBootLogs.push(trimmed);
+                    added = true;
+                }
+            });
+            if (added && logBox) {
+                logBox.innerText = accumulatedBootLogs.join('\n');
+                logBox.scrollTop = logBox.scrollHeight;
+            }
+        }
+
         function updateBootTelemetry(data) {
             if (!data) return;
             const badge = document.getElementById('boot-stage-badge');
             const statusText = document.getElementById('boot-status-text');
             const connIndicator = document.getElementById('boot-connection-indicator');
-            const logBox = document.getElementById('boot-logs');
             const gpuEl = document.getElementById('telemetry-gpu-name');
 
             if (data.gpu_name && gpuEl) {
@@ -649,23 +705,22 @@
                 if (isReady) {
                     badge.className = 'badge fast';
                     connIndicator.innerText = '✅ Systeem verbonden en gereed';
-                } else if (statusUpper === 'ERROR' || stageLower.includes('fout') || stageLower.includes('mislukt')) {
+                    stopBootTimer();
+                    updateBootTimerDisplay();
+                } else if (statusUpper === 'ERROR' || statusUpper === 'FAILED' || statusUpper === 'TIMEOUT' || stageLower.includes('fout') || stageLower.includes('mislukt')) {
                     badge.className = 'badge slow';
                     connIndicator.innerText = '⚠️ Fout tijdens opstarten';
+                    stopBootTimer();
+                    updateBootTimerDisplay();
                 } else {
                     badge.className = 'badge normal pulse-anim';
                     connIndicator.innerText = '⏳ Bezig met initialiseren / opstarten...';
+                    startBootTimer();
                 }
             }
 
-            if (data.logs && Array.isArray(data.logs)) {
-                if (data.logs.length > 0) {
-                    logBox.innerText = data.logs.join('\n');
-                    logBox.scrollTop = logBox.scrollHeight;
-                }
-            } else if (typeof data.logs === 'string' && data.logs.trim().length > 0) {
-                logBox.innerText = data.logs;
-                logBox.scrollTop = logBox.scrollHeight;
+            if (data.logs) {
+                appendBootLogs(data.logs);
             }
         }
 

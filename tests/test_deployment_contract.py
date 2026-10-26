@@ -196,6 +196,35 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("label-trans2", self.viewer_src)
         self.assertIn("label-trans4", self.viewer_src)
 
+    def test_pod_adoption_and_telemetry_enhancements(self):
+        """Verify pod adoption logic, removal of podResume, 5s polling, and telemetry timer."""
+        runpod_engine_path = os.path.join(self.project_root, "core", "stt", "runpod_engine.py")
+        telemetry_html_path = os.path.join(self.project_root, "templates", "telemetry.html")
+
+        with open(runpod_engine_path, "r", encoding="utf-8") as f:
+            runpod_src = f.read()
+
+        with open(telemetry_html_path, "r", encoding="utf-8") as f:
+            telemetry_src = f.read()
+
+        # 1. Pod adoption check in manage_runpod_deployment
+        self.assertIn("running_pods = [", runpod_src)
+        self.assertIn("desiredStatus') == 'RUNNING'", runpod_src)
+        self.assertIn("Found existing active pod", runpod_src)
+        self.assertNotIn("podResume", runpod_src, "Legacy podResume mutation must be removed")
+
+        # 2. Fast 5-second polling loop and elapsed time tracking
+        self.assertIn("await asyncio.sleep(5)", runpod_src)
+        self.assertIn("elapsed_sec", runpod_src)
+        self.assertIn("verlopen", runpod_src)
+
+        # 3. Telemetry boot timer and log accumulation
+        self.assertIn('id="boot-timer-text"', telemetry_src)
+        self.assertIn("startBootTimer", telemetry_src)
+        self.assertIn("appendBootLogs", telemetry_src)
+        self.assertIn("accumulatedBootLogs", telemetry_src)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -19,7 +19,13 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     zstd curl procps ffmpeg libsndfile1
 
 echo "=== [2/8] Installing Ollama ==="
-curl -fsSL https://ollama.com/install.sh | sh
+if ! command -v ollama >/dev/null 2>&1; then
+    curl -fsSL https://ollama.com/install.sh | sh
+fi
+if [ ! -f "/workspace/ollama_bundle.tar" ] && [ -f "/usr/local/bin/ollama" ]; then
+    echo "Caching Ollama binaries to /workspace/ollama_bundle.tar..."
+    tar -cf /workspace/ollama_bundle.tar -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
+fi
 
 echo "=== [3/8] Creating Python Virtual Environment in /root/venv ==="
 python3 -m venv --system-site-packages /root/venv

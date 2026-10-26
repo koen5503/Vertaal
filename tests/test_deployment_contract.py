@@ -146,6 +146,18 @@ class TestDeploymentContract(unittest.TestCase):
             "setup_once.sh must verify Ollama blobs before pulling model",
         )
 
+        # Ollama binary bundle caching & restore check
+        self.assertIn(
+            "/workspace/ollama_bundle.tar",
+            self.setup_src,
+            "setup_once.sh must cache Ollama binaries to /workspace/ollama_bundle.tar",
+        )
+        self.assertIn(
+            "/workspace/ollama_bundle.tar",
+            self.boot_src,
+            "boot.sh must restore Ollama binaries from /workspace/ollama_bundle.tar",
+        )
+
     # --------------------------------------------------------------------------
     # Contract 4: Shell Syntax Verification
     # --------------------------------------------------------------------------

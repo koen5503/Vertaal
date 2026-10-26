@@ -89,6 +89,8 @@ os.environ.setdefault("OLLAMA_MODELS", "/root/.ollama/models" if os.path.isdir("
 os.makedirs("/tmp/hf_cache", exist_ok=True)
 os.makedirs("/tmp/torch_cache", exist_ok=True)
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
 # Configurable settings via env
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small") # small, medium, large-v3, or path
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "aya-expanse:8b")
@@ -96,30 +98,57 @@ OLLAMA_MODELS = os.getenv("OLLAMA_MODELS", "/root/.ollama/models" if os.path.isd
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
 def resolve_whisper_model_path(model_name_or_path: str) -> Optional[str]:
-    """Resolve local flat model directory in /workspace/models or filesystem if present."""
+    """Resolve local flat model directory in /root/models, /workspace/models or filesystem if present."""
+    base_name = os.path.basename(model_name_or_path.rstrip("/"))
+    candidates = []
+
+    # 1. Local high-speed NVMe SSD paths (/root/models)
+    candidates.append(os.path.join("/root/models", base_name))
+    candidates.append(os.path.join("/root/models", f"faster-whisper-{base_name}"))
+    if not os.path.isabs(model_name_or_path):
+        candidates.append(os.path.join("/root/models", model_name_or_path))
+        candidates.append(os.path.join("/root/models", f"faster-whisper-{model_name_or_path}"))
+
+    # 2. Direct path if valid directory
     if os.path.isdir(model_name_or_path):
-        return model_name_or_path
-    candidates = [
-        os.path.join("/workspace/models", model_name_or_path),
-        os.path.join("/workspace/models", f"faster-whisper-{model_name_or_path}"),
-    ]
+        candidates.append(model_name_or_path)
+
+    # 3. Network Global Volume paths (/workspace/models)
+    candidates.append(os.path.join("/workspace/models", base_name))
+    candidates.append(os.path.join("/workspace/models", f"faster-whisper-{base_name}"))
+    if not os.path.isabs(model_name_or_path):
+        candidates.append(os.path.join("/workspace/models", model_name_or_path))
+        candidates.append(os.path.join("/workspace/models", f"faster-whisper-{model_name_or_path}"))
+
+    # Prefer directories with model.bin present
+    for c in candidates:
+        if os.path.isdir(c) and os.path.isfile(os.path.join(c, "model.bin")):
+            return c
+
+    # Fallback to any directory candidate that exists
     for c in candidates:
         if os.path.isdir(c):
             return c
+
     return None
 
 def load_whisper_model(model_name: str, device: str = "cuda", compute_type: str = "float16"):
     """Load Faster-Whisper model from flat directory if present, else fallback with self-healing."""
+    t0 = time.time()
     resolved_dir = resolve_whisper_model_path(model_name)
     if resolved_dir:
-        print(f"Loading faster-whisper model from local directory: {resolved_dir}")
-        return WhisperModel(resolved_dir, device=device, compute_type=compute_type, local_files_only=True)
+        logging.info(f"[Whisper Init] Loading faster-whisper from local directory: {resolved_dir} (local_files_only=True)...")
+        m = WhisperModel(resolved_dir, device=device, compute_type=compute_type, local_files_only=True)
+        logging.info(f"[Whisper Init] Whisper model loaded into GPU in {time.time() - t0:.2f}s from local disk!")
+        return m
 
     try:
-        print(f"Loading faster-whisper model: {model_name}")
-        return WhisperModel(model_name, device=device, compute_type=compute_type)
+        logging.warning(f"[Whisper Init] Local model NOT found! Downloading '{model_name}' from web (HuggingFace)...")
+        m = WhisperModel(model_name, device=device, compute_type=compute_type)
+        logging.info(f"[Whisper Init] Whisper model downloaded and loaded in {time.time() - t0:.2f}s.")
+        return m
     except Exception as e:
-        print(f"Warning: Failed to load faster-whisper model ({e}). Purging corrupted model cache...")
+        logging.warning(f"[Whisper Init] Failed to load faster-whisper model ({e}). Purging corrupted model cache...")
         cache_patterns = [
             "/tmp/hf_cache/hub/models--Systran--faster-whisper*",
             os.path.expanduser("~/.cache/huggingface/hub/models--Systran--faster-whisper*"),
@@ -128,18 +157,16 @@ def load_whisper_model(model_name: str, device: str = "cuda", compute_type: str 
         purged = False
         for pattern in cache_patterns:
             for p in glob.glob(pattern):
-                print(f"Purging corrupted cache: {p}")
+                logging.info(f"[Whisper Init] Purging corrupted cache: {p}")
                 shutil.rmtree(p, ignore_errors=True)
                 purged = True
         if purged:
-            print("Corrupted cache purged successfully. Retrying fresh model download...")
+            logging.info("[Whisper Init] Corrupted cache purged successfully. Retrying fresh model download...")
             return WhisperModel(model_name, device=device, compute_type=compute_type)
         raise
 
 model = load_whisper_model(WHISPER_MODEL, device="cuda", compute_type="float16")
-print("Whisper model loaded.")
-
-logging.basicConfig(level=logging.INFO)
+logging.info("Whisper model initialized and ready.")
 
 # Global Client for Ollama
 client = ollama.AsyncClient(host=OLLAMA_URL)
@@ -403,12 +430,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     source_code = config["source_lang"].split("-")[0]
                     transcribe_args = {
                         "language": source_code,
-                        "task": "transcribe",
-                        "beam_size": 1,
-                        "best_of": 1,
-                        "temperature": 0.0,
-                        "condition_on_previous_text": False,
-                        "vad_filter": False,
+                        "task": "transcribe"
                     }
                     
                     if last_transcript:

@@ -65,7 +65,7 @@ if ! command -v ollama >/dev/null 2>&1; then
 fi
 
 echo "=== [4/8] Creating Volatile Local SSD Directories ==="
-mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama/models
+mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama/models /root/models
 
 echo "=== [5/8] Extracting Python Virtual Environment to NVMe SSD (/root/venv) ==="
 if [ -f "/workspace/venv_bundle.tar" ]; then
@@ -80,7 +80,7 @@ if [ -d "/workspace/app" ]; then
     cp -r /workspace/app/* /root/app/
 fi
 
-echo "=== [7/8] Staging Ollama Models & Exporting Environment ==="
+echo "=== [7/8] Staging Models & Exporting Environment ==="
 if [ -d "/workspace/models/ollama" ] && [ ! -d "/root/.ollama/models/manifests" ]; then
     echo "Staging Ollama models from /workspace to local NVMe SSD using Python..."
     python3 -c "
@@ -97,12 +97,33 @@ for root, dirs, files in os.walk('/workspace/models/ollama'):
 " 2>/dev/null || true
 fi
 
+if [ -d "/workspace/models/faster-whisper-large-v3" ] && [ ! -f "/root/models/faster-whisper-large-v3/model.bin" ]; then
+    echo "Staging Faster-Whisper large-v3 from /workspace to local NVMe SSD (/root/models)..."
+    python3 -c "
+import os, shutil
+for root, dirs, files in os.walk('/workspace/models/faster-whisper-large-v3'):
+    rel = os.path.relpath(root, '/workspace/models/faster-whisper-large-v3')
+    tdir = os.path.join('/root/models/faster-whisper-large-v3', rel) if rel != '.' else '/root/models/faster-whisper-large-v3'
+    os.makedirs(tdir, exist_ok=True)
+    for f in files:
+        s = os.path.join(root, f)
+        d = os.path.join(tdir, f)
+        if os.path.exists(d) and os.path.getsize(d) == os.path.getsize(s): continue
+        with open(s, 'rb') as fin, open(d, 'wb') as fout: shutil.copyfileobj(fin, fout, length=16*1024*1024)
+" 2>/dev/null || true
+fi
+
 export TMPDIR=/tmp
 export HF_HOME=/tmp/hf_cache
 export TORCH_HOME=/tmp/torch_cache
 export PYTHONUNBUFFERED=1
 export OLLAMA_MODELS=/root/.ollama/models
-export WHISPER_MODEL=/workspace/models/faster-whisper-large-v3
+
+if [ -f "/root/models/faster-whisper-large-v3/model.bin" ]; then
+    export WHISPER_MODEL=/root/models/faster-whisper-large-v3
+else
+    export WHISPER_MODEL=/workspace/models/faster-whisper-large-v3
+fi
 
 # Configure CUDA / cuDNN library paths
 for nv_lib in /root/venv/lib/python*/site-packages/nvidia/*/lib; do

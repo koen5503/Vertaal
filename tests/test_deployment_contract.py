@@ -236,22 +236,79 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("appendBootLogs", telemetry_src)
         self.assertIn("accumulatedBootLogs", telemetry_src)
 
-    def test_runpod_faster_whisper_latency_and_logging_configuration(self):
-        """Verify Faster-Whisper greedy decoding parameters and latency timing logs in runpod_server.py."""
+    def test_runpod_faster_whisper_logging_and_accuracy_configuration(self):
+        """Verify Faster-Whisper maintains full accuracy parameters and latency timing logs in runpod_server.py."""
         runpod_server_path = os.path.join(self.project_root, "runpod_server.py")
         with open(runpod_server_path, "r", encoding="utf-8") as f:
             server_src = f.read()
 
-        # Faster-Whisper greedy decoding for low-latency live streaming
-        self.assertIn('"beam_size": 1', server_src)
-        self.assertIn('"best_of": 1', server_src)
-        self.assertIn('"temperature": 0.0', server_src)
-        self.assertIn('"condition_on_previous_text": False', server_src)
-        self.assertIn('"vad_filter": False', server_src)
+        # Whisper maintains full accuracy (standard beam search and prompt context preserved)
+        self.assertIn('"task": "transcribe"', server_src)
+        self.assertIn('transcribe_args["initial_prompt"] = last_transcript', server_src)
 
         # STT and LLM latency timing logs
         self.assertIn("[Whisper] Transcribed", server_src)
         self.assertIn("[Ollama] Translated", server_src)
+
+    def test_whisper_nvme_staging_and_path_resolution(self):
+        """Verify Faster-Whisper is staged to local NVMe SSD in boot.sh and resolved with local_files_only."""
+        # 1. boot.sh checks
+        self.assertIn("/root/models", self.boot_src)
+        self.assertIn("/root/models/faster-whisper-large-v3", self.boot_src)
+        self.assertIn("Staging Faster-Whisper large-v3 from /workspace to local NVMe SSD", self.boot_src)
+        self.assertIn('if [ -f "/root/models/faster-whisper-large-v3/model.bin" ]; then', self.boot_src)
+        self.assertIn("export WHISPER_MODEL=/root/models/faster-whisper-large-v3", self.boot_src)
+
+        # 2. runpod_server.py checks
+        runpod_server_path = os.path.join(self.project_root, "runpod_server.py")
+        with open(runpod_server_path, "r", encoding="utf-8") as f:
+            server_src = f.read()
+
+        self.assertIn("resolve_whisper_model_path", server_src)
+        self.assertIn("/root/models", server_src)
+        self.assertIn("/workspace/models", server_src)
+        self.assertIn("local_files_only=True", server_src)
+        self.assertIn("[Whisper Init] Loading faster-whisper from local directory", server_src)
+        self.assertIn("loaded into GPU in", server_src)
+
+        # 3. Dynamic unit test of resolve_whisper_model_path logic
+        import tempfile
+        from unittest.mock import patch
+
+        # Import or extract resolve_whisper_model_path
+        namespace = {}
+        exec(compile(
+            """import os\nfrom typing import Optional\n""" +
+            server_src[server_src.find("def resolve_whisper_model_path"):server_src.find("def load_whisper_model")],
+            "runpod_server.py", "exec"
+        ), namespace)
+        resolve_func = namespace["resolve_whisper_model_path"]
+
+        with tempfile.TemporaryDirectory() as tmp_root, tempfile.TemporaryDirectory() as tmp_ws:
+            root_model = os.path.join(tmp_root, "faster-whisper-large-v3")
+            ws_model = os.path.join(tmp_ws, "faster-whisper-large-v3")
+            os.makedirs(root_model, exist_ok=True)
+            os.makedirs(ws_model, exist_ok=True)
+
+            with open(os.path.join(root_model, "model.bin"), "wb") as f:
+                f.write(b"mock_model")
+            with open(os.path.join(ws_model, "model.bin"), "wb") as f:
+                f.write(b"mock_model")
+
+            # Patch os.path.join to redirect /root/models and /workspace/models
+            orig_join = os.path.join
+            def mock_join(*args):
+                if len(args) >= 2:
+                    if args[0] == "/root/models":
+                        return orig_join(tmp_root, *args[1:])
+                    elif args[0] == "/workspace/models":
+                        return orig_join(tmp_ws, *args[1:])
+                return orig_join(*args)
+
+            with patch("os.path.join", side_effect=mock_join):
+                res = resolve_func("large-v3")
+                self.assertIsNotNone(res)
+                self.assertTrue(res.startswith(tmp_root), f"Expected /root/models preference, got {res}")
 
 
 if __name__ == "__main__":

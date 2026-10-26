@@ -1,6 +1,7 @@
 """RunPod remote GPU WebSocket streaming STT engine with auto-discovery and deployment."""
 
 import asyncio
+from collections import deque
 import difflib
 import json
 import os
@@ -42,8 +43,12 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
         line = ansi_regex.sub('', raw_line).strip()
         if not line:
             continue
-        # Ignore pure progress-bar lines
+        # Ignore pure progress-bar lines and curl download noise
         if re.search(r'^\d+%.*\[.*it/s\]', line) or re.search(r'^[█▉▊▋▌▍▎▏\s\|]+$', line):
+            continue
+        if re.search(r'^[#O\s\-\=\.0-9%]+$', line) and ('#' in line or '%' in line):
+            continue
+        if re.search(r'^\s*#+\s*\d+\.?\d*%', line):
             continue
         if line == last_line:
             continue
@@ -60,15 +65,42 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
         if m:
             latest_step = m.group(1).strip()
 
-    # Check for active Ollama pull / verification details to append to the stage badge
+    # Check for active sub-steps in recent lines to append to stage badge
     progress_info = None
-    for line in reversed(clean_lines[-4:]):
+    for line in reversed(clean_lines[-6:]):
         l_lower = line.lower()
         if "verifying sha256" in l_lower:
             progress_info = "Verifiëren van checksums (SHA256)"
             break
         elif "pulling manifest" in l_lower or "writing manifest" in l_lower:
             progress_info = "Ollama manifest bijwerken"
+            break
+        elif "staging faster-whisper" in l_lower:
+            progress_info = "Faster-Whisper kopiëren naar NVMe SSD"
+            break
+        elif "staging ollama" in l_lower:
+            progress_info = "Ollama models kopiëren naar NVMe SSD"
+            break
+        elif "restoring ollama engine" in l_lower:
+            progress_info = "Ollama binaries herstellen uit cache"
+            break
+        elif "downloading ollama" in l_lower or "downloading ollama-linux" in l_lower:
+            progress_info = "Ollama downloaden van web"
+            break
+        elif "installing ollama engine" in l_lower:
+            progress_info = "Ollama engine installeren"
+            break
+        elif "extracting python virtual environment" in l_lower:
+            progress_info = "Python venv uitpakken naar NVMe SSD"
+            break
+        elif "syncing application code" in l_lower:
+            progress_info = "Applicatiecode synchroniseren"
+            break
+        elif "starting services" in l_lower or "ollama serve" in l_lower:
+            progress_info = "Services opstarten"
+            break
+        elif "loading faster-whisper" in l_lower:
+            progress_info = "Faster-Whisper in GPU laden"
             break
         elif ("pulling" in l_lower or "downloading" in l_lower) and not line.startswith("==="):
             progress_info = line[:55].strip()
@@ -598,17 +630,21 @@ class RunPodSTTEngine(BaseSTTEngine):
         }
         logs_req = urllib.request.Request(logs_url, headers=logs_headers, method="GET")
 
-        clean_lines: List[str] = []
+        clean_lines = deque(maxlen=200)
         last_msg: Optional[str] = None
         start_time = time.time()
 
         try:
             with urllib.request.urlopen(logs_req, timeout=3.0) as response:
                 for raw in response:
-                    if (time.time() - start_time) > 3.0 or len(clean_lines) >= 40:
+                    if (time.time() - start_time) > 3.0:
                         break
                     line_str = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, (bytes, bytearray)) else str(raw).strip()
                     if not line_str:
+                        continue
+
+                    # Filter curl / progress noise
+                    if re.search(r'^[#O\s\-\=\.0-9%]+$', line_str) and ('#' in line_str or '%' in line_str):
                         continue
 
                     # Handle SSE format (lines beginning with 'data:')
@@ -622,6 +658,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                             text = payload.get("line") or payload.get("message") or ""
                             text = text.strip()
                             if text:
+                                if re.search(r'^[#O\s\-\=\.0-9%]+$', text) and ('#' in text or '%' in text):
+                                    continue
                                 # Deduplicate consecutive identical messages
                                 if text == last_msg:
                                     continue

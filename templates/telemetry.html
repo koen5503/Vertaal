@@ -714,7 +714,7 @@
                     updateBootTimerDisplay();
                 } else {
                     badge.className = 'badge normal pulse-anim';
-                    connIndicator.innerText = '⏳ Bezig met initialiseren / opstarten...';
+                    connIndicator.innerText = '⏳ ' + data.stage;
                     startBootTimer();
                 }
             }

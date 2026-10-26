@@ -250,6 +250,24 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("startBootTimer", telemetry_src)
         self.assertIn("appendBootLogs", telemetry_src)
         self.assertIn("accumulatedBootLogs", telemetry_src)
+        self.assertIn("connIndicator.innerText = '⏳ ' + data.stage;", telemetry_src)
+
+        # 4. Streamed log deque buffer and removal of artificial 40-line cutoff
+        self.assertIn("clean_lines = deque(maxlen=200)", runpod_src)
+        self.assertNotIn("len(clean_lines) >= 40", runpod_src)
+
+        # 5. Verify condense_runpod_logs parses latest step past 100 lines and filters curl noise
+        from core.stt.runpod_engine import condense_runpod_logs
+        mock_logs = "\n".join([f"line {i}: apt-get output" for i in range(80)])
+        mock_logs += "\n=== [5/8] Extracting Python Virtual Environment to NVMe SSD (/root/venv) ===\n"
+        mock_logs += "##O#- # 100.0%\n"
+        mock_logs += "### 99.9%\n"
+        mock_logs += "Restoring Ollama engine from Global Volume cache (1-2s)...\n"
+
+        stage, recent_lines = condense_runpod_logs(mock_logs)
+        self.assertIn("[5/8]", stage)
+        self.assertIn("Ollama binaries herstellen", stage)
+        self.assertNotIn("### 99.9%", recent_lines)
 
     def test_runpod_faster_whisper_logging_and_accuracy_configuration(self):
         """Verify Faster-Whisper maintains full accuracy parameters and latency timing logs in runpod_server.py."""

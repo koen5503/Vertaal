@@ -229,7 +229,7 @@ Your new public key is: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
         self.assertTrue(found_step_5, "Telemetry did not broadcast step [5/8] during connection retries")
 
     def test_interim_translation_debouncing_and_backtranslation_gating(self):
-        """Simulate translation chain cancellation of in-flight interim tasks and back-translation gating on final only."""
+        """Simulate translation chain skipping of interim tasks during busy state and guaranteed sequential final completion."""
         import asyncio
 
         sent_messages = []
@@ -250,15 +250,22 @@ Your new public key is: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
 
         async def mock_translate_text(text, target, source):
             if "interim_1" in text:
-                # Simulate slow translation that gets cancelled
-                await asyncio.sleep(0.5)
+                # Simulate translation taking 50ms
+                await asyncio.sleep(0.05)
             return f"[{target}:{text}]"
 
         active_chain_tasks = {}
+        chain_busy = {"trans1": False, "trans2": False}
 
         async def run_simulation():
             # Helper replicating runpod_server.py dispatch logic
-            async def process_translation_chain(col_key_1, lang_1, col_key_2, lang_2, segment_id, segment_status, current_text):
+            async def process_translation_chain(col_key_1, lang_1, col_key_2, lang_2, segment_id, segment_status, current_text, prev_task):
+                if prev_task and not prev_task.done():
+                    try:
+                        await prev_task
+                    except Exception:
+                        pass
+                chain_busy[col_key_1] = True
                 try:
                     text_1 = await mock_translate_text(current_text, lang_1, config["source_lang"])
                     col_idx_1 = "col2_text" if col_key_1 == "trans1" else "col3_text"
@@ -277,39 +284,49 @@ Your new public key is: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
                             "is_delta": False,
                             col_idx_2: text_2
                         })
-                except asyncio.CancelledError:
-                    pass
+                finally:
+                    chain_busy[col_key_1] = False
 
             def dispatch_segment(seg_id, status, text):
-                if "trans1" in active_chain_tasks and not active_chain_tasks["trans1"].done():
-                    active_chain_tasks["trans1"].cancel()
                 c3_key = "trans3" if config.get("enable_trans_3") else None
                 c3_lang = config.get("target_lang_3") if config.get("enable_trans_3") else None
-                active_chain_tasks["trans1"] = asyncio.create_task(
-                    process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status, text)
-                )
+                if chain_busy.get("trans1", False):
+                    if status == "final":
+                        prev = active_chain_tasks.get("trans1")
+                        active_chain_tasks["trans1"] = asyncio.create_task(
+                            process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status, text, prev)
+                        )
+                    # else: skip interim chunk without cancelling HTTP requests!
+                else:
+                    chain_busy["trans1"] = True
+                    prev = active_chain_tasks.get("trans1")
+                    active_chain_tasks["trans1"] = asyncio.create_task(
+                        process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status, text, prev)
+                    )
 
-            # 1. Dispatch first interim chunk (slow)
+            # 1. Dispatch first interim chunk (busy for 50ms)
             dispatch_segment("seg_1", "interim", "interim_1 audio")
-            await asyncio.sleep(0.01)  # start task 1
+            await asyncio.sleep(0.01)
 
-            # 2. Dispatch second interim chunk quickly (cancelling chunk 1)
+            # 2. Dispatch second interim chunk while trans1 is busy (must be cleanly skipped)
             dispatch_segment("seg_1", "interim", "interim_2 audio")
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
 
-            # 3. Dispatch final chunk
+            # 3. Dispatch final chunk while trans1 is still finishing chunk 1 (must wait and then run)
             dispatch_segment("seg_1", "final", "final audio")
-            await asyncio.sleep(0.05)
 
-            # Wait for any active tasks to complete
-            await asyncio.gather(*active_chain_tasks.values(), return_exceptions=True)
+            # Wait for all queued tasks to finish cleanly
+            while any(not t.done() for t in active_chain_tasks.values()):
+                await asyncio.sleep(0.01)
 
         asyncio.run(run_simulation())
 
-        # Verify chunk 1 was debounced/cancelled (never sent to websocket)
+        # Verify interim_1 finished cleanly without being cancelled
         sent_texts = [m.get("col2_text") for m in sent_messages if "col2_text" in m]
-        self.assertNotIn("[en:interim_1 audio]", sent_texts)
-        self.assertIn("[en:interim_2 audio]", sent_texts)
+        self.assertIn("[en:interim_1 audio]", sent_texts)
+        # Verify interim_2 was skipped to prevent Ollama socket contention
+        self.assertNotIn("[en:interim_2 audio]", sent_texts)
+        # Verify final was executed sequentially and guaranteed
         self.assertIn("[en:final audio]", sent_texts)
 
         # Verify back-translation was ONLY sent for final status, never for interim

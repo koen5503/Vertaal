@@ -285,10 +285,13 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("[Whisper] Transcribed", server_src)
         self.assertIn("[Ollama] Translated", server_src)
 
-        # Translation debouncing and back-translation gating
+        # Translation debouncing, chain_busy skip, and back-translation gating
         self.assertIn("active_chain_tasks", server_src)
+        self.assertIn("chain_busy", server_src)
         self.assertIn('segment_status == "final"', server_src)
         self.assertIn("export OLLAMA_NUM_PARALLEL=2", self.boot_src)
+        self.assertIn("Pre-warming Ollama aya-expanse:8b in GPU VRAM", self.boot_src)
+        self.assertIn('ollama run aya-expanse:8b "hi"', self.boot_src)
 
     def test_whisper_nvme_staging_and_path_resolution(self):
         """Verify Faster-Whisper is staged to local NVMe SSD in boot.sh and resolved with local_files_only."""

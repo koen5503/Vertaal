@@ -146,6 +146,9 @@ sleep 1
 ollama serve &
 sleep 3
 
+echo "Pre-warming Ollama aya-expanse:8b in GPU VRAM..."
+ollama run aya-expanse:8b "hi" >/dev/null 2>&1 || true
+
 echo "Launching Live Translation Server on port 8000..."
 cd /root/app
 exec /root/venv/bin/python3 runpod_server.py

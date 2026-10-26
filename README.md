@@ -4,7 +4,9 @@ Real-time speech-to-text subtitling with simultaneous multi-lingual translation 
 
 ![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-blue)
 ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
+![Docker-Free](https://img.shields.io/badge/Client-100%25%20Docker--Free-success)
 ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-green)
+![Tests](https://img.shields.io/badge/Tests-113%20Passing-brightgreen)
 ![License](https://img.shields.io/badge/License-Private-red)
 
 ---
@@ -12,11 +14,15 @@ Real-time speech-to-text subtitling with simultaneous multi-lingual translation 
 ## 🌟 Key Features
 
 - **3 Flexible Pipeline Modes** — Choose between 100% private on-device processing, ultra-low latency Google Cloud streaming, or high-throughput remote NVIDIA GPU acceleration on RunPod.
+- **100% Docker-Free Client** — Runs natively on macOS and Windows with zero local container overhead. No Docker Desktop, local daemon, or WSL2 required on client machines.
 - **5-Column Subtitle Display** — Live source speech, two direct target translations, and two chained back-translations for real-time verification and multi-lingual reach.
-- **Advanced Audio Processing & VAD** — WebRTC Voice Activity Detection (10ms, 20ms, or 30ms frames), gain normalization, automatic audio format resampling (48kHz/44.1kHz downmix to 16kHz mono), and RMS volume metering.
-- **Anti-Hallucination Safeguards** — Dynamic sliding-window context memory cue with automated prefix-overlap trimming, repetition loops suppression, and glossary phrase leak filtering.
+- **Full-Segment Revision Protocol** — Cumulative audio chunks replace interim versions directly in-place without concatenation lag or word duplication; interim translations display in cursive/italic styling until finalized.
+- **Resilient Anti-Hallucination Filtering** — Dynamic sliding-window context memory cue with automated prefix-overlap trimming, repetition loop suppression, and breath/cough interim suppression without dropping subsequent speech.
+- **Advanced Audio Processing & VAD** — WebRTC Voice Activity Detection (exact 10ms, 20ms, or 30ms frames), gain normalization, automatic audio format resampling (48kHz/44.1kHz downmix to 16kHz mono), and RMS volume metering.
 - **Multiple Audio Input Sources** — CoreAudio / ASIO / WASAPI microphones, VoiceMeeter virtual audio routing (BUS B1), network audio streaming via VBAN (UDP port 6980), or offline WAV file playback.
-- **Automated RunPod Lifecycle Management** — Auto-discovery, auto-resume of paused pods, fallback GPU provisioning (RTX 3090, 4090, A4000, A5000), and auto-shutdown idle timer to minimize cloud compute expenses.
+- **Ephemeral RunPod Mini-Pod Architecture** — On-demand ephemeral pod provisioning with persistent Global Volume storage (`/workspace`), automated self-seeding, fast boot (<15–20s) using standard RunPod PyTorch base images (zero custom Docker Hub images needed), automatic zombie pod cleanup, and idle auto-stop.
+- **Live Telemetry & Health Monitoring** — Dedicated real-time dashboard displaying phased container boot stages `[1/8]`–`[8/8]`, GPU hardware stats, STT/translation latencies, and WebSocket connection health.
+- **Dynamic Sliding Session Window** — Automatic activity-based session extensions bounded by a hard safety ceiling to prevent runaway cloud GPU costs.
 
 ---
 
@@ -33,7 +39,7 @@ The application captures audio through PyAudio or UDP network packets, preproces
                              ▼
  ┌────────────────────────────────────────────────────────┐
  │           Audio Preprocessing & WebRTC VAD             │
- │  48k/44.1k -> 16kHz Mono PCM │ 30ms Frames │ Gain Meter │
+ │  48k/44.1k -> 16kHz Mono PCM │ 30ms Frames │ Gain Meter│
  └───────────────────────────┬────────────────────────────┘
                              │
             ┌────────────────┴────────────────┐
@@ -74,10 +80,13 @@ The application captures audio through PyAudio or UDP network packets, preproces
   └─────────────────────────────────────────────────────────┘
 ```
 
+> [!NOTE]
+> **100% Docker-Free Client**: The host machine running Ondertitels (macOS or Windows) runs pure native Python without requiring Docker Desktop, container daemons, or WSL2 virtualization. When remote GPU acceleration is enabled, the client communicates over secure WebSocket with standard PyTorch cloud pods.
+
 ### The 3 Execution Backends
 
 1. **Local Apple Silicon (`PIPELINE_MODE=local`)**
-   - **STT**: `mlx-whisper` running natively on macOS Metal GPU/Neural Engine.
+   - **STT**: `mlx-whisper` running natively on macOS Metal GPU and Apple Neural Engine.
    - **Translation**: Local LLM served via `Ollama` (e.g., `aya-expanse:8b` or `qwen2.5:3b`).
    - **Characteristics**: 100% offline, zero cloud API costs, complete data privacy.
 
@@ -87,9 +96,36 @@ The application captures audio through PyAudio or UDP network packets, preproces
    - **Characteristics**: Lowest transcription latency for live spoken words; ideal for high-stakes broadcast environments with reliable internet.
 
 3. **Remote NVIDIA GPU on RunPod (`PIPELINE_MODE=runpod`)**
-   - **STT**: `faster-whisper` running on NVIDIA GPUs (RTX 3090, RTX 4090, A4000) deployed in the cloud.
-   - **Communication**: Bidirectional streaming over WebSocket (`runpod_server.py`).
-   - **Characteristics**: Top-tier accuracy with large models (`large-v3`) while allowing lightweight client hardware (e.g., Windows church PC without an internal GPU).
+   - **Architecture**: **Mini-Pod + Global Volume (`/workspace`)** pattern running on remote NVIDIA GPUs (RTX 3090, RTX 4090, A4000, A5000).
+   - **Zero Custom Docker Hub Images**: Deploys using standard RunPod PyTorch base images (`runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04`). No Docker Hub repository or custom image builds needed.
+   - **Automated Self-Seeding & Fast Boot**: On a fresh volume, `boot.sh` automatically seeds the environment via `setup_once.sh` in <3–5 minutes. Subsequent pod starts unpack the environment from `/workspace` and become operational in **< 15–20 seconds**.
+   - **Lifecycle Management**: On-demand ephemeral pod provisioning with persistent storage on the RunPod Global Volume, automatic zombie pod cleanup, and idle auto-stop.
+   - **STT & Translation**: `faster-whisper` (`large-v3`) with local NVMe SSD staging for high I/O throughput + `Ollama` (`aya-expanse:8b`) with GPU VRAM pre-warming.
+   - **Communication**: Bidirectional streaming over secure WebSocket (`runpod_server.py`).
+
+---
+
+## 📝 Full-Segment Revision & Subtitle Quality
+
+Ondertitels uses a **Full-Segment Revision** protocol designed to maximize subtitle readability and translation quality during live continuous speech:
+
+- **In-Place Segment Replacement**: Rather than concatenating fragmented words as audio streams in, the audio engine sends cumulative audio chunks representing the full utterance to date. The STT engine transcribes the complete chunk with full acoustic and grammatical context, replacing the interim version directly in the UI. This eliminates word stutter, repeated prefixes, and sentence splicing artifacts.
+- **Visual Status Differentiation**:
+  - **Interim Subtitles**: Rendered in *italic / cursive* styling with subtle dashed borders while the speaker is mid-sentence.
+  - **Finalized Subtitles**: Rendered in regular font weight with solid borders once a natural pause occurs (or when forced by silence threshold). Finalized segments are protected against regression.
+- **Non-Destructive Hallucination Suppression**: Whisper models can occasionally hallucinate phantom phrases or subtitle credits (e.g. `***`, `Ondertiteling: ...`, coughs, mic pops) during quiet or breathing intervals. The engine suppresses these hallucination chunks without permanently blocking the segment ID. When genuine speech continues after the pause, the segment is immediately unsuppressed and translations flow smoothly without losing subsequent words.
+
+---
+
+## ⏱ Session Window Management & Safety Ceiling
+
+To prevent runaway cloud compute billing and abandoned GPU instances, the backend integrates an automated **Dynamic Sliding Session Window**:
+
+- **Initial Window (`INITIAL_SESSION_WINDOW_MINUTES=15`)**: When a session starts or connects to RunPod, the timer initializes with a 15-minute operational window.
+- **Sliding Activity Extension (`EXTEND_WINDOW_MINUTES=10`)**: Every time speech activity or STT transcription is detected, the sliding window automatically extends by 10 minutes from the current timestamp.
+- **Hard Safety Ceiling (`MAX_SESSION_CEILING_MINUTES=90`)**: Total continuous runtime is capped by a strict ceiling (default: 90 minutes). The sliding window cannot extend beyond this point regardless of ongoing speech, protecting against forgotten overnight sessions.
+- **Silence Heartbeat Probes (`SILENCE_HEARTBEAT_SEC=60`)**: During extended pauses or sermon transitions, the client dispatches periodic heartbeat probes over the WebSocket to maintain connection liveness and monitor container telemetry.
+- **Auto-Stop Enforcement**: When the window expires or the ceiling is reached, the pipeline automatically pauses audio capture and terminates/stops the ephemeral RunPod pod.
 
 ---
 
@@ -163,29 +199,33 @@ Columns 4 and 5 can be toggled in real time via `.env` (`ENABLE_TRANS_3`, `ENABL
 
 ---
 
-### ⚡ Backend 3: Windows & RunPod Cloud STT
+### ⚡ Backend 3: Windows / macOS & RunPod Cloud STT
 
-Optimized for Windows PCs connected to professional mixers (such as Behringer X-32) using **VoiceMeeter**.
+Optimized for client machines (Windows PC connected to mixers like Behringer X-32 via VoiceMeeter, or macOS) connecting to on-demand NVIDIA GPU pods in the cloud. **Zero Docker Desktop or local container runtimes required on the client machine.**
 
 1. **Prerequisites**:
-   - Python 3.10+ (or use compiled `app.exe`)
-   - [VoiceMeeter](https://voicemeeter.com/) (Standard, Banana, or Potato)
-   - [RunPod](https://www.runpod.io/) account with API key
+   - Python 3.10+ (or use compiled `app.exe` on Windows)
+   - On Windows: [VoiceMeeter](https://voicemeeter.com/) (Standard, Banana, or Potato)
+   - [RunPod](https://www.runpod.io/) account with API key and a Network Global Volume (`/workspace`)
 2. **Windows Firewall Configuration (PowerShell as Administrator)**:
    ```powershell
    New-NetFirewallRule -DisplayName "RunPod Outbound" -Direction Outbound -Action Allow -Protocol TCP -RemotePort 443,30000-65535
    New-NetFirewallRule -DisplayName "Ondertitels Viewer" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 80,8000
    ```
 3. **Audio Routing**:
-   Route your mixer input in VoiceMeeter to **BUS B1**.
+   Route your mixer or microphone input in VoiceMeeter to **BUS B1** (or select your local microphone device on macOS).
 4. **Configure `.env`**:
    ```env
    PIPELINE_MODE=runpod
    RUNPOD_API_KEY=your_runpod_api_key
    RUNPOD_WHISPER_MODEL=large-v3
-   RUNPOD_GPU_ID=NVIDIA GeForce RTX 3090
+   RUNPOD_GPU_ID=NVIDIA GeForce RTX 4090
    AUTO_DEPLOY_RUNPOD=true
    MAX_RUN_TIME_SEC=5400
+   INITIAL_SESSION_WINDOW_MINUTES=15
+   EXTEND_WINDOW_MINUTES=10
+   MAX_SESSION_CEILING_MINUTES=90
+   SILENCE_HEARTBEAT_SEC=60
    ```
 5. **Launch Application**:
    ```bash
@@ -209,28 +249,32 @@ Copy `.env.example` to `.env` to configure the application:
 | `ENABLE_TRANS_3` | Enable 4th column chained translation (`true`/`false`) | All | `false` |
 | `ENABLE_TRANS_4` | Enable 5th column chained translation (`true`/`false`) | All | `false` |
 | `TRANSLATE_INTERVAL_SEC` | Throttle interval between interim translations (seconds) | All | `10` |
+| `INITIAL_SESSION_WINDOW_MINUTES` | Initial sliding session duration before auto-pausing (minutes) | All | `15` |
+| `EXTEND_WINDOW_MINUTES` | Sliding window extension duration upon speech activity (minutes) | All | `10` |
+| `MAX_SESSION_CEILING_MINUTES` | Strict safety ceiling capping total continuous session length (minutes) | All | `90` |
+| `SILENCE_HEARTBEAT_SEC` | Probe interval sent across WebSocket during prolonged silence (seconds) | RunPod | `60` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to Google Cloud Service Account JSON file | Cloud | `""` |
 | `GOOGLE_PROJECT_ID` | Google Cloud project identifier | Cloud | `""` |
 | `STABILITY_THRESHOLD` | Minimum Google STT stability metric to trigger translation | Cloud | `0.8` |
 | `MIN_WORDS_FOR_STABILITY` | Minimum words in transcript before interim translation | Cloud | `5` |
 | `WHISPER_MODEL` | Hugging Face model identifier for MLX-Whisper | Local | `mlx-community/whisper-small-mlx` |
-| `OLLAMA_MODEL` | Ollama model tag for LLM translation | Local / RunPod | `qwen2.5:3b` |
+| `OLLAMA_MODEL` | Ollama model tag for LLM translation | Local / RunPod | `aya-expanse:8b` |
 | `OLLAMA_URL` | Ollama service endpoint | Local / RunPod | `http://localhost:11434` |
 | `RUNPOD_API_KEY` | RunPod GraphQL API key | RunPod | `""` |
 | `RUNPOD_WSS_URL` | Manual WebSocket URL override (skips pod discovery) | RunPod | `""` |
-| `RUNPOD_TEMPLATE_ID` | Template ID configured with runpod server image | RunPod | `""` |
-| `RUNPOD_VOLUME_ID` | Network volume attached to pod | RunPod | `""` |
-| `RUNPOD_GPU_ID` | Preferred GPU type for pod rental | RunPod | `NVIDIA GeForce RTX 3090` |
+| `RUNPOD_TEMPLATE_ID` | Template ID configured with standard PyTorch base image | RunPod | `""` |
+| `RUNPOD_VOLUME_ID` | Network Global Volume mounted to `/workspace` | RunPod | `""` |
+| `RUNPOD_GPU_ID` | Preferred GPU type for pod rental | RunPod | `NVIDIA GeForce RTX 4090` |
 | `RUNPOD_DATA_CENTER_ID` | Optional datacenter code (e.g. `EU-RO-1`) | RunPod | `""` |
 | `RUNPOD_WHISPER_MODEL` | Whisper model loaded on remote pod (`small`, `large-v3`) | RunPod | `large-v3` |
-| `AUTO_DEPLOY_RUNPOD` | Automatically resume or spin up pod on startup | RunPod | `false` |
+| `AUTO_DEPLOY_RUNPOD` | Automatically spin up ephemeral pod on startup | RunPod | `false` |
 | `MAX_RUN_TIME_SEC` | Idle timeout for RunPod server self-termination (seconds) | RunPod | `5400` |
 | `DEFAULT_DEVICE_NAME` | Audio input device auto-selected on boot | All | `Voicemeeter Out B1` |
-| `SILENCE_THRESHOLD_MS` | VAD pause duration indicating utterance completion (ms) | All | `400` |
+| `SILENCE_THRESHOLD_MS` | VAD pause duration indicating utterance completion (ms) | All | `500` |
 | `MAX_SILENCE_FLUSH_MS` | Failsafe silence threshold to force chunk transcription (ms) | All | `2000` |
-| `MIN_LOCAL_CHUNK_S` | Minimum audio length before transcribing (seconds) | Local / RunPod | `10.0` |
+| `MIN_LOCAL_CHUNK_S` | Minimum audio length before chunk finalization on natural pause (s) | Local / RunPod | `3.5` |
+| `INTERIM_CHUNK_S` | Interval between interim transcription dispatches (seconds) | Local / RunPod | `5.0` |
 | `MAX_LOCAL_CHUNK_S` | Maximum buffer duration cap before forced transcription (s) | Local / RunPod | `25.0` |
-| `MAX_SESSION_MINUTES` | Safety limit before auto-pausing pipeline (minutes) | All | `30` |
 | `DEMO_FILE_PATH` | Path to sample WAV file for demo playback | All | `2025-12-14-1000.wav` |
 | `VBAN_STREAM_NAME` | Target stream name for incoming VBAN UDP packets | All | `ringleiding` |
 
@@ -238,7 +282,7 @@ Copy `.env.example` to `.env` to configure the application:
 
 ## 🧪 Running Tests
 
-The project includes an automated regression test suite covering audio framing, VAD chunking, anti-hallucination sliding-window algorithms, configuration loading, and pipeline state machines.
+The project includes an automated test suite of **113 tests** covering audio framing, VAD chunking, anti-hallucination sliding-window algorithms, configuration loading, deployment contracts, and real-world streaming simulations.
 
 Run the entire test suite via Python's standard `unittest` framework:
 
@@ -246,11 +290,25 @@ Run the entire test suite via Python's standard `unittest` framework:
 # Standard test discovery:
 python3 -m unittest discover -s tests -p "test_*.py"
 
-# Verbose output showing all test cases:
+# Verbose output showing all 113 test cases:
 python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 ### Test Suite Organization
+
+- **`tests/test_deployment_contract.py`**:
+  - Automated deployment and FUSE storage isolation contract verification.
+  - Verifies FUSE object storage restrictions (safe byte-stream copying into local NVMe SSD).
+  - Validates model caching and re-use checks to prevent redundant downloads across pod boots.
+  - Bash syntax validity for `boot.sh` and `setup_once.sh`.
+  - UI column header synchronization across `index.html` and `viewer.html`.
+
+- **`tests/test_realworld_simulation.py`**:
+  - Real-world stress testing with dirty container log streams (1000+ lines of apt-get/curl progress bars).
+  - Rapid error pattern escalation into UI error banners without false positives on benign INFO logs.
+  - Complete step tracking across phased boot stages `[1/8]` through `[8/8]`.
+  - Interim translation debouncing and guaranteed sequential final completion.
+  - Non-destructive interim hallucination handling preserving subsequent speech.
 
 - **`tests/test_vad_audio.py`**:
   - WebRTC VAD 10ms, 20ms, and 30ms strict frame sizing validation (480 samples / 960 bytes at 16kHz 16-bit mono).
@@ -279,12 +337,13 @@ python3 -m unittest discover -s tests -p "test_*.py" -v
 
 ## 🌐 URLs & Access
 
-When the application starts, it serves both an administrative dashboard and a live viewer over HTTP and WebSockets:
+When the application starts, it serves an administrative dashboard, a live subtitle viewer, and a telemetry health interface over HTTP and WebSockets:
 
 | Interface | URL | Purpose |
 |---|---|---|
 | **Admin Panel** | `http://localhost/` or `http://localhost:8000/` | Full control: select audio input, switch languages, adjust gain, view volume VU meter, start/stop session. |
 | **Live Viewer** | `http://localhost/viewer` or `http://ondertitels.local/viewer` | Clean, high-contrast, responsive subtitle view optimized for tablets, phones, or sanctuary projector screens. |
+| **Telemetry Dashboard** | `http://localhost/telemetry` or `http://localhost:8000/telemetry` | Real-time cloud container telemetry, phased boot logs `[1/8]`–`[8/8]`, GPU hardware stats, STT/translation latencies, and WebSocket connection status. |
 
 *Note: If port 80 is restricted or in use, the server automatically binds to port 8000.*
 
@@ -305,12 +364,15 @@ The resulting executable will be placed in the `dist/` directory. Ensure your `.
 
 ## 🔧 Troubleshooting
 
+- **Client Docker Warning**:
+  - Ondertitels does **not** need Docker on the client PC. If you see warnings or documentation mentioning Docker Desktop, note that the client runs 100% native Python.
 - **Microphone Reads Complete Silence (RMS=0)**:
   - *macOS*: Ensure your terminal has microphone permissions under **System Settings → Privacy & Security → Microphone**.
   - *Windows*: Ensure VoiceMeeter is active and BUS B1 is receiving audio from your mixer or default capture device.
 - **RunPod Connection Refused**:
   - Ensure outbound ports `443` and `30000-65535` are allowed in Windows Firewall.
   - Verify that `RUNPOD_API_KEY` is valid and that pods are running or auto-deploy is enabled.
+  - Check the Telemetry dashboard at `http://localhost:8000/telemetry` to inspect live container logs and boot progress.
 - **Google Cloud STT Credentials Error**:
   - Verify that `GOOGLE_APPLICATION_CREDENTIALS` points to a valid JSON key file and that the Speech-to-Text and Cloud Translation APIs are enabled in your Google Cloud Console.
 

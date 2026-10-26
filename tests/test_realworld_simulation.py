@@ -395,14 +395,19 @@ Your new public key is: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
                     return next(self._iter)
                 except StopIteration:
                     mock_engine.restart_required = True
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(0.01)
                     raise asyncio.CancelledError()
 
+        connected = False
         class MockConnectCM:
             def __init__(self, *args, **kwargs):
                 pass
 
             async def __aenter__(self):
+                nonlocal connected
+                if connected:
+                    raise asyncio.CancelledError()
+                connected = True
                 return MockWS(messages)
 
             async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -458,14 +463,20 @@ Your new public key is: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
                 try:
                     return next(self._iter)
                 except StopIteration:
-                    await asyncio.sleep(0.02)
+                    mock_engine.restart_required = True
+                    await asyncio.sleep(0.01)
                     raise asyncio.CancelledError()
 
+        final_connected = False
         class MockFinalConnectCM:
             def __init__(self, *args, **kwargs):
                 pass
 
             async def __aenter__(self):
+                nonlocal final_connected
+                if final_connected:
+                    raise asyncio.CancelledError()
+                final_connected = True
                 return MockFinalWS(final_messages)
 
             async def __aexit__(self, exc_type, exc_val, exc_tb):

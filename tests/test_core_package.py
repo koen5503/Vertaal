@@ -1696,7 +1696,8 @@ class TestCorePackage(unittest.TestCase):
         with open("setup_once.sh", "r", encoding="utf-8") as f:
             setup_src = f.read()
 
-        self.assertIn("--local-dir-use-symlinks False", setup_src)
+        self.assertIn("snapshot_download", setup_src)
+        self.assertIn("local_dir_use_symlinks=False", setup_src)
         self.assertIn("/workspace/models/faster-whisper-large-v3", setup_src)
         self.assertIn("/workspace/models/ollama", setup_src)
         self.assertIn("tar -cf /workspace/venv_bundle.tar -C /root venv", setup_src)

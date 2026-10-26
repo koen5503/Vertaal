@@ -666,7 +666,7 @@ class RunPodSTTEngine(BaseSTTEngine):
             if await self.manage_runpod_deployment():
                 print("[RunPod] Deployment successful. Waiting for pod to initialize (this can take 1-3 minutes)...")
                 await self.broadcast_boot_telemetry(self.active_pod_id, "Pod initialiseren...", "INITIALIZING", ["Pod aangemaakt. Wachten op netwerk en containers..."])
-                for i in range(30):
+                for i in range(48):
                     await asyncio.sleep(10)
                     if self.active_pod_id:
                         last_status, desired_status, raw_logs = await loop.run_in_executor(None, self.fetch_pod_logs, self.active_pod_id)
@@ -684,7 +684,7 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                 if not wss_url:
                     print("[RunPod] Timeout: Pod did not become ready in time.")
-                    await self.broadcast_boot_telemetry(self.active_pod_id, "Time-out: Pod niet tijdig gereed", "TIMEOUT", ["Time-out bereikt na 300s."])
+                    await self.broadcast_boot_telemetry(self.active_pod_id, "Time-out: Pod niet tijdig gereed", "TIMEOUT", ["Time-out bereikt na 480s."])
             else:
                 print("[RunPod] Auto-Deployment failed.")
                 await self.broadcast_boot_telemetry(self.active_pod_id, "Auto-Deployment mislukt", "FAILED", ["Kon pod niet provisioneren op RunPod."])

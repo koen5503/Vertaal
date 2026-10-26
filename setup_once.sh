@@ -30,9 +30,7 @@ echo "=== [4/8] Installing Python Packages in /root/venv ==="
 
 echo "=== [5/8] Downloading Faster-Whisper large-v3 flat to /workspace/models ==="
 mkdir -p /workspace/models/faster-whisper-large-v3
-/root/venv/bin/huggingface-cli download Systran/faster-whisper-large-v3 \
-    --local-dir /workspace/models/faster-whisper-large-v3 \
-    --local-dir-use-symlinks False
+/root/venv/bin/python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-large-v3', local_dir='/workspace/models/faster-whisper-large-v3', local_dir_use_symlinks=False)"
 
 echo "=== [6/8] Pulling Ollama aya-expanse:8b model to /workspace/models/ollama ==="
 mkdir -p /workspace/models/ollama

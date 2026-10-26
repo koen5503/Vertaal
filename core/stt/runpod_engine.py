@@ -106,6 +106,28 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
             progress_info = line[:55].strip()
             break
 
+    # Fatal error detection across recent log lines
+    error_line = None
+    for line in reversed(clean_lines[-30:]):
+        l_lower = line.lower()
+        if (
+            "error:" in l_lower
+            or "traceback (most recent call last)" in l_lower
+            or "modulenotfounderror:" in l_lower
+            or "permission denied:" in l_lower
+            or "fatal error" in l_lower
+            or "fatal:" in l_lower
+            or "command not found" in l_lower
+            or "killed" in l_lower.split()
+            or (("failed" in l_lower or "failure" in l_lower) and not any(ok in l_lower for ok in ["0 failed", "failed: 0", "retry", "fallback"]))
+        ):
+            error_line = line.strip()
+            break
+
+    if error_line:
+        stage = f"Fout in container: {error_line[:120]}"
+        return stage, clean_lines[-6:]
+
     if any(k in full_text for k in ["fastapi", "application startup complete", "listening on", "uvicorn running", "uvicorn", "launching live translation server"]):
         stage = "Server operationeel op poort 8000"
     elif latest_step:
@@ -222,7 +244,7 @@ RUNPOD_OVERRIDE_CMD = RUNPOD_BOOT_CMD
 class RunPodSTTEngine(BaseSTTEngine):
     """RunPod remote streaming engine with auto-discovery and deployment."""
 
-    def __init__(self, engine):
+    def __init__(self, engine=None):
         self.engine = engine
         self.active_pod_id: Optional[str] = None
         self.audio_buffer = bytearray()
@@ -589,9 +611,10 @@ class RunPodSTTEngine(BaseSTTEngine):
 
     condense_runpod_logs = staticmethod(condense_runpod_logs)
 
-    def fetch_pod_logs(self, pod_id: str) -> Tuple[Optional[str], Optional[str], str]:
+    def fetch_pod_logs(self, pod_id: str, api_key: Optional[str] = None) -> Tuple[Optional[str], Optional[str], str]:
         """Fetch pod status and runtime container & system logs from RunPod REST API v2 streaming endpoint."""
-        api_key = os.getenv("RUNPOD_API_KEY")
+        if not api_key:
+            api_key = os.getenv("RUNPOD_API_KEY")
         if not api_key or not pod_id:
             return None, None, ""
 
@@ -682,7 +705,9 @@ class RunPodSTTEngine(BaseSTTEngine):
 
         # Derive runtime status from desired_status and log stage
         stage, _ = self.condense_runpod_logs(clean_logs_text)
-        if "Server operationeel" in stage:
+        if "fout" in stage.lower() or "error" in stage.lower():
+            derived_status = "ERROR"
+        elif "Server operationeel" in stage:
             derived_status = "CONNECTED"
         elif any(k in stage for k in ["AI-modellen", "Container starten", "storage", "layers", "GPU initialisatie"]):
             derived_status = desired_status or "RUNNING"

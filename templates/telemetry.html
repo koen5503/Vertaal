@@ -709,7 +709,7 @@
                     updateBootTimerDisplay();
                 } else if (statusUpper === 'ERROR' || statusUpper === 'FAILED' || statusUpper === 'TIMEOUT' || stageLower.includes('fout') || stageLower.includes('mislukt')) {
                     badge.className = 'badge slow';
-                    connIndicator.innerText = '⚠️ Fout tijdens opstarten';
+                    connIndicator.innerText = '⚠️ ' + data.stage;
                     stopBootTimer();
                     updateBootTimerDisplay();
                 } else {

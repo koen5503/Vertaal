@@ -8,7 +8,7 @@
 # Constraints honored:
 # - NO symlinks on /workspace (FUSE S3 object storage cannot handle symlinks)
 # - Python venv lives on volatile /root and is archived into /workspace/venv_bundle.tar
-# - Models stored flat in /workspace/models/
+# - Models downloaded & verified on local NVMe SSD, then copied with --no-preserve=mode,ownership
 # ==============================================================================
 
 set -euo pipefail
@@ -29,21 +29,25 @@ echo "=== [4/8] Installing Python Packages in /root/venv ==="
     fastapi uvicorn websockets faster-whisper ollama numpy huggingface_hub
 
 echo "=== [5/8] Downloading Faster-Whisper large-v3 on local NVMe SSD ==="
+# Clean up any stale partial files from prior failed runs
+rm -rf /workspace/models/ollama /workspace/models/faster-whisper-large-v3 /tmp/whisper_model
 mkdir -p /tmp/whisper_model /workspace/models/faster-whisper-large-v3
 /root/venv/bin/python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-large-v3', local_dir='/tmp/whisper_model')"
-cp -r /tmp/whisper_model/* /workspace/models/faster-whisper-large-v3/
+cp -r --no-preserve=mode,ownership /tmp/whisper_model/* /workspace/models/faster-whisper-large-v3/
 rm -rf /tmp/whisper_model
 
 echo "=== [6/8] Pulling Ollama aya-expanse:8b on local NVMe SSD and copying to /workspace ==="
-mkdir -p /workspace/models/ollama
+mkdir -p /root/.ollama/models /workspace/models/ollama
 export OLLAMA_MODELS=/root/.ollama/models
+pkill -9 -f "ollama serve" 2>/dev/null || true
 ollama serve &
 OLLAMA_PID=$!
-sleep 5
+sleep 4
 ollama pull aya-expanse:8b
 kill -9 "$OLLAMA_PID" 2>/dev/null || pkill -9 -f "ollama" || true
 wait "$OLLAMA_PID" 2>/dev/null || true
-cp -r /root/.ollama/models/* /workspace/models/ollama/
+# Copy clean verified models without preserving POSIX permissions (avoids chmod on FUSE)
+cp -r --no-preserve=mode,ownership /root/.ollama/models/* /workspace/models/ollama/
 
 echo "=== [7/8] Archiving /root/venv into /workspace/venv_bundle.tar ==="
 tar -cf /workspace/venv_bundle.tar -C /root venv

@@ -83,7 +83,7 @@ os.environ.setdefault("TMPDIR", "/tmp")
 os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
 os.environ.setdefault("TORCH_HOME", "/tmp/torch_cache")
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
-os.environ.setdefault("OLLAMA_MODELS", "/workspace/models/ollama")
+os.environ.setdefault("OLLAMA_MODELS", "/root/.ollama/models" if os.path.isdir("/root/.ollama/models") else "/workspace/models/ollama")
 
 # Ensure volatile local SSD cache directories exist
 os.makedirs("/tmp/hf_cache", exist_ok=True)
@@ -92,7 +92,7 @@ os.makedirs("/tmp/torch_cache", exist_ok=True)
 # Configurable settings via env
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small") # small, medium, large-v3, or path
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "aya-expanse:8b")
-OLLAMA_MODELS = os.getenv("OLLAMA_MODELS", "/workspace/models/ollama")
+OLLAMA_MODELS = os.getenv("OLLAMA_MODELS", "/root/.ollama/models" if os.path.isdir("/root/.ollama/models") else "/workspace/models/ollama")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
 def resolve_whisper_model_path(model_name_or_path: str) -> Optional[str]:

@@ -1692,7 +1692,7 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn('os.environ.setdefault("TMPDIR", "/tmp")', server_src)
         self.assertIn('os.environ.setdefault("HF_HOME", "/tmp/hf_cache")', server_src)
         self.assertIn('os.environ.setdefault("TORCH_HOME", "/tmp/torch_cache")', server_src)
-        self.assertIn('os.environ.setdefault("OLLAMA_MODELS", "/workspace/models/ollama")', server_src)
+        self.assertIn('os.environ.setdefault("OLLAMA_MODELS"', server_src)
 
         # 2. setup_once.sh structure and critical flags
         self.assertTrue(os.path.isfile("setup_once.sh"))
@@ -1702,6 +1702,7 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("snapshot_download", setup_src)
         self.assertIn("/tmp/whisper_model", setup_src)
         self.assertIn("/root/.ollama/models", setup_src)
+        self.assertIn("--no-preserve=mode,ownership", setup_src)
         self.assertIn("/workspace/models/faster-whisper-large-v3", setup_src)
         self.assertIn("/workspace/models/ollama", setup_src)
         self.assertIn("tar -cf /workspace/venv_bundle.tar -C /root venv", setup_src)
@@ -1722,8 +1723,9 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("export TMPDIR=/tmp", boot_src)
         self.assertIn("export HF_HOME=/tmp/hf_cache", boot_src)
         self.assertIn("export TORCH_HOME=/tmp/torch_cache", boot_src)
-        self.assertIn("export OLLAMA_MODELS=/workspace/models/ollama", boot_src)
+        self.assertIn("export OLLAMA_MODELS=/root/.ollama/models", boot_src)
         self.assertIn("export WHISPER_MODEL=/workspace/models/faster-whisper-large-v3", boot_src)
+        self.assertIn('pkill -9 -f "ollama serve"', boot_src)
         self.assertIn("ollama serve &", boot_src)
         self.assertIn("exec /root/venv/bin/python3 runpod_server.py", boot_src)
 

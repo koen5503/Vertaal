@@ -296,8 +296,37 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.last_trans_latency_ms: Optional[int] = None
         self.last_deploy_error: Optional[str] = None
         self.active_gpu_name: Optional[str] = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
+        self.proxy_url: Optional[str] = None
+        self.direct_tcp_url: Optional[str] = None
         if self.engine and hasattr(self.engine, "audio_stream"):
             self.engine.audio_stream.is_connected = False
+
+    def _probe_endpoint(self, candidate_url: Optional[str] = None) -> bool:
+        """Probe RunPod server HTTP /health endpoint to verify whether the server is ready."""
+        urls_to_probe: List[str] = []
+        for u in [candidate_url, self.proxy_url, self.direct_tcp_url]:
+            if u and u not in urls_to_probe:
+                urls_to_probe.append(u)
+
+        for u in urls_to_probe:
+            try:
+                http_url = u.replace("wss://", "https://").replace("ws://", "http://")
+                if "/stream" in http_url:
+                    health_url = http_url.replace("/stream", "/health")
+                else:
+                    health_url = http_url.rstrip("/") + "/health"
+                req = urllib.request.Request(
+                    health_url,
+                    headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+                )
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        if data.get("status") == "ok" or data.get("whisper_ready"):
+                            return True
+            except Exception:
+                continue
+        return False
 
     def discover_runpod_url(self) -> Optional[str]:
         """Auto-discover running RunPod endpoint via GraphQL API."""
@@ -373,16 +402,20 @@ class RunPodSTTEngine(BaseSTTEngine):
                         pod_gpu = pod.get("machine", {}).get("gpuDisplayName") if isinstance(pod.get("machine"), dict) else None
                         self.active_gpu_name = pod_gpu or self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
 
+                        self.active_pod_id = pod_id
+                        self.proxy_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
                         if ip and port_map.get('isIpPublic') and public_port:
-                            link = f"ws://{ip}:{public_port}/stream"
-                            print(f"[RunPod Auto-Discovery] Found TCP Link: {link} (GPU: {self.active_gpu_name})")
-                            self.active_pod_id = pod_id
-                            return link
+                            self.direct_tcp_url = f"ws://{ip}:{public_port}/stream"
                         else:
-                            link = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
-                            print(f"[RunPod Auto-Discovery] Found WSS HTTP Proxy Link: {link} (GPU: {self.active_gpu_name})")
-                            self.active_pod_id = pod_id
-                            return link
+                            self.direct_tcp_url = None
+
+                        prefer_proxy = os.getenv("RUNPOD_PREFER_PROXY", "false").lower() == "true"
+                        if self.direct_tcp_url and not prefer_proxy:
+                            print(f"[RunPod Auto-Discovery] Found TCP Link: {self.direct_tcp_url} (Proxy fallback: {self.proxy_url}) (GPU: {self.active_gpu_name})")
+                            return self.direct_tcp_url
+                        else:
+                            print(f"[RunPod Auto-Discovery] Found Cloudflare Proxy Link: {self.proxy_url} (GPU: {self.active_gpu_name})")
+                            return self.proxy_url
 
             print("[RunPod Auto-Discovery] No running pod with port 8000 found.")
         except Exception as e:
@@ -693,6 +726,8 @@ class RunPodSTTEngine(BaseSTTEngine):
         if self.active_pod_id:
             pod_id = self.active_pod_id
             self.active_pod_id = None
+            self.proxy_url = None
+            self.direct_tcp_url = None
             return await loop.run_in_executor(None, self.terminate_runpod_pod, pod_id)
         else:
             print("[RunPod Stop] No active_pod_id tracked locally. Scanning account for orphaned ondertitels pods...")
@@ -847,17 +882,44 @@ class RunPodSTTEngine(BaseSTTEngine):
                 for i in range(96):
                     await asyncio.sleep(5)
                     elapsed_sec = int(time.time() - start_wait)
+                    clean_lines = []
+                    raw_logs = ""
+                    last_status, desired_status = None, None
+                    stage = "Pod initialiseren..."
+
                     if self.active_pod_id:
                         last_status, desired_status, raw_logs = await loop.run_in_executor(None, self.fetch_pod_logs, self.active_pod_id)
                         stage, clean_lines = self.condense_runpod_logs(raw_logs)
                         detailed_stage = f"{stage} ({elapsed_sec}s verlopen)" if "verlopen" not in stage else stage
                         await self.broadcast_boot_telemetry(self.active_pod_id, detailed_stage, last_status or desired_status, clean_lines)
-                    wss_url = self.discover_runpod_url()
-                    if wss_url:
+                        print(f"[RunPod Boot] {detailed_stage}")
+
+                    if not wss_url:
+                        wss_url = self.discover_runpod_url()
+
+                    # Verify if server is confirmed listening/ready before breaking early
+                    raw_text = raw_logs if isinstance(raw_logs, str) else ""
+                    logs_text = " ".join(clean_lines) if isinstance(clean_lines, list) else ""
+                    full_text = (raw_text + " " + logs_text).lower()
+
+                    is_server_listening = any(k in full_text for k in [
+                        "application startup complete",
+                        "uvicorn running on",
+                        "whisper model initialized and ready",
+                    ]) or stage == "Server operationeel op poort 8000"
+
+                    if not is_server_listening and wss_url:
+                        is_server_listening = await loop.run_in_executor(None, self._probe_endpoint, wss_url)
+
+                    if wss_url and is_server_listening:
                         elapsed_sec = int(time.time() - start_wait)
-                        print(f"[RunPod] Pod network port 8000 discovered ({elapsed_sec}s). Transitioning to live connection and boot log stream...")
+                        print(f"[RunPod] Server confirmed listening and ready ({elapsed_sec}s). Transitioning to live connection...")
                         break
-                    print(f"  ...still waiting for network ({elapsed_sec}s)...")
+
+                    if not wss_url:
+                        print(f"  ...still waiting for network ({elapsed_sec}s)...")
+                    else:
+                        print(f"  ...pod network assigned ({wss_url}), waiting for server startup / Whisper load ({elapsed_sec}s)...")
 
                 if not wss_url:
                     elapsed_sec = int(time.time() - start_wait)
@@ -899,6 +961,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                 print(f"Connecting to RunPod Server: {wss_url}")
                 async with websockets.connect(
                     wss_url,
+                    open_timeout=5.0,
                     ping_interval=30,
                     ping_timeout=120,
                     close_timeout=15,
@@ -1384,10 +1447,19 @@ class RunPodSTTEngine(BaseSTTEngine):
                     continue
 
                 print(f"RunPod Server Connection Error. Retrying in 4s... ({e})")
-                discovered = self.discover_runpod_url()
-                if discovered and discovered != wss_url:
-                    print(f"[RunPod] Discovered direct accessible endpoint: {discovered}")
-                    wss_url = discovered
+
+                # Endpoint failover logic: switch immediately from direct TCP to Cloudflare proxy, or alternate
+                if self.proxy_url and (wss_url == self.direct_tcp_url or "proxy.runpod.net" not in (wss_url or "")):
+                    print(f"[RunPod] Direct TCP endpoint timed out/unreachable. Failing over to Cloudflare Proxy: {self.proxy_url}")
+                    wss_url = self.proxy_url
+                elif self.direct_tcp_url and self.proxy_url and wss_url == self.proxy_url:
+                    print(f"[RunPod] Cloudflare Proxy connection error. Alternating to Direct TCP: {self.direct_tcp_url}")
+                    wss_url = self.direct_tcp_url
+                else:
+                    discovered = self.discover_runpod_url()
+                    if discovered and discovered != wss_url:
+                        print(f"[RunPod] Discovered direct accessible endpoint: {discovered}")
+                        wss_url = discovered
 
                 # Continuously stream live boot telemetry and container logs during connection retries
                 if self.active_pod_id:

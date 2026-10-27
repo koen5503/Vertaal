@@ -1,9 +1,12 @@
 """Real-world simulation tests for RunPod log parsing, error escalation, and SSE streams."""
 
+import asyncio
 import io
 import json
+import os
+import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.stt.runpod_engine import RunPodSTTEngine, condense_runpod_logs
 
@@ -847,6 +850,124 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
             self.assertEqual(len([b for b in broadcasts_cloud if b.get("action") == "auto_paused"]), 1)
 
         asyncio.run(run_timeout_tests())
+
+    def test_runpod_handshake_timeout_cloudflare_proxy_failover(self):
+        """Verify that direct TCP connection handshake timeout immediately fails over to Cloudflare Proxy URL."""
+        mock_engine = MagicMock()
+        mock_engine.broadcast = AsyncMock()
+        mock_engine.restart_required = False
+        mock_engine.is_paused = False
+        mock_engine.session_expiry_time = time.time() + 3600
+        mock_engine.initial_session_window_minutes = 15
+        mock_engine.audio_stream.running = True
+
+        stt_engine = RunPodSTTEngine(engine=mock_engine)
+
+        # 1. Test auto-discovery stores both direct TCP and Cloudflare Proxy URLs
+        discovery_payload = {
+            "data": {
+                "myself": {
+                    "pods": [{
+                        "id": "pod-failover-123",
+                        "name": "ondertitels-gpu",
+                        "desiredStatus": "RUNNING",
+                        "runtime": {
+                            "ports": [{
+                                "ip": "213.192.2.92",
+                                "isIpPublic": True,
+                                "privatePort": 8000,
+                                "publicPort": 40199,
+                                "type": "tcp"
+                            }]
+                        }
+                    }]
+                }
+            }
+        }
+        mock_disc_resp = MagicMock()
+        mock_disc_resp.read.return_value = json.dumps(discovery_payload).encode("utf-8")
+        mock_disc_resp.__enter__.return_value = mock_disc_resp
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key"}):
+            with patch("urllib.request.urlopen", return_value=mock_disc_resp):
+                disc_url = stt_engine.discover_runpod_url()
+                self.assertEqual(disc_url, "ws://213.192.2.92:40199/stream")
+                self.assertEqual(stt_engine.direct_tcp_url, "ws://213.192.2.92:40199/stream")
+                self.assertEqual(stt_engine.proxy_url, "wss://pod-failover-123-8000.proxy.runpod.net/stream")
+                self.assertEqual(stt_engine.active_pod_id, "pod-failover-123")
+
+        stt_engine.fetch_pod_logs = MagicMock(return_value=(
+            "RUNNING", "RUNNING", "Uvicorn running on http://0.0.0.0:8000"
+        ))
+        stt_engine.discover_runpod_url = MagicMock(return_value="ws://213.192.2.92:40199/stream")
+
+        # 2. Test _probe_endpoint converting WS URL to HTTP /health endpoint
+        mock_probe_resp = MagicMock()
+        mock_probe_resp.status = 200
+        mock_probe_resp.read.return_value = json.dumps({"status": "ok", "whisper_ready": True}).encode("utf-8")
+        mock_probe_resp.__enter__.return_value = mock_probe_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_probe_resp):
+            self.assertTrue(stt_engine._probe_endpoint("ws://213.192.2.92:40199/stream"))
+
+        connected_endpoints = []
+        open_timeouts = []
+
+        class MockWs:
+            async def send(self, data):
+                pass
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise asyncio.CancelledError()
+
+        class MockConnectCM:
+            def __init__(self, uri, *args, **kwargs):
+                self.uri = uri
+                self.open_timeout = kwargs.get("open_timeout")
+
+            async def __aenter__(self):
+                connected_endpoints.append(self.uri)
+                open_timeouts.append(self.open_timeout)
+                if self.uri == "ws://213.192.2.92:40199/stream":
+                    # Simulate handshake timeout on firewalled host port
+                    raise asyncio.TimeoutError("timed out during opening handshake")
+                # Proxy succeeds! Complete test cleanly
+                raise asyncio.CancelledError()
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        mock_ws_module = MagicMock()
+        mock_ws_module.connect = MockConnectCM
+
+        async def run_test():
+            async def mock_sleep(duration):
+                pass
+
+            with patch("core.stt.runpod_engine.websockets", mock_ws_module), \
+                 patch("asyncio.sleep", side_effect=mock_sleep):
+                try:
+                    await stt_engine.run()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(run_test())
+
+        # Verify first attempt was direct TCP with open_timeout=5.0, followed by Cloudflare Proxy failover
+        self.assertEqual(connected_endpoints[0], "ws://213.192.2.92:40199/stream")
+        self.assertEqual(open_timeouts[0], 5.0)
+        self.assertEqual(connected_endpoints[1], "wss://pod-failover-123-8000.proxy.runpod.net/stream")
+        self.assertEqual(open_timeouts[1], 5.0)
+
+        # Verify runpod_server.py contains the /health endpoint
+        with open("runpod_server.py", "r", encoding="utf-8") as f:
+            server_src = f.read()
+        self.assertIn('@app.get("/health")', server_src)
+        self.assertIn('"status": "ok"', server_src)
+        self.assertIn('"whisper_ready": True', server_src)
 
 
 if __name__ == "__main__":

@@ -184,6 +184,10 @@ def reset_session_timer(reason: str = "activity"):
     last_logged_activity = last_activity_time
     logging.info(f"SHUTDOWN TIMER: Reset triggered ({reason}). Auto-shutdown postponed by {MAX_RUN_TIME/60:.1f} minutes.")
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "whisper_ready": True}
+
 @app.get("/reset_timer")
 @app.post("/reset_timer")
 async def api_reset_timer():

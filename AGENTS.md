@@ -11,7 +11,7 @@
   1. **Log Stream Simulation**: Feed `condense_runpod_logs()` and `fetch_pod_logs()` with 500+ lines of realistic, dirty container output (apt-get installs, curl download progress hashes, SSE format, broken JSON, system restarts) to guarantee no premature cutoff or silent failures.
   2. **Error Pattern Escalation**: Fatal keywords (`ERROR:`, `fatal:`, `Traceback`, `Permission denied`, `No such file`, `FAILED`) in container logs MUST be immediately detected and escalated to `ERROR` status badge with the exact line in telemetry, never masked by generic "Initialiseren...".
   3. **Phase & Step Tracking**: Verify that each phase `[1/8]` through `[8/8]` is uniquely detected and tracked.
-  4. **FUSE & Memory Constraints**: Verify that no script writes cache to `/workspace` or reads 3 GB models over FUSE without NVMe SSD staging.
+  4. **FUSE & Memory Constraints**: Verify that no script writes runtime caches or unpacks virtualenvs on `/workspace` (`TMPDIR`, `HF_HOME`, `TORCH_HOME` must point to `/tmp`, and `venv` must unpack to `/root/venv`). Model downloads in `setup_once.sh` MUST stage on local NVMe (`/tmp` or `/root`) before copying flat to `/workspace/models/` via `shutil.copyfileobj`. Conversely, `boot.sh` MUST NOT copy multi-GB models from `/workspace/models/` to `/root` via Python on boot; both Ollama and Faster-Whisper must be symlinked on `/root` (`ln -sfn`) and loaded directly into GPU VRAM.
 
 ## 3. Pre-Flight Verification Gate
 - Before reporting completion to the user, run:

@@ -28,33 +28,60 @@ class TestRealWorldSimulation(unittest.TestCase):
             lines.append("######################################################################## 100.0%")
             lines.append("")  # Empty lines
 
-        # 3. Step 7 with Faster-Whisper staging
+        # 3. Step 7 with Faster-Whisper linking
         lines.append("=== [7/8] Staging Models & Exporting Environment ===")
-        lines.append("Staging Faster-Whisper large-v3 from /workspace to local NVMe SSD (/root/models)...")
-        lines.append("Copying chunk 1/16")
+        lines.append("Linking Faster-Whisper large-v3 from /workspace to local SSD (/root/models/faster-whisper-large-v3)...")
+        lines.append("Creating symlink...")
 
         raw_logs = "\n".join(lines)
         stage, recent_lines = condense_runpod_logs(raw_logs)
 
         # Must recognize step [7/8]
         self.assertIn("[7/8]", stage)
-        self.assertIn("Faster-Whisper kopiëren naar NVMe SSD", stage)
+        self.assertIn("Faster-Whisper large-v3 koppelen aan NVMe SSD", stage)
 
         # Must not contain curl progress noise in recent lines
         for r_line in recent_lines:
             self.assertFalse(r_line.startswith("##O#"), f"Curl noise found in recent lines: {r_line}")
             self.assertFalse(r_line.startswith("###"), f"Curl noise found in recent lines: {r_line}")
 
-    def test_staging_ollama_models_log_parsing(self):
-        """Ensure log parsing for 'Staging Ollama models from /workspace to local NVMe SSD' maps to 'Ollama models kopiëren naar NVMe SSD' in condense_runpod_logs()."""
-        raw_logs = """
+    def test_staging_and_linking_models_log_parsing(self):
+        """Ensure log parsing for linking/staging Ollama & Faster-Whisper models maps to Dutch telemetry labels."""
+        # 1. Linking Ollama models
+        raw_logs_ollama = """
+=== [7/8] Staging Models & Exporting Environment ===
+Linking Ollama models from /workspace to local SSD (/root/.ollama/models)...
+"""
+        stage_lo, _ = condense_runpod_logs(raw_logs_ollama)
+        self.assertIn("[7/8]", stage_lo)
+        self.assertIn("Ollama models koppelen aan NVMe SSD", stage_lo)
+
+        # 2. Linking Faster-Whisper
+        raw_logs_whisper = """
+=== [7/8] Staging Models & Exporting Environment ===
+Linking Faster-Whisper large-v3 from /workspace to local SSD (/root/models/faster-whisper-large-v3)...
+"""
+        stage_lw, _ = condense_runpod_logs(raw_logs_whisper)
+        self.assertIn("[7/8]", stage_lw)
+        self.assertIn("Faster-Whisper large-v3 koppelen aan NVMe SSD", stage_lw)
+
+        # 3. Staging Ollama (backward compatibility)
+        raw_logs_staging_ollama = """
 === [7/8] Staging Models & Exporting Environment ===
 Staging Ollama models from /workspace to local NVMe SSD (/root/.ollama/models)...
-Staging model files...
 """
-        stage, recent_lines = condense_runpod_logs(raw_logs)
-        self.assertIn("[7/8]", stage)
-        self.assertIn("Ollama models kopiëren naar NVMe SSD", stage)
+        stage_so, _ = condense_runpod_logs(raw_logs_staging_ollama)
+        self.assertIn("[7/8]", stage_so)
+        self.assertIn("Ollama models koppelen aan NVMe SSD", stage_so)
+
+        # 4. Staging Faster-Whisper (backward compatibility)
+        raw_logs_staging_whisper = """
+=== [7/8] Staging Models & Exporting Environment ===
+Staging Faster-Whisper large-v3 from /workspace to local NVMe SSD (/root/models)...
+"""
+        stage_sw, _ = condense_runpod_logs(raw_logs_staging_whisper)
+        self.assertIn("[7/8]", stage_sw)
+        self.assertIn("Faster-Whisper large-v3 koppelen aan NVMe SSD", stage_sw)
 
 
     def test_error_pattern_escalation(self):

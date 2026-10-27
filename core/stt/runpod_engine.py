@@ -75,11 +75,11 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
         elif "pulling manifest" in l_lower or "writing manifest" in l_lower:
             progress_info = "Ollama manifest bijwerken"
             break
-        elif "staging faster-whisper" in l_lower:
-            progress_info = "Faster-Whisper kopiëren naar NVMe SSD"
+        elif "staging faster-whisper" in l_lower or "linking faster-whisper" in l_lower:
+            progress_info = "Faster-Whisper large-v3 koppelen aan NVMe SSD"
             break
-        elif "staging ollama" in l_lower:
-            progress_info = "Ollama models kopiëren naar NVMe SSD"
+        elif "staging ollama" in l_lower or "linking ollama" in l_lower:
+            progress_info = "Ollama models koppelen aan NVMe SSD"
             break
         elif "restoring ollama engine" in l_lower:
             progress_info = "Ollama binaries herstellen uit cache"

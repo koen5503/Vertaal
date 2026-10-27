@@ -101,7 +101,7 @@ if ! command -v ollama >/dev/null 2>&1; then
 fi
 
 echo "=== [4/8] Creating Volatile Local SSD Directories ==="
-mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama/models /root/models
+mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama /root/models
 
 echo "=== [5/8] Extracting Python Virtual Environment to NVMe SSD (/root/venv) ==="
 extract_failed=false
@@ -129,56 +129,26 @@ fi
 
 echo "=== [7/8] Staging Models & Exporting Environment ==="
 if [ -d "/workspace/models/ollama" ]; then
-    echo "Staging Ollama models from /workspace to local NVMe SSD (/root/.ollama/models)..."
-    [ -L /root/.ollama/models ] && rm -f /root/.ollama/models
-    mkdir -p /root/.ollama/models
-    python3 -c "
-import os, shutil
-for root, dirs, files in os.walk('/workspace/models/ollama'):
-    rel = os.path.relpath(root, '/workspace/models/ollama')
-    tdir = os.path.join('/root/.ollama/models', rel) if rel != '.' else '/root/.ollama/models'
-    os.makedirs(tdir, exist_ok=True)
-    for f in files:
-        s = os.path.join(root, f)
-        d = os.path.join(tdir, f)
-        if os.path.exists(d) and os.path.getsize(d) == os.path.getsize(s): continue
-        with open(s, 'rb') as fin, open(d, 'wb') as fout: shutil.copyfileobj(fin, fout, length=16*1024*1024)
-" 2>/dev/null || true
+    echo "Linking Ollama models from /workspace to local SSD (/root/.ollama/models)..."
+    mkdir -p /root/.ollama
+    rm -rf /root/.ollama/models
+    ln -sfn /workspace/models/ollama /root/.ollama/models
 fi
 
-if [ -d "/workspace/models/faster-whisper-large-v3" ] && [ ! -f "/root/models/faster-whisper-large-v3/model.bin" ]; then
-    echo "Staging Faster-Whisper large-v3 from /workspace to local NVMe SSD (/root/models)..."
-    python3 -c "
-import os, shutil
-for root, dirs, files in os.walk('/workspace/models/faster-whisper-large-v3'):
-    rel = os.path.relpath(root, '/workspace/models/faster-whisper-large-v3')
-    tdir = os.path.join('/root/models/faster-whisper-large-v3', rel) if rel != '.' else '/root/models/faster-whisper-large-v3'
-    os.makedirs(tdir, exist_ok=True)
-    for f in files:
-        s = os.path.join(root, f)
-        d = os.path.join(tdir, f)
-        if os.path.exists(d) and os.path.getsize(d) == os.path.getsize(s): continue
-        with open(s, 'rb') as fin, open(d, 'wb') as fout: shutil.copyfileobj(fin, fout, length=16*1024*1024)
-" 2>/dev/null || true
+if [ -d "/workspace/models/faster-whisper-large-v3" ]; then
+    echo "Linking Faster-Whisper large-v3 from /workspace to local SSD (/root/models/faster-whisper-large-v3)..."
+    mkdir -p /root/models
+    rm -rf /root/models/faster-whisper-large-v3
+    ln -sfn /workspace/models/faster-whisper-large-v3 /root/models/faster-whisper-large-v3
 fi
 
 export TMPDIR=/tmp
 export HF_HOME=/tmp/hf_cache
 export TORCH_HOME=/tmp/torch_cache
 export PYTHONUNBUFFERED=1
+export OLLAMA_MODELS=/root/.ollama/models
 export OLLAMA_NUM_PARALLEL=2
-
-if [ -d "/root/.ollama/models/manifests" ]; then
-    export OLLAMA_MODELS=/root/.ollama/models
-else
-    export OLLAMA_MODELS=/workspace/models/ollama
-fi
-
-if [ -f "/root/models/faster-whisper-large-v3/model.bin" ]; then
-    export WHISPER_MODEL=/root/models/faster-whisper-large-v3
-else
-    export WHISPER_MODEL=/workspace/models/faster-whisper-large-v3
-fi
+export WHISPER_MODEL=/root/models/faster-whisper-large-v3
 
 # Configure CUDA / cuDNN library paths
 for nv_lib in /root/venv/lib/python*/site-packages/nvidia/*/lib; do

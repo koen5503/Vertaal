@@ -105,16 +105,16 @@ class TestDeploymentContract(unittest.TestCase):
             "setup_once.sh must build venv on fast volatile local SSD (/root/venv)",
         )
 
-        # Ensure pure byte-stream copying (copyfileobj) is used, not standard copytree
+        # Ensure pure byte-stream copying (copyfileobj) is used in setup_once.sh, but not in boot.sh
         self.assertIn(
             "copyfileobj",
             self.setup_src,
             "setup_once.sh must use copyfileobj byte-stream copier for /workspace",
         )
-        self.assertIn(
+        self.assertNotIn(
             "copyfileobj",
             self.boot_src,
-            "boot.sh must use copyfileobj byte-stream copier for staging Ollama models",
+            "boot.sh must not run copyfileobj loops to copy multi-GB models on boot",
         )
         self.assertNotIn(
             "shutil.copytree",
@@ -294,12 +294,12 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn('ollama run aya-expanse:8b "hi"', self.boot_src)
 
     def test_whisper_nvme_staging_and_path_resolution(self):
-        """Verify Faster-Whisper is staged to local NVMe SSD in boot.sh and resolved with local_files_only."""
+        """Verify Faster-Whisper is linked to /root/models in boot.sh via ln -sfn and resolved with local_files_only."""
         # 1. boot.sh checks
         self.assertIn("/root/models", self.boot_src)
         self.assertIn("/root/models/faster-whisper-large-v3", self.boot_src)
-        self.assertIn("Staging Faster-Whisper large-v3 from /workspace to local NVMe SSD", self.boot_src)
-        self.assertIn('if [ -f "/root/models/faster-whisper-large-v3/model.bin" ]; then', self.boot_src)
+        self.assertIn("Linking Faster-Whisper large-v3 from /workspace to local SSD", self.boot_src)
+        self.assertIn("ln -sfn /workspace/models/faster-whisper-large-v3 /root/models/faster-whisper-large-v3", self.boot_src)
         self.assertIn("export WHISPER_MODEL=/root/models/faster-whisper-large-v3", self.boot_src)
 
         # 2. runpod_server.py checks
@@ -358,7 +358,7 @@ class TestDeploymentContract(unittest.TestCase):
         Verify fixes for the 3 RunPod Global Volume Reliability Risks:
         1. Unguarded GitHub Raw CDN dependency on boot (guarded via /tmp, fallback URL, and reuse of existing files)
         2. Partial tarball corruption risk on /workspace/venv_bundle.tar (staged via /tmp, self-healing in boot.sh)
-        3. Ollama models read over FUSE via symlink (NVMe SSD staging via copyfileobj, dynamic OLLAMA_MODELS export)
+        3. Instant symlinks on /root for both Ollama and Faster-Whisper (ln -sfn directly to /workspace/models)
         """
         # Risk 1: GitHub Raw CDN Dependency & Staging via /tmp
         self.assertIn('REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline}"', self.boot_src)
@@ -385,13 +385,12 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("rm -f /workspace/venv_bundle.tar", step5_text)
         self.assertIn("/root/venv/bin/python3", step5_text)
 
-        # Risk 3: Ollama NVMe SSD staging (no symlinks, copyfileobj, dynamic OLLAMA_MODELS)
-        self.assertIn("mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama/models /root/models", self.boot_src)
-        self.assertNotIn("ln -sfn /workspace/models/ollama", self.boot_src)
-        self.assertIn("Staging Ollama models from /workspace to local NVMe SSD (/root/.ollama/models)...", self.boot_src)
-        self.assertIn('if [ -d "/root/.ollama/models/manifests" ]; then', self.boot_src)
+        # Risk 3: Instant symlinks on /root for both Ollama and Faster-Whisper
+        self.assertIn("mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama /root/models", self.boot_src)
+        self.assertIn("ln -sfn /workspace/models/ollama /root/.ollama/models", self.boot_src)
+        self.assertIn("ln -sfn /workspace/models/faster-whisper-large-v3 /root/models/faster-whisper-large-v3", self.boot_src)
         self.assertIn("export OLLAMA_MODELS=/root/.ollama/models", self.boot_src)
-        self.assertIn("export OLLAMA_MODELS=/workspace/models/ollama", self.boot_src)
+        self.assertIn("export WHISPER_MODEL=/root/models/faster-whisper-large-v3", self.boot_src)
 
 
 if __name__ == "__main__":

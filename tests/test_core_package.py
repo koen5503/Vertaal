@@ -1168,7 +1168,8 @@ class TestCorePackage(unittest.TestCase):
         with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key"}):
             with patch("urllib.request.urlopen", return_value=mock_disc_resp):
                 url = runpod.discover_runpod_url()
-                self.assertEqual(url, "ws://100.200.50.1:18000/stream")
+                self.assertEqual(url, "wss://pod-disc-456-8000.proxy.runpod.net/stream")
+                self.assertEqual(runpod.direct_tcp_url, "ws://100.200.50.1:18000/stream")
                 self.assertEqual(runpod.active_pod_id, "pod-disc-456")
 
         # 2. Deployment tracking (REST API v2)
@@ -1349,16 +1350,36 @@ class TestCorePackage(unittest.TestCase):
         mock_resp_1.read.return_value = json.dumps(payload_http_first).encode("utf-8")
         mock_resp_1.__enter__.return_value = mock_resp_1
 
-        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key", "RUNPOD_PREFER_PROXY": "false"}):
+        # Case 1: 8000/http appears before 8000/tcp in ports list (Proxy preferred by default)
+        payload_http_first = {
+            "data": {
+                "myself": {
+                    "pods": [{
+                        "id": "pod-multi-123",
+                        "name": "ondertitels-gpu",
+                        "desiredStatus": "RUNNING",
+                        "machine": {"gpuDisplayName": "NVIDIA RTX 4090"},
+                        "runtime": {
+                            "ports": [http_port, tcp_port]
+                        }
+                    }]
+                }
+            }
+        }
+        mock_resp_1 = MagicMock()
+        mock_resp_1.read.return_value = json.dumps(payload_http_first).encode("utf-8")
+        mock_resp_1.__enter__.return_value = mock_resp_1
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key"}):
             with patch("urllib.request.urlopen", return_value=mock_resp_1):
                 url = runpod.discover_runpod_url()
-                self.assertEqual(url, "ws://157.157.221.29:23044/stream")
+                self.assertEqual(url, "wss://pod-multi-123-8000.proxy.runpod.net/stream")
                 self.assertEqual(runpod.direct_tcp_url, "ws://157.157.221.29:23044/stream")
                 self.assertEqual(runpod.proxy_url, "wss://pod-multi-123-8000.proxy.runpod.net/stream")
                 self.assertEqual(runpod.active_gpu_name, "NVIDIA RTX 4090")
                 self.assertEqual(runpod.active_pod_id, "pod-multi-123")
 
-        # Case 2: 8000/tcp appears before 8000/http in ports list
+        # Case 2: 8000/tcp appears before 8000/http in ports list (Proxy still preferred by default)
         payload_tcp_first = {
             "data": {
                 "myself": {
@@ -1378,20 +1399,21 @@ class TestCorePackage(unittest.TestCase):
         mock_resp_2.read.return_value = json.dumps(payload_tcp_first).encode("utf-8")
         mock_resp_2.__enter__.return_value = mock_resp_2
 
-        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key", "RUNPOD_PREFER_PROXY": "false"}):
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key"}):
             with patch("urllib.request.urlopen", return_value=mock_resp_2):
                 url = runpod.discover_runpod_url()
-                self.assertEqual(url, "ws://157.157.221.29:23044/stream")
+                self.assertEqual(url, "wss://pod-multi-456-8000.proxy.runpod.net/stream")
                 self.assertEqual(runpod.direct_tcp_url, "ws://157.157.221.29:23044/stream")
                 self.assertEqual(runpod.proxy_url, "wss://pod-multi-456-8000.proxy.runpod.net/stream")
                 self.assertEqual(runpod.active_gpu_name, "NVIDIA RTX A5000")
 
-        # Case 3: RUNPOD_PREFER_PROXY=true returns Cloudflare proxy even if direct TCP is present
-        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key", "RUNPOD_PREFER_PROXY": "true"}):
+        # Case 3: RUNPOD_PREFER_TCP=true returns Direct TCP when available
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key", "RUNPOD_PREFER_TCP": "true"}):
             with patch("urllib.request.urlopen", return_value=mock_resp_1):
                 url = runpod.discover_runpod_url()
-                self.assertEqual(url, "wss://pod-multi-123-8000.proxy.runpod.net/stream")
+                self.assertEqual(url, "ws://157.157.221.29:23044/stream")
                 self.assertEqual(runpod.direct_tcp_url, "ws://157.157.221.29:23044/stream")
+                self.assertEqual(runpod.proxy_url, "wss://pod-multi-123-8000.proxy.runpod.net/stream")
 
         # Case 4: Only 8000/http is present (no TCP public port)
         payload_http_only = {
@@ -1412,14 +1434,14 @@ class TestCorePackage(unittest.TestCase):
         mock_resp_http.read.return_value = json.dumps(payload_http_only).encode("utf-8")
         mock_resp_http.__enter__.return_value = mock_resp_http
 
-        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key", "RUNPOD_PREFER_PROXY": "false"}):
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key"}):
             with patch("urllib.request.urlopen", return_value=mock_resp_http):
                 url = runpod.discover_runpod_url()
                 self.assertEqual(url, "wss://pod-http-only-8000.proxy.runpod.net/stream")
                 self.assertIsNone(runpod.direct_tcp_url)
 
     def test_ensure_template_http_ports(self):
-        """ensure_template_http_ports updates the template via GraphQL mutation if 8000/http is missing."""
+        """ensure_template_http_ports updates the template via GraphQL mutation to enforce pure 8000/http."""
         import json
         from unittest.mock import MagicMock, patch
         from core.stt.runpod_engine import RunPodSTTEngine
@@ -1427,7 +1449,7 @@ class TestCorePackage(unittest.TestCase):
         engine = MagicMock()
         runpod = RunPodSTTEngine(engine)
 
-        # 1. Template missing 8000/http (has "8000/tcp,8000/udp")
+        # 1. Template missing 8000/http (has "8000/tcp,8000/udp") -> updates to "8000/http"
         query_resp = {
             "data": {
                 "myself": {
@@ -1449,7 +1471,7 @@ class TestCorePackage(unittest.TestCase):
             "data": {
                 "saveTemplate": {
                     "id": "tmpl-q1w7juynsy",
-                    "ports": "8000/http,8000/tcp"
+                    "ports": "8000/http"
                 }
             }
         }
@@ -1478,19 +1500,50 @@ class TestCorePackage(unittest.TestCase):
             query_body = json.loads(recorded_requests[0].data.decode("utf-8"))
             self.assertIn("podTemplates", query_body["query"])
 
-            # Check mutation
+            # Check mutation sends pure 8000/http
             mutation_body = json.loads(recorded_requests[1].data.decode("utf-8"))
             self.assertIn("saveTemplate", mutation_body["query"])
-            self.assertIn('ports: "8000/http,8000/tcp"', mutation_body["query"])
+            self.assertIn('ports: "8000/http"', mutation_body["query"])
+            self.assertNotIn('8000/tcp', mutation_body["query"])
             self.assertIn('id: "tmpl-q1w7juynsy"', mutation_body["query"])
 
-        # 2. Template already has 8000/http -> no mutation needed
-        query_already_ok = {
+        # 2. Template has "8000/http,8000/tcp" -> must update to eliminate duplicate 8000/tcp
+        query_dual = {
             "data": {
                 "myself": {
                     "podTemplates": [{
                         "id": "tmpl-q1w7juynsy",
                         "ports": "8000/http,8000/tcp"
+                    }]
+                }
+            }
+        }
+        mock_query_dual = MagicMock()
+        mock_query_dual.read.return_value = json.dumps(query_dual).encode("utf-8")
+        mock_query_dual.__enter__.return_value = mock_query_dual
+
+        recorded_dual = []
+        def side_effect_dual(req, timeout=10):
+            recorded_dual.append(req)
+            if len(recorded_dual) == 1:
+                return mock_query_dual
+            return mock_mutation
+
+        with patch("urllib.request.urlopen", side_effect=side_effect_dual):
+            success = runpod.ensure_template_http_ports("fake_key", "tmpl-q1w7juynsy")
+            self.assertTrue(success)
+            self.assertEqual(len(recorded_dual), 2)
+            mut_body = json.loads(recorded_dual[1].data.decode("utf-8"))
+            self.assertIn('ports: "8000/http"', mut_body["query"])
+            self.assertNotIn('8000/tcp', mut_body["query"])
+
+        # 3. Template already has pure 8000/http -> no mutation needed
+        query_already_ok = {
+            "data": {
+                "myself": {
+                    "podTemplates": [{
+                        "id": "tmpl-q1w7juynsy",
+                        "ports": "8000/http"
                     }]
                 }
             }

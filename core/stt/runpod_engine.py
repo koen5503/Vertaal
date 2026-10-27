@@ -402,27 +402,38 @@ class RunPodSTTEngine(BaseSTTEngine):
                 self.active_gpu_name = pod_gpu or self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
 
                 self.active_pod_id = pod_id
-                self.proxy_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
+                self.proxy_url = None
                 self.direct_tcp_url = None
 
                 for port_map in ports:
                     if port_map.get('privatePort') == 8000:
-                        if port_map.get('type') == 'tcp' and port_map.get('isIpPublic') and port_map.get('publicPort'):
+                        ptype = (port_map.get('type') or '').lower()
+                        if ptype == 'http':
+                            self.proxy_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
+                        elif ptype == 'tcp' and port_map.get('isIpPublic') and port_map.get('publicPort'):
                             ip = port_map.get('ip')
                             public_port = port_map.get('publicPort')
                             if ip and public_port:
                                 self.direct_tcp_url = f"ws://{ip}:{public_port}/stream"
 
-                prefer_proxy = os.getenv("RUNPOD_PREFER_PROXY", "false").lower() == "true"
-                if prefer_proxy:
-                    print(f"[RunPod Auto-Discovery] Found Cloudflare Proxy Link (prefer_proxy=true): {self.proxy_url} (GPU: {self.active_gpu_name})")
+                # Fallback: if no specific http port was marked, default proxy URL for pod_id
+                if not self.proxy_url:
+                    self.proxy_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
+
+                prefer_tcp = os.getenv("RUNPOD_PREFER_TCP", "false").lower() == "true"
+                if prefer_tcp and self.direct_tcp_url:
+                    print(f"[RunPod Auto-Discovery] Found TCP Link (prefer_tcp=true): {self.direct_tcp_url} (GPU: {self.active_gpu_name})")
+                    return self.direct_tcp_url
+                elif self.proxy_url and (not self.direct_tcp_url or not prefer_tcp):
+                    # If both exist or only proxy exists, prefer proxy unless direct TCP is explicitly requested
+                    if self.direct_tcp_url:
+                        print(f"[RunPod Auto-Discovery] Found Cloudflare Proxy Link: {self.proxy_url} (TCP fallback: {self.direct_tcp_url}) (GPU: {self.active_gpu_name})")
+                    else:
+                        print(f"[RunPod Auto-Discovery] Found Cloudflare Proxy Link: {self.proxy_url} (GPU: {self.active_gpu_name})")
                     return self.proxy_url
                 elif self.direct_tcp_url:
                     print(f"[RunPod Auto-Discovery] Found TCP Link: {self.direct_tcp_url} (Proxy fallback: {self.proxy_url}) (GPU: {self.active_gpu_name})")
                     return self.direct_tcp_url
-                else:
-                    print(f"[RunPod Auto-Discovery] Found Cloudflare Proxy Link: {self.proxy_url} (GPU: {self.active_gpu_name})")
-                    return self.proxy_url
 
             print("[RunPod Auto-Discovery] No running pod with port 8000 found.")
         except Exception as e:
@@ -472,10 +483,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                 return False
 
             ports = template.get("ports") or ""
-            if "8000/http" in ports:
+            if ports == "8000/http" or ("8000/http" in ports and "8000/tcp" not in ports):
                 return True
 
-            fields = [f'id: {json.dumps(template_id)}', 'ports: "8000/http,8000/tcp"']
+            fields = [f'id: {json.dumps(template_id)}', 'ports: "8000/http"']
             for k in ("name", "imageName", "containerDiskInGb", "volumeInGb", "volumeMountPath"):
                 if k in template and template[k] is not None:
                     fields.append(f"{k}: {json.dumps(template[k])}")
@@ -505,7 +516,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                 print(f"[RunPod Template] Error updating template {template_id}: {mut_res['errors']}")
                 return False
 
-            print(f"[RunPod Template] Auto-configured template {template_id} to expose 8000/http,8000/tcp for Cloudflare proxy support.")
+            print(f"[RunPod Template] Auto-configured template {template_id} to expose 8000/http for Cloudflare proxy support.")
             return True
         except Exception as e:
             print(f"[RunPod Template] Warning: Could not verify/update template {template_id}: {e}")
@@ -1541,13 +1552,14 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                 print(f"RunPod Server Connection Error. Retrying in 4s... ({e})")
 
-                # Endpoint failover logic: switch immediately from direct TCP to Cloudflare proxy, or alternate
-                if self.proxy_url and (wss_url == self.direct_tcp_url or "proxy.runpod.net" not in (wss_url or "")):
-                    print(f"[RunPod] Direct TCP endpoint timed out/unreachable. Failing over to Cloudflare Proxy: {self.proxy_url}")
-                    wss_url = self.proxy_url
-                elif self.direct_tcp_url and self.proxy_url and wss_url == self.proxy_url:
-                    print(f"[RunPod] Cloudflare Proxy connection error. Alternating to Direct TCP: {self.direct_tcp_url}")
-                    wss_url = self.direct_tcp_url
+                # Endpoint failover logic: only alternate between proxy and direct TCP if both exist and are different
+                if self.direct_tcp_url and self.proxy_url and self.direct_tcp_url != self.proxy_url:
+                    if wss_url == self.direct_tcp_url:
+                        print(f"[RunPod] Direct TCP endpoint timed out/unreachable. Failing over to Cloudflare Proxy: {self.proxy_url}")
+                        wss_url = self.proxy_url
+                    elif wss_url == self.proxy_url:
+                        print(f"[RunPod] Cloudflare Proxy connection error. Alternating to Direct TCP: {self.direct_tcp_url}")
+                        wss_url = self.direct_tcp_url
                 else:
                     discovered = self.discover_runpod_url()
                     if discovered and discovered != wss_url:

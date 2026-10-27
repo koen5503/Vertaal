@@ -888,7 +888,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
         mock_disc_resp.read.return_value = json.dumps(discovery_payload).encode("utf-8")
         mock_disc_resp.__enter__.return_value = mock_disc_resp
 
-        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key"}):
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_key", "RUNPOD_PREFER_TCP": "true"}):
             with patch("urllib.request.urlopen", return_value=mock_disc_resp):
                 disc_url = stt_engine.discover_runpod_url()
                 self.assertEqual(disc_url, "ws://213.192.2.92:40199/stream")

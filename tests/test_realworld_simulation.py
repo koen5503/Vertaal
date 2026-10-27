@@ -157,6 +157,64 @@ Your new public key is: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
             stage, _ = condense_runpod_logs(logs)
             self.assertIn(step_id, stage, f"Failed to detect step {step_id} in {stage}")
 
+    def test_premature_readiness_indicator_prevention(self):
+        """Verify false-positive ready triggers are eliminated and true server ready states are respected."""
+        # 1. Ollama port 11434 listening log should NOT trigger port 8000 operational
+        ollama_logs = """
+=== [8/8] Starting Services ===
+Listening on 127.0.0.1:11434 (library/aya-expanse:8b)
+"""
+        stage_ollama, _ = condense_runpod_logs(ollama_logs)
+        self.assertNotEqual(stage_ollama, "Server operationeel op poort 8000")
+        self.assertIn("[8/8]", stage_ollama)
+
+        # 2. boot.sh 'launching live translation server' should NOT trigger port 8000 operational
+        launch_logs = """
+=== [8/8] Starting Services ===
+Launching Live Translation Server on port 8000...
+"""
+        stage_launch, _ = condense_runpod_logs(launch_logs)
+        self.assertNotEqual(stage_launch, "Server operationeel op poort 8000")
+
+        # 3. Whisper loading into GPU VRAM
+        whisper_load_logs = """
+=== [8/8] Starting Services ===
+[Whisper Init] Loading faster-whisper from local directory: /root/models/faster-whisper-large-v3...
+"""
+        stage_whisper, _ = condense_runpod_logs(whisper_load_logs)
+        self.assertEqual(stage_whisper, "Faster-Whisper model inladen in GPU VRAM...")
+
+        # 4. Ollama pre-warming into GPU VRAM
+        ollama_prewarm_logs = """
+=== [8/8] Starting Services ===
+Pre-warming Ollama aya-expanse:8b in GPU VRAM...
+"""
+        stage_prewarm, _ = condense_runpod_logs(ollama_prewarm_logs)
+        self.assertEqual(stage_prewarm, "Ollama model pre-warmen in GPU VRAM...")
+
+        # 5. True server ready triggers: startup complete, uvicorn running on, or whisper model initialized and ready
+        ready_logs_1 = """
+=== [8/8] Starting Services ===
+[Whisper Init] Loading faster-whisper from local directory...
+Whisper model initialized and ready.
+"""
+        stage_ready_1, _ = condense_runpod_logs(ready_logs_1)
+        self.assertEqual(stage_ready_1, "Server operationeel op poort 8000")
+
+        ready_logs_2 = """
+=== [8/8] Starting Services ===
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+"""
+        stage_ready_2, _ = condense_runpod_logs(ready_logs_2)
+        self.assertEqual(stage_ready_2, "Server operationeel op poort 8000")
+
+        # 6. Verify telemetry template contract requires statusUpper === 'CONNECTED'
+        with open("templates/telemetry.html", "r", encoding="utf-8") as f:
+            tmpl_content = f.read()
+        self.assertIn("const isReady = statusUpper === 'CONNECTED';", tmpl_content)
+        self.assertIn("⏳ Server gestart, verbinding maken...", tmpl_content)
+
     def test_sse_stream_parser_and_status_derivation(self):
         """Simulate RunPod SSE streaming endpoint (/v2/pods/{id}/logs) with mixed formats and corrupt JSON."""
         sse_lines = [

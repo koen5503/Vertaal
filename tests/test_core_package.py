@@ -1581,7 +1581,13 @@ class TestCorePackage(unittest.TestCase):
 
         # Loading models
         stage_models, _ = condense_runpod_logs("Loading faster-whisper large-v3 model in float16")
-        self.assertEqual(stage_models, "AI-modellen laden in GPU VRAM (large-v3 / aya-expanse)")
+        self.assertEqual(stage_models, "Faster-Whisper model inladen in GPU VRAM...")
+
+        stage_prewarm, _ = condense_runpod_logs("Pre-warming Ollama aya-expanse:8b in GPU VRAM...")
+        self.assertEqual(stage_prewarm, "Ollama model pre-warmen in GPU VRAM...")
+
+        stage_models_generic, _ = condense_runpod_logs("Loaded aya-expanse weights into cache")
+        self.assertEqual(stage_models_generic, "AI-modellen laden in GPU VRAM (large-v3 / aya-expanse)")
 
         # GPU initialization
         stage_gpu, _ = condense_runpod_logs("discovering available gpus nvidia driver loaded")

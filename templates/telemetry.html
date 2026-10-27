@@ -699,9 +699,7 @@
                 badge.innerText = data.stage;
                 const stageLower = data.stage.toLowerCase();
                 const statusUpper = String(data.status || '').toUpperCase();
-                const isReady = statusUpper === 'CONNECTED' ||
-                                stageLower.includes('operationeel') ||
-                                stageLower.includes('server operationeel');
+                const isReady = statusUpper === 'CONNECTED';
                 if (isReady) {
                     badge.className = 'badge fast';
                     connIndicator.innerText = '✅ Systeem verbonden en gereed';
@@ -712,6 +710,10 @@
                     connIndicator.innerText = '⚠️ ' + data.stage;
                     stopBootTimer();
                     updateBootTimerDisplay();
+                } else if (stageLower.includes('operationeel') || stageLower.includes('luistert')) {
+                    badge.className = 'badge normal pulse-anim';
+                    connIndicator.innerText = '⏳ Server gestart, verbinding maken...';
+                    startBootTimer();
                 } else {
                     badge.className = 'badge normal pulse-anim';
                     connIndicator.innerText = '⏳ ' + data.stage;

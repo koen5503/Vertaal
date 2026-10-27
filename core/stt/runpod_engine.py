@@ -99,7 +99,7 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
         elif "starting services" in l_lower or "ollama serve" in l_lower:
             progress_info = "Services opstarten"
             break
-        elif "loading faster-whisper" in l_lower:
+        elif bool(re.search(r"\bloading faster-whisper", l_lower)):
             progress_info = "Faster-Whisper in GPU laden"
             break
         elif ("pulling" in l_lower or "downloading" in l_lower) and not line.startswith("==="):
@@ -140,8 +140,16 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
         stage = f"Fout in container: {error_line[:120]}"
         return stage, clean_lines[-6:]
 
-    if any(k in full_text for k in ["fastapi", "application startup complete", "listening on", "uvicorn running", "uvicorn", "launching live translation server"]):
+    is_server_listening = any(k in full_text for k in ["application startup complete", "uvicorn running on", "whisper model initialized and ready"])
+    is_whisper_loading = (any(k in full_text for k in ["whisper init"]) or bool(re.search(r"\bloading faster-whisper", full_text))) and not is_server_listening
+    is_ollama_prewarming = "pre-warming ollama" in full_text and not is_server_listening
+
+    if is_server_listening:
         stage = "Server operationeel op poort 8000"
+    elif is_whisper_loading:
+        stage = "Faster-Whisper model inladen in GPU VRAM..."
+    elif is_ollama_prewarming:
+        stage = "Ollama model pre-warmen in GPU VRAM..."
     elif latest_step:
         stage = f"Initialisatie {latest_step}"
         if progress_info and progress_info.lower() not in latest_step.lower():

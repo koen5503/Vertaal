@@ -26,7 +26,7 @@ from core.audio import FRAME_DURATION_MS, SAMPLE_RATE
 from core.stt.base import BaseSTTEngine
 from core.stt.local_engine import filter_anti_hallucination, TAIL_HALLUCINATION_PATTERN
 from core.translation import clean_translation_meta
-from core.utils import get_runpod_gpu_fallbacks
+from core.utils import DEFAULT_RUNPOD_GPU, get_runpod_gpu_fallbacks
 
 
 def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
@@ -287,7 +287,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.last_stt_latency_ms: Optional[int] = None
         self.last_trans_latency_ms: Optional[int] = None
         self.last_deploy_error: Optional[str] = None
-        self.active_gpu_name: Optional[str] = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+        self.active_gpu_name: Optional[str] = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
         if self.engine and hasattr(self.engine, "audio_stream"):
             self.engine.audio_stream.is_connected = False
 
@@ -363,7 +363,7 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                         # Extract GPU model name from pod machine metadata
                         pod_gpu = pod.get("machine", {}).get("gpuDisplayName") if isinstance(pod.get("machine"), dict) else None
-                        self.active_gpu_name = pod_gpu or self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+                        self.active_gpu_name = pod_gpu or self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
 
                         if ip and port_map.get('isIpPublic') and public_port:
                             link = f"ws://{ip}:{public_port}/stream"
@@ -391,7 +391,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         dc_id = os.getenv("RUNPOD_DATA_CENTER_ID", "").strip()
         whisper_model = os.getenv("RUNPOD_WHISPER_MODEL", "large-v3")
 
-        preferred_gpu = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+        preferred_gpu = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
         gpu_fallbacks = get_runpod_gpu_fallbacks(preferred_gpu)
 
         if not api_key or not template_id:
@@ -746,7 +746,7 @@ class RunPodSTTEngine(BaseSTTEngine):
             "stage": stage,
             "status": status or "INITIALIZING",
             "logs": logs or [],
-            "gpu_name": self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090"),
+            "gpu_name": self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU),
         }
         if self.engine:
             if hasattr(self.engine, "last_boot_telemetry"):
@@ -796,7 +796,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                     print(f"[RunPod] Timeout: Pod did not become ready in time ({elapsed_sec}s).")
                     await self.broadcast_boot_telemetry(self.active_pod_id, f"Time-out: Pod niet tijdig gereed ({elapsed_sec}s)", "TIMEOUT", [f"Time-out bereikt na {elapsed_sec}s."])
             else:
-                preferred_gpu = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+                preferred_gpu = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
                 err_detail = getattr(self, "last_deploy_error", None) or f"Kon pod niet provisioneren op RunPod (GPU: {self.active_gpu_name or preferred_gpu})."
                 print(f"[RunPod] Auto-Deployment failed: {err_detail}")
                 await self.broadcast_boot_telemetry(
@@ -980,7 +980,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                                         "stt_latency_ms": stt_latency_ms,
                                         "trans_latency_ms": self.last_trans_latency_ms,
                                         "pod_id": self.active_pod_id,
-                                        "gpu_name": self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090"),
+                                        "gpu_name": self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU),
                                         "pipeline_mode": getattr(self.engine, "pipeline_mode", "runpod"),
                                     })
 
@@ -1034,7 +1034,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                                                     "stt_latency_ms": self.last_stt_latency_ms,
                                                     "trans_latency_ms": trans_latency_ms,
                                                     "pod_id": self.active_pod_id,
-                                                    "gpu_name": self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090"),
+                                                    "gpu_name": self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU),
                                                     "pipeline_mode": getattr(self.engine, "pipeline_mode", "runpod"),
                                                 })
 

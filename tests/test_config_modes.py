@@ -146,12 +146,14 @@ class TestConfigModes(unittest.TestCase):
     # RunPod GPU Fallback Hierarchy
     # ------------------------------------------------------------------------
     def test_runpod_gpu_fallbacks_default_contains_all_models(self):
-        """Default GPU fallback list must start with RTX 4090 and contain all models deduplicated."""
+        """Default GPU fallback list must start with RTX A5000 and contain all models deduplicated."""
         expected_gpus = [
-            "NVIDIA GeForce RTX 4090",
-            "NVIDIA RTX 6000 Ada Generation",
-            "NVIDIA GeForce RTX 4080",
+            "NVIDIA RTX A5000",
+            "NVIDIA RTX 4000 Ada Generation",
+            "NVIDIA RTX A4500",
             "NVIDIA GeForce RTX 3090",
+            "NVIDIA GeForce RTX 4080",
+            "NVIDIA GeForce RTX 4090",
         ]
         gpus = get_runpod_gpu_fallbacks({})
         self.assertEqual(gpus, expected_gpus)
@@ -159,16 +161,21 @@ class TestConfigModes(unittest.TestCase):
 
     def test_runpod_gpu_fallbacks_custom_preferred(self):
         """When RUNPOD_GPU_ID is a supported fallback, it moves to the front with no duplicates."""
-        gpus = get_runpod_gpu_fallbacks({"RUNPOD_GPU_ID": "NVIDIA GeForce RTX 4080"})
-        self.assertEqual(gpus[0], "NVIDIA GeForce RTX 4080")
-        self.assertEqual(len(gpus), 4)
-        self.assertEqual(gpus.count("NVIDIA GeForce RTX 4080"), 1)
+        gpus = get_runpod_gpu_fallbacks({"RUNPOD_GPU_ID": "NVIDIA GeForce RTX 3090"})
+        self.assertEqual(gpus[0], "NVIDIA GeForce RTX 3090")
+        self.assertEqual(len(gpus), 6)
+        self.assertEqual(gpus.count("NVIDIA GeForce RTX 3090"), 1)
+
+        gpus_ada = get_runpod_gpu_fallbacks({"RUNPOD_GPU_ID": "NVIDIA RTX 4000 Ada Generation"})
+        self.assertEqual(gpus_ada[0], "NVIDIA RTX 4000 Ada Generation")
+        self.assertEqual(len(gpus_ada), 6)
+        self.assertEqual(gpus_ada.count("NVIDIA RTX 4000 Ada Generation"), 1)
 
     def test_runpod_gpu_fallbacks_custom_nonstandard_gpu(self):
         """Custom unlisted GPU prepends to the front of all fallback models."""
         gpus = get_runpod_gpu_fallbacks({"RUNPOD_GPU_ID": "NVIDIA H100 80GB HBM3"})
         self.assertEqual(gpus[0], "NVIDIA H100 80GB HBM3")
-        self.assertEqual(len(gpus), 5)
+        self.assertEqual(len(gpus), 7)
         self.assertEqual(len(gpus), len(set(gpus)))
 
 

@@ -219,7 +219,7 @@ Optimized for client machines (Windows PC connected to mixers like Behringer X-3
    PIPELINE_MODE=runpod
    RUNPOD_API_KEY=your_runpod_api_key
    RUNPOD_WHISPER_MODEL=large-v3
-   RUNPOD_GPU_ID=NVIDIA GeForce RTX 4090
+   RUNPOD_GPU_ID=NVIDIA RTX A5000
    AUTO_DEPLOY_RUNPOD=true
    MAX_RUN_TIME_SEC=5400
    INITIAL_SESSION_WINDOW_MINUTES=15
@@ -264,7 +264,7 @@ Copy `.env.example` to `.env` to configure the application:
 | `RUNPOD_WSS_URL` | Manual WebSocket URL override (skips pod discovery) | RunPod | `""` |
 | `RUNPOD_TEMPLATE_ID` | Template ID configured with standard PyTorch base image | RunPod | `""` |
 | `RUNPOD_VOLUME_ID` | Network Global Volume mounted to `/workspace` | RunPod | `""` |
-| `RUNPOD_GPU_ID` | Preferred GPU type for pod rental | RunPod | `NVIDIA GeForce RTX 4090` |
+| `RUNPOD_GPU_ID` | Preferred GPU type for pod rental | RunPod | `NVIDIA RTX A5000` |
 | `RUNPOD_DATA_CENTER_ID` | Optional datacenter code (e.g. `EU-RO-1`) | RunPod | `""` |
 | `RUNPOD_WHISPER_MODEL` | Whisper model loaded on remote pod (`small`, `large-v3`) | RunPod | `large-v3` |
 | `AUTO_DEPLOY_RUNPOD` | Automatically spin up ephemeral pod on startup | RunPod | `false` |

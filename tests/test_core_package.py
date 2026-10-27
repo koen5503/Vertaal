@@ -112,11 +112,11 @@ class TestCorePackage(unittest.TestCase):
     def test_runpod_engine_gpu_ordering(self):
         """RunPodSTTEngine GPU list preserves preferred GPU priority."""
         default_gpus = get_runpod_gpu_fallbacks()
-        self.assertEqual(default_gpus[0], "NVIDIA GeForce RTX 4090")
+        self.assertEqual(default_gpus[0], "NVIDIA RTX A5000")
         self.assertIn("NVIDIA GeForce RTX 3090", default_gpus)
 
-        gpus = get_runpod_gpu_fallbacks("NVIDIA RTX 6000 Ada Generation")
-        self.assertEqual(gpus[0], "NVIDIA RTX 6000 Ada Generation")
+        gpus = get_runpod_gpu_fallbacks("NVIDIA RTX 4000 Ada Generation")
+        self.assertEqual(gpus[0], "NVIDIA RTX 4000 Ada Generation")
         self.assertEqual(len(gpus), len(set(gpus)))
 
     def test_incremental_interim_and_final_chunking_triggers(self):

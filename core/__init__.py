@@ -25,6 +25,7 @@ from core.stt import (
 )
 from core.translation import LANG_NAMES, META_PATTERNS, Translator, clean_translation_meta
 from core.utils import (
+    DEFAULT_RUNPOD_GPU,
     get_runpod_gpu_fallbacks,
     load_environment,
     parse_bool,
@@ -61,4 +62,5 @@ __all__ = [
     "parse_bool",
     "resolve_pipeline_mode",
     "get_runpod_gpu_fallbacks",
+    "DEFAULT_RUNPOD_GPU",
 ]

@@ -10,7 +10,7 @@ from core.stt.cloud_engine import CloudSTTEngine
 from core.stt.local_engine import LocalSTTEngine
 from core.stt.runpod_engine import RunPodSTTEngine
 from core.translation import Translator
-from core.utils import parse_bool, resolve_pipeline_mode, resource_path
+from core.utils import DEFAULT_RUNPOD_GPU, parse_bool, resolve_pipeline_mode, resource_path
 
 
 class TranscriptionEngine:
@@ -295,7 +295,7 @@ class TranscriptionEngine:
         stt_latency_ms = getattr(stt, "last_stt_latency_ms", None)
         trans_latency_ms = getattr(stt, "last_trans_latency_ms", None)
         remaining_sec = max(0, int(self.session_expiry_time - time.time())) if getattr(self, "session_expiry_time", 0) else 0
-        gpu_name = getattr(stt, "active_gpu_name", None) or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+        gpu_name = getattr(stt, "active_gpu_name", None) or os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
         return {
             "type": "telemetry",
             "pod_id": pod_id,

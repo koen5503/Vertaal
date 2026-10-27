@@ -55,23 +55,28 @@ def resolve_pipeline_mode(env: Optional[Dict[str, str]] = None) -> str:
     return env.get("PIPELINE_MODE", "local").lower()
 
 
+DEFAULT_RUNPOD_GPU = "NVIDIA RTX A5000"
+
+
 def get_runpod_gpu_fallbacks(preferred_gpu_or_env: Any = None) -> List[str]:
     """Return deduplicated list of candidate GPUs with preferred GPU first.
     
     Accepts an explicit GPU string, an environment dictionary, or defaults to os.environ.
     """
     if isinstance(preferred_gpu_or_env, dict):
-        preferred_gpu = preferred_gpu_or_env.get("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+        preferred_gpu = preferred_gpu_or_env.get("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
     elif isinstance(preferred_gpu_or_env, str):
         preferred_gpu = preferred_gpu_or_env
     else:
-        preferred_gpu = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+        preferred_gpu = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
 
     candidate_gpus = [
         preferred_gpu,
-        "NVIDIA GeForce RTX 4090",
-        "NVIDIA RTX 6000 Ada Generation",
-        "NVIDIA GeForce RTX 4080",
+        "NVIDIA RTX A5000",
+        "NVIDIA RTX 4000 Ada Generation",
+        "NVIDIA RTX A4500",
         "NVIDIA GeForce RTX 3090",
+        "NVIDIA GeForce RTX 4080",
+        "NVIDIA GeForce RTX 4090",
     ]
     return list(dict.fromkeys(candidate_gpus))

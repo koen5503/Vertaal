@@ -288,18 +288,19 @@ class LocalSTTEngine(BaseSTTEngine):
                     self.engine.audio_stream.start()
                 continue
 
+            if time.time() > self.engine.session_expiry_time:
+                print(f"TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing.")
+                self.engine.is_paused = True
+                await self.engine.broadcast({"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"})
+                await asyncio.sleep(0.5)
+                continue
+
             if not self.engine.audio_stream.running:
                 await asyncio.sleep(0.5)
                 continue
 
             if self.engine.is_paused:
                 await asyncio.sleep(0.1)
-                continue
-
-            if time.time() > self.engine.session_expiry_time:
-                print(f"TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing.")
-                self.engine.is_paused = True
-                await self.engine.broadcast({"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"})
                 continue
 
             chunk = await loop.run_in_executor(None, self.engine.audio_stream.read_chunk)

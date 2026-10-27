@@ -615,9 +615,28 @@
 
             // 7. Auto pause notice
             if (data.action === 'auto_paused') {
-                document.getElementById('session-state').innerText = 'Gepauzeerd (Time-out)';
-                document.getElementById('session-countdown').innerText = '00:00';
-                document.getElementById('session-progress').style.width = '0%';
+                const sessionStateEl = document.getElementById('session-state');
+                if (sessionStateEl) sessionStateEl.innerText = 'Gepauzeerd (Time-out)';
+
+                const countdownEl = document.getElementById('session-countdown');
+                if (countdownEl) countdownEl.innerText = '00:00';
+
+                const progressEl = document.getElementById('session-progress');
+                if (progressEl) progressEl.style.width = '0%';
+
+                const bootStatusEl = document.getElementById('boot-status-text');
+                if (bootStatusEl) bootStatusEl.innerText = 'TERMINATED';
+
+                const bootConnEl = document.getElementById('boot-connection-indicator');
+                if (bootConnEl) bootConnEl.innerText = '⏸️ Sessie verlopen — Cloud Pod beëindigd';
+
+                const bootStageBadge = document.getElementById('boot-stage-badge');
+                if (bootStageBadge) {
+                    bootStageBadge.innerText = 'Sessie beëindigd (kostenbesparing)';
+                    bootStageBadge.className = 'badge normal';
+                }
+
+                stopBootTimer();
             }
 
             // 8. Pod Boot Telemetry

@@ -270,6 +270,8 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
         import asyncio
 
         mock_engine = MagicMock()
+        mock_engine.is_paused = False
+        mock_engine.restart_required = False
         mock_engine.broadcast = MagicMock()
 
         stt_engine = RunPodSTTEngine(engine=mock_engine)
@@ -595,6 +597,62 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
         self.assertIn("seg_fake", stt_engine_final.suppressed_seg_ids)
         subtitle_events = [e for e in broadcast_events if "col1_text" in e or "col2_text" in e]
         self.assertEqual(len(subtitle_events), 0)
+
+    def test_simulation_session_timeout_supervises_and_terminates_orphaned_pod(self):
+        """Simulate real-world session timeout: backend watchdog discovers and terminates running pod even when paused."""
+        import asyncio
+        import os
+        import time
+        from unittest.mock import MagicMock, patch
+        from core.engine import TranscriptionEngine
+
+        broadcast_events = []
+        def mock_broadcast(msg):
+            broadcast_events.append(msg)
+
+        with patch.dict(os.environ, {"PIPELINE_MODE": "runpod", "RUNPOD_API_KEY": "fake_key"}):
+            engine = TranscriptionEngine(broadcast_callback=mock_broadcast)
+            engine.is_paused = True
+            engine.audio_stream.running = False
+            engine.stt_engine.active_pod_id = "pod-active-sim-1"
+
+            terminated_ids = []
+            def fake_urlopen(req, timeout=10):
+                url = req.full_url
+                mock_res = MagicMock()
+                if "graphql" in url:
+                    data = json.loads(req.data.decode("utf-8"))
+                    query = data.get("query", "")
+                    if "podTerminate" in query and "pod-active-sim-1" in query:
+                        terminated_ids.append("pod-active-sim-1")
+                        mock_res.read.return_value = json.dumps({"data": {"podTerminate": None}}).encode("utf-8")
+                    mock_res.status = 200
+                    mock_res.getcode.return_value = 200
+                mock_res.__enter__.return_value = mock_res
+                return mock_res
+
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                engine.session_expiry_time = time.time() - 2.0
+
+                async def run_sim():
+                    watchdog_task = asyncio.create_task(engine._session_watchdog())
+                    await asyncio.sleep(1.2)
+                    watchdog_task.cancel()
+                    try:
+                        await watchdog_task
+                    except asyncio.CancelledError:
+                        pass
+
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(run_sim())
+                loop.close()
+
+                self.assertTrue(engine._session_expired)
+                self.assertEqual(terminated_ids, ["pod-active-sim-1"])
+                self.assertIsNone(engine.stt_engine.active_pod_id)
+                self.assertTrue(engine.stt_engine.intentional_shutdown)
+                auto_paused = [m for m in broadcast_events if m.get("action") == "auto_paused"]
+                self.assertTrue(len(auto_paused) > 0)
 
 
 if __name__ == "__main__":

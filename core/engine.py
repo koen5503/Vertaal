@@ -87,6 +87,10 @@ class TranscriptionEngine:
         self.active_translation_tasks: Dict[str, asyncio.Task] = {}
         self.last_boot_telemetry: Optional[dict] = None
 
+        # Watchdog & session lifecycle tracking
+        self._session_expired: bool = False
+        self._watchdog_task: Optional[asyncio.Task] = None
+
         # Initialize appropriate STT engine
         if self.pipeline_mode == "cloud":
             self.stt_engine = CloudSTTEngine(self)
@@ -99,6 +103,7 @@ class TranscriptionEngine:
 
     def reset_session_timer(self, reason: str = "manual_start") -> None:
         """Reset session start, expiry, and ceiling timestamps."""
+        self._session_expired = False
         now = time.time()
         self.session_start_time = now
         self.session_expiry_time = now + self.initial_session_window_minutes * 60
@@ -131,6 +136,44 @@ class TranscriptionEngine:
         except Exception:
             pass
 
+    async def _session_watchdog(self) -> None:
+        """Independent supervisor watchdog enforcing session expiry and resource shutdown."""
+        sync_counter = 0
+        while True:
+            await asyncio.sleep(1.0)
+            sync_counter += 1
+            now = time.time()
+            if self.session_expiry_time and now >= self.session_expiry_time:
+                if not self._session_expired:
+                    self._session_expired = True
+                    print(f"[Watchdog] Session deadline expired ({now:.1f} >= {self.session_expiry_time:.1f}). Triggering auto-pause and resource shutdown.")
+                    self.is_paused = True
+                    if hasattr(self, "audio_stream"):
+                        self.audio_stream.playback_paused = True
+
+                    # Terminate remote cloud pod if running
+                    if hasattr(self.stt_engine, "stop_runpod_pod"):
+                        try:
+                            await self.stt_engine.stop_runpod_pod()
+                        except Exception as pe:
+                            print(f"[Watchdog] Error stopping RunPod pod: {pe}")
+                    elif hasattr(self.stt_engine, "stop"):
+                        try:
+                            await self.stt_engine.stop()
+                        except Exception as se:
+                            print(f"[Watchdog] Error stopping STT engine: {se}")
+
+                    broadcast_res = self.broadcast({
+                        "action": "auto_paused",
+                        "reason": f"{int(self.initial_session_window_minutes)}_min_limit"
+                    })
+                    if asyncio.iscoroutine(broadcast_res):
+                        await broadcast_res
+                    self._broadcast_timer_update(reason="expired")
+            elif sync_counter % 10 == 0 and not self.is_paused:
+                # Periodic 10s sync to prevent browser countdown drift
+                self._broadcast_timer_update(reason="periodic_sync")
+
     # --- Backward-compatible helpers & config updates ---
 
     def _setup_recognition_config(self) -> None:
@@ -149,6 +192,8 @@ class TranscriptionEngine:
             self.audio_stream.playback_paused = self.is_paused
             if was_paused and not self.is_paused:
                 self.reset_session_timer(reason="unpause")
+                if hasattr(self.stt_engine, "intentional_shutdown"):
+                    self.stt_engine.intentional_shutdown = False
 
         if "source_lang" in config and config["source_lang"] != self.source_lang:
             self.source_lang = config["source_lang"]
@@ -278,10 +323,28 @@ class TranscriptionEngine:
             self.audio_stream.start()
         else:
             print("[Engine] RunPod mode: Audio stream start deferred until WebSocket connection is established.")
-        await self.stt_engine.run()
+        self._watchdog_task = asyncio.create_task(self._session_watchdog())
+        try:
+            await self.stt_engine.run()
+        finally:
+            if self._watchdog_task and not self._watchdog_task.done():
+                self._watchdog_task.cancel()
+                try:
+                    await self._watchdog_task
+                except asyncio.CancelledError:
+                    pass
+                self._watchdog_task = None
 
     async def stop(self) -> None:
         """Stop audio streaming and terminate any external resources (e.g. remote RunPod pod)."""
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._watchdog_task = None
+
         self.audio_stream.stop(terminate_pyaudio=True)
         if hasattr(self.stt_engine, "stop"):
             await self.stt_engine.stop()

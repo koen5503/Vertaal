@@ -563,35 +563,60 @@ class RunPodSTTEngine(BaseSTTEngine):
         return await self.deploy_runpod_pod()
 
     def terminate_runpod_pod(self, pod_id: str) -> bool:
-        """Terminate a RunPod pod completely via GraphQL mutation."""
+        """Terminate a RunPod pod completely via GraphQL mutation with REST API v2 DELETE fallback."""
         api_key = os.getenv("RUNPOD_API_KEY")
         if not api_key or not pod_id:
             return False
 
         api_key = api_key.strip().strip('\'" ')
-        url = f"https://api.runpod.io/graphql?api_key={api_key}"
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        mutation = f'''
-        mutation {{
-          podTerminate(input: {{podId: "{pod_id}"}})
-        }}
-        '''
-        data = json.dumps({"query": mutation}).encode('utf-8')
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+        # 1. Primary: GraphQL podTerminate mutation
+        graphql_error = None
         try:
+            url = f"https://api.runpod.io/graphql?api_key={api_key}"
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": user_agent,
+            }
+            mutation = f'''
+            mutation {{
+              podTerminate(input: {{podId: "{pod_id}"}})
+            }}
+            '''
+            data = json.dumps({"query": mutation}).encode('utf-8')
+            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
             with urllib.request.urlopen(req, timeout=10) as response:
                 res = json.loads(response.read().decode('utf-8'))
                 if "errors" in res:
-                    print(f"[RunPod Terminate] Error terminating pod {pod_id}: {res['errors']}")
-                    return False
-                print(f"[RunPod Terminate] Successfully terminated pod {pod_id}.")
-                return True
+                    graphql_error = res['errors']
+                    print(f"[RunPod Terminate] GraphQL error terminating pod {pod_id}: {graphql_error}. Trying REST v2 fallback...")
+                else:
+                    print(f"[RunPod Terminate] Successfully terminated pod {pod_id} via GraphQL.")
+                    return True
         except Exception as e:
-            print(f"[RunPod Terminate] Failed to terminate pod {pod_id}: {e}")
+            graphql_error = e
+            print(f"[RunPod Terminate] GraphQL failed for pod {pod_id}: {e}. Trying REST v2 fallback...")
+
+        # 2. Fallback: REST API v2 DELETE https://api.runpod.io/v2/pods/{pod_id}
+        try:
+            rest_url = f"https://api.runpod.io/v2/pods/{pod_id}"
+            rest_headers = {
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": user_agent,
+            }
+            rest_req = urllib.request.Request(rest_url, headers=rest_headers, method="DELETE")
+            with urllib.request.urlopen(rest_req, timeout=10) as response:
+                status = getattr(response, 'status', response.getcode())
+                if 200 <= status < 300:
+                    print(f"[RunPod Terminate] Successfully terminated pod {pod_id} via REST v2 fallback.")
+                    return True
+                else:
+                    print(f"[RunPod Terminate] REST v2 fallback returned status {status} for pod {pod_id}.")
+                    return False
+        except Exception as rest_e:
+            print(f"[RunPod Terminate] Failed to terminate pod {pod_id} via both GraphQL ({graphql_error}) and REST v2: {rest_e}")
             return False
 
     def cleanup_exited_pods(self) -> int:
@@ -626,18 +651,52 @@ class RunPodSTTEngine(BaseSTTEngine):
 
         return terminated_count
 
-    async def stop_runpod_pod(self) -> bool:
-        """Stop and terminate the currently active RunPod pod via GraphQL mutation to avoid runaway cloud costs and zombie pods."""
+    def _find_and_terminate_orphaned_pods(self) -> bool:
+        """Query account for running ondertitels pods and terminate them to prevent orphaned cloud costs."""
         api_key = os.getenv("RUNPOD_API_KEY")
-        if not self.active_pod_id or not api_key:
+        if not api_key:
+            return False
+        api_key = api_key.strip().strip('\'" ')
+        url = f"https://api.runpod.io/graphql?api_key={api_key}"
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        query = '{ myself { pods { id name desiredStatus } } }'
+        req = urllib.request.Request(url, data=json.dumps({"query": query}).encode('utf-8'), headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                pods = json.loads(response.read().decode('utf-8')).get('data', {}).get('myself', {}).get('pods', [])
+        except Exception as e:
+            print(f"[RunPod Orphan Cleanup] Error querying pods: {e}")
             return False
 
+        any_terminated = False
+        for pod in pods:
+            p_name = pod.get('name', '').lower()
+            p_status = pod.get('desiredStatus', '')
+            p_id = pod.get('id')
+            if p_id and 'ondertitels' in p_name and p_status != 'EXITED':
+                print(f"[RunPod Orphan Cleanup] Found orphaned active pod {p_id} ({pod.get('name')}, status={p_status}). Terminating...")
+                if self.terminate_runpod_pod(p_id):
+                    any_terminated = True
+        return any_terminated
+
+    async def stop_runpod_pod(self) -> bool:
+        """Stop and terminate the active or orphaned RunPod pod to avoid runaway cloud costs."""
         self.intentional_shutdown = True
-        pod_id = self.active_pod_id
+        api_key = os.getenv("RUNPOD_API_KEY")
+        if not api_key:
+            return False
+
         loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, self.terminate_runpod_pod, pod_id)
-        self.active_pod_id = None
-        return success
+        if self.active_pod_id:
+            pod_id = self.active_pod_id
+            self.active_pod_id = None
+            return await loop.run_in_executor(None, self.terminate_runpod_pod, pod_id)
+        else:
+            print("[RunPod Stop] No active_pod_id tracked locally. Scanning account for orphaned ondertitels pods...")
+            return await loop.run_in_executor(None, self._find_and_terminate_orphaned_pods)
 
     condense_runpod_logs = staticmethod(condense_runpod_logs)
 
@@ -826,6 +885,14 @@ class RunPodSTTEngine(BaseSTTEngine):
 
         connect_start_time = time.time()
         while True:
+            if not wss_url:
+                wss_url = self.discover_runpod_url()
+                if not wss_url and os.getenv("RUNPOD_API_KEY"):
+                    await self.manage_runpod_deployment()
+                    wss_url = self.discover_runpod_url()
+                if not wss_url:
+                    wss_url = os.getenv("RUNPOD_WSS_URL") or "ws://127.0.0.1:8888/stream"
+
             try:
                 print(f"Connecting to RunPod Server: {wss_url}")
                 async with websockets.connect(
@@ -1124,19 +1191,20 @@ class RunPodSTTEngine(BaseSTTEngine):
                     self.last_trans_latency_ms = None
 
                     while not self.engine.restart_required:
+                        if time.time() > self.engine.session_expiry_time:
+                            print(f"[RunPod] TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing & stopping pod.")
+                            self.engine.is_paused = True
+                            await self.stop_runpod_pod()
+                            await self.engine.broadcast({"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"})
+                            await asyncio.sleep(0.5)
+                            continue
+
                         if not self.engine.audio_stream.running:
                             await asyncio.sleep(0.5)
                             continue
 
                         if self.engine.is_paused:
                             await asyncio.sleep(0.1)
-                            continue
-
-                        if time.time() > self.engine.session_expiry_time:
-                            print(f"[RunPod] TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing & stopping pod.")
-                            self.engine.is_paused = True
-                            await self.stop_runpod_pod()
-                            await self.engine.broadcast({"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"})
                             continue
 
                         chunk = await loop.run_in_executor(None, self.engine.audio_stream.read_chunk)
@@ -1286,6 +1354,17 @@ class RunPodSTTEngine(BaseSTTEngine):
             except Exception as e:
                 if self.engine and hasattr(self.engine, "audio_stream"):
                     self.engine.audio_stream.is_connected = False
+
+                is_engine_paused = bool(getattr(self.engine, "is_paused", False) is True)
+                if self.intentional_shutdown or is_engine_paused:
+                    print("[RunPod] Engine paused / intentionally stopped. Pausing reconnect loop until session resumes.")
+                    while self.intentional_shutdown or bool(getattr(self.engine, "is_paused", False) is True):
+                        await asyncio.sleep(1.0)
+                    print("[RunPod] Session resumed. Re-discovering endpoint...")
+                    self.intentional_shutdown = False
+                    wss_url = None
+                    continue
+
                 print(f"RunPod Server Connection Error. Retrying in 4s... ({e})")
                 discovered = self.discover_runpod_url()
                 if discovered and discovered != wss_url:

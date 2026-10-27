@@ -969,6 +969,134 @@ class TestCorePackage(unittest.TestCase):
         # Verify condition
         self.assertTrue(time.time() > engine.session_expiry_time)
 
+    def test_session_watchdog_triggers_on_expiry_when_paused_and_not_running(self):
+        """_session_watchdog supervisor triggers stop_runpod_pod and auto_paused even when engine is paused and audio_stream not running."""
+        from unittest.mock import AsyncMock
+
+        broadcast_events = []
+        async def mock_broadcast(msg):
+            broadcast_events.append(msg)
+
+        engine = TranscriptionEngine(broadcast_callback=mock_broadcast)
+        engine.initial_session_window_minutes = 15.0
+        engine.is_paused = True
+        engine.audio_stream.running = False
+
+        mock_stop_pod = AsyncMock(return_value=True)
+        engine.stt_engine.stop_runpod_pod = mock_stop_pod
+
+        # Expire session artificially
+        engine.session_expiry_time = time.time() - 1.0
+
+        async def run_watchdog():
+            watchdog_task = asyncio.create_task(engine._session_watchdog())
+            # Allow watchdog loop to tick
+            await asyncio.sleep(1.2)
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                pass
+
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(run_watchdog())
+        loop.close()
+
+        self.assertTrue(engine._session_expired)
+        self.assertTrue(engine.is_paused)
+        self.assertTrue(mock_stop_pod.called)
+        auto_pause_msgs = [m for m in broadcast_events if m.get("action") == "auto_paused"]
+        self.assertEqual(len(auto_pause_msgs), 1)
+        self.assertEqual(auto_pause_msgs[0]["reason"], "15_min_limit")
+
+    def test_stop_runpod_pod_graphql_failure_fallback_to_rest_v2(self):
+        """stop_runpod_pod falls back to REST API v2 DELETE if GraphQL returns errors."""
+        import json
+        from unittest.mock import MagicMock, patch
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+        runpod.active_pod_id = "pod-graphql-fail-123"
+
+        def fake_urlopen(req, timeout=10):
+            url = req.full_url
+            mock_res = MagicMock()
+            if "graphql" in url:
+                mock_res.read.return_value = json.dumps({
+                    "errors": [{"message": "Internal GraphQL Error"}]
+                }).encode("utf-8")
+                mock_res.status = 200
+                mock_res.getcode.return_value = 200
+            elif "api.runpod.io/v2/pods/pod-graphql-fail-123" in url:
+                self.assertEqual(req.get_method(), "DELETE")
+                mock_res.read.return_value = b""
+                mock_res.status = 200
+                mock_res.getcode.return_value = 200
+            mock_res.__enter__.return_value = mock_res
+            return mock_res
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_api_key"}):
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                loop = asyncio.new_event_loop()
+                success = loop.run_until_complete(runpod.stop_runpod_pod())
+                loop.close()
+
+                self.assertTrue(success)
+                self.assertIsNone(runpod.active_pod_id)
+                self.assertTrue(runpod.intentional_shutdown)
+
+    def test_stop_runpod_pod_orphaned_discovery_when_no_active_pod_id(self):
+        """stop_runpod_pod scans account for running ondertitels pods and terminates them when active_pod_id is None."""
+        import json
+        from unittest.mock import MagicMock, patch
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+        runpod.active_pod_id = None
+
+        terminated_pods = []
+
+        def fake_urlopen(req, timeout=10):
+            url = req.full_url
+            mock_res = MagicMock()
+            if "graphql" in url:
+                data = json.loads(req.data.decode("utf-8"))
+                query = data.get("query", "")
+                if "myself" in query:
+                    mock_res.read.return_value = json.dumps({
+                        "data": {
+                            "myself": {
+                                "pods": [
+                                    {"id": "pod-orphan-1", "name": "ondertitels-gpu", "desiredStatus": "RUNNING"},
+                                    {"id": "pod-other-2", "name": "other-app", "desiredStatus": "RUNNING"},
+                                    {"id": "pod-exited-3", "name": "ondertitels-old", "desiredStatus": "EXITED"}
+                                ]
+                            }
+                        }
+                    }).encode("utf-8")
+                elif "podTerminate" in query:
+                    for pid in ["pod-orphan-1", "pod-other-2", "pod-exited-3"]:
+                        if pid in query:
+                            terminated_pods.append(pid)
+                    mock_res.read.return_value = json.dumps({"data": {"podTerminate": None}}).encode("utf-8")
+                mock_res.status = 200
+                mock_res.getcode.return_value = 200
+            mock_res.__enter__.return_value = mock_res
+            return mock_res
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "fake_api_key"}):
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                loop = asyncio.new_event_loop()
+                success = loop.run_until_complete(runpod.stop_runpod_pod())
+                loop.close()
+
+                self.assertTrue(success)
+                self.assertTrue(runpod.intentional_shutdown)
+                # Must terminate orphaned ondertitels pod, but not other-app or exited pod
+                self.assertEqual(terminated_pods, ["pod-orphan-1"])
+
     def test_runpod_stop_pod_mutation_payload(self):
         """stop_runpod_pod sends the correct podStop GraphQL mutation with podId and resets active_pod_id."""
         import asyncio

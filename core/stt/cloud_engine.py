@@ -66,6 +66,13 @@ class CloudSTTEngine(BaseSTTEngine):
         loop = asyncio.get_event_loop()
 
         while True:
+            if time.time() > self.engine.session_expiry_time:
+                print(f"TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing.")
+                self.engine.is_paused = True
+                await self.engine.broadcast({"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"})
+                await asyncio.sleep(0.5)
+                continue
+
             if not self.engine.audio_stream.running:
                 await asyncio.sleep(0.5)
                 continue
@@ -98,16 +105,16 @@ class CloudSTTEngine(BaseSTTEngine):
                 self.engine.reset_session_timer(reason="cloud_stream_start")
 
             while not generator_stop:
-                if self.engine.restart_required or self.engine.is_paused:
-                    generator_stop = True
-                    return
-
                 if time.time() > self.engine.session_expiry_time:
                     print(f"TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing.")
                     self.engine.is_paused = True
                     msg = {"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"}
                     asyncio.run_coroutine_threadsafe(self.engine.broadcast(msg), loop=loop)
                     stop_event.set()
+                    return
+
+                if self.engine.restart_required or self.engine.is_paused:
+                    generator_stop = True
                     return
 
                 chunk_count += 1

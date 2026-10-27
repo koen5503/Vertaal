@@ -1706,9 +1706,11 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("model.bin", setup_src)
         self.assertIn("/workspace/models/faster-whisper-large-v3", setup_src)
         self.assertIn("/workspace/models/ollama", setup_src)
-        self.assertIn("tar -cf /workspace/venv_bundle.tar -C /root venv", setup_src)
+        self.assertIn("tar -cf /tmp/venv_bundle.tar -C /root venv", setup_src)
+        self.assertIn("/workspace/venv_bundle.tar", setup_src)
         self.assertIn("/workspace/app", setup_src)
-        self.assertIn("curl -fsSL ${REPO_RAW:-", setup_src.replace('https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline', '${REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline}') or "curl -fsSL")
+        self.assertIn("curl -fsSL", setup_src)
+        self.assertIn("REPO_RAW", setup_src)
 
         # 3. boot.sh structure and startup sequence
         self.assertTrue(os.path.isfile("boot.sh"))

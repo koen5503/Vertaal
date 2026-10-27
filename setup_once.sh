@@ -13,6 +13,9 @@
 
 set -euo pipefail
 
+REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline}"
+FALLBACK_REPO_RAW="https://raw.githubusercontent.com/koen5503/Vertaal/main"
+
 echo "=== [1/8] Installing OS Packages ==="
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -85,32 +88,55 @@ for root, dirs, files in os.walk('/root/.ollama/models'):
 "
 fi
 
-echo "=== [7/8] Archiving /root/venv into /workspace/venv_bundle.tar ==="
-tar -cf /workspace/venv_bundle.tar -C /root venv
+echo "=== [7/8] Archiving /root/venv into /workspace/venv_bundle.tar (via /tmp) ==="
+tar -cf /tmp/venv_bundle.tar -C /root venv
+if [ -s "/tmp/venv_bundle.tar" ]; then
+    cp -f /tmp/venv_bundle.tar /workspace/venv_bundle.tar
+    rm -f /tmp/venv_bundle.tar
+else
+    echo "ERROR: Failed to create non-empty /tmp/venv_bundle.tar!" >&2
+    exit 1
+fi
 
 echo "=== [8/8] Staging Application Code and Boot Scripts into /workspace ==="
 mkdir -p /workspace/app
 
 # Stage runpod_server.py
-if [ -f "./runpod_server.py" ]; then
+if [ -s "./runpod_server.py" ]; then
     cp -f ./runpod_server.py /workspace/app/
-elif [ -f "/workspace/runpod_server.py" ]; then
+elif [ -s "/workspace/runpod_server.py" ]; then
     cp -f /workspace/runpod_server.py /workspace/app/
 fi
-if [ ! -f "/workspace/app/runpod_server.py" ]; then
-    echo "Downloading runpod_server.py from repository..."
-    curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/runpod_server.py -o /workspace/app/runpod_server.py
+if [ ! -s "/workspace/app/runpod_server.py" ]; then
+    echo "Downloading runpod_server.py from repository via /tmp..."
+    rm -f /tmp/runpod_server_latest.py
+    if (curl -fsSL "${REPO_RAW}/runpod_server.py" -o /tmp/runpod_server_latest.py 2>/dev/null || curl -fsSL "${FALLBACK_REPO_RAW}/runpod_server.py" -o /tmp/runpod_server_latest.py 2>/dev/null) && [ -s "/tmp/runpod_server_latest.py" ]; then
+        cp -f /tmp/runpod_server_latest.py /workspace/app/runpod_server.py
+        rm -f /tmp/runpod_server_latest.py
+    else
+        rm -f /tmp/runpod_server_latest.py
+        echo "ERROR: Failed to download runpod_server.py to /workspace/app/runpod_server.py!" >&2
+        exit 1
+    fi
 fi
 
 # Stage boot.sh
-if [ -f "./boot.sh" ]; then
+if [ -s "./boot.sh" ]; then
     cp -f ./boot.sh /workspace/boot.sh
-elif [ -f "/tmp/boot.sh" ]; then
+elif [ -s "/tmp/boot.sh" ]; then
     cp -f /tmp/boot.sh /workspace/boot.sh
 fi
-if [ ! -f "/workspace/boot.sh" ]; then
-    echo "Downloading boot.sh from repository..."
-    curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/boot.sh -o /workspace/boot.sh
+if [ ! -s "/workspace/boot.sh" ]; then
+    echo "Downloading boot.sh from repository via /tmp..."
+    rm -f /tmp/boot_latest.sh
+    if (curl -fsSL "${REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null || curl -fsSL "${FALLBACK_REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null) && [ -s "/tmp/boot_latest.sh" ]; then
+        cp -f /tmp/boot_latest.sh /workspace/boot.sh
+        rm -f /tmp/boot_latest.sh
+    else
+        rm -f /tmp/boot_latest.sh
+        echo "ERROR: Failed to download boot.sh to /workspace/boot.sh!" >&2
+        exit 1
+    fi
 fi
 
 echo "=== One-time setup completed successfully! ==="

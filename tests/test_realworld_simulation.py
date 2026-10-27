@@ -45,6 +45,18 @@ class TestRealWorldSimulation(unittest.TestCase):
             self.assertFalse(r_line.startswith("##O#"), f"Curl noise found in recent lines: {r_line}")
             self.assertFalse(r_line.startswith("###"), f"Curl noise found in recent lines: {r_line}")
 
+    def test_staging_ollama_models_log_parsing(self):
+        """Ensure log parsing for 'Staging Ollama models from /workspace to local NVMe SSD' maps to 'Ollama models kopiëren naar NVMe SSD' in condense_runpod_logs()."""
+        raw_logs = """
+=== [7/8] Staging Models & Exporting Environment ===
+Staging Ollama models from /workspace to local NVMe SSD (/root/.ollama/models)...
+Staging model files...
+"""
+        stage, recent_lines = condense_runpod_logs(raw_logs)
+        self.assertIn("[7/8]", stage)
+        self.assertIn("Ollama models kopiëren naar NVMe SSD", stage)
+
+
     def test_error_pattern_escalation(self):
         """Fatal container errors must be detected immediately and escalated to 'Fout in container' stage."""
         # Scenario A: Explicit ERROR: line

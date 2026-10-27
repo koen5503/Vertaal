@@ -353,7 +353,48 @@ class TestDeploymentContract(unittest.TestCase):
                 self.assertIsNotNone(res)
                 self.assertTrue(res.startswith(tmp_root), f"Expected /root/models preference, got {res}")
 
+    def test_runpod_global_volume_reliability_risks(self):
+        """
+        Verify fixes for the 3 RunPod Global Volume Reliability Risks:
+        1. Unguarded GitHub Raw CDN dependency on boot (guarded via /tmp, fallback URL, and reuse of existing files)
+        2. Partial tarball corruption risk on /workspace/venv_bundle.tar (staged via /tmp, self-healing in boot.sh)
+        3. Ollama models read over FUSE via symlink (NVMe SSD staging via copyfileobj, dynamic OLLAMA_MODELS export)
+        """
+        # Risk 1: GitHub Raw CDN Dependency & Staging via /tmp
+        self.assertIn('REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline}"', self.boot_src)
+        self.assertIn('FALLBACK_REPO_RAW="https://raw.githubusercontent.com/koen5503/Vertaal/main"', self.boot_src)
+        self.assertIn("sync_repo_file", self.boot_src)
+        self.assertIn("/tmp/", self.boot_src)
+        self.assertIn('sync_repo_file "setup_once.sh" "/workspace/setup_once.sh"', self.boot_src)
+        self.assertIn('sync_repo_file "runpod_server.py" "/workspace/app/runpod_server.py"', self.boot_src)
+        self.assertIn('[ -s "$dest_path" ]', self.boot_src)
+
+        # Risk 2: venv_bundle.tar atomic creation and self-healing
+        # setup_once.sh step 7 creates in /tmp first and checks non-empty
+        self.assertIn("tar -cf /tmp/venv_bundle.tar -C /root venv", self.setup_src)
+        self.assertIn('[ -s "/tmp/venv_bundle.tar" ]', self.setup_src)
+        self.assertIn("cp -f /tmp/venv_bundle.tar /workspace/venv_bundle.tar", self.setup_src)
+
+        # boot.sh step 2 checks [ ! -s "/workspace/venv_bundle.tar" ]
+        self.assertIn('[ ! -s "/workspace/venv_bundle.tar" ]', self.boot_src)
+        # boot.sh step 5 self-heals by running setup_once.sh if extraction fails or python binary is missing
+        step5_boot = re.search(r"=== \[5/8\].*?(?==== \[6/8\])", self.boot_src, re.DOTALL)
+        self.assertIsNotNone(step5_boot)
+        step5_text = step5_boot.group(0)
+        self.assertIn("setup_once.sh", step5_text)
+        self.assertIn("rm -f /workspace/venv_bundle.tar", step5_text)
+        self.assertIn("/root/venv/bin/python3", step5_text)
+
+        # Risk 3: Ollama NVMe SSD staging (no symlinks, copyfileobj, dynamic OLLAMA_MODELS)
+        self.assertIn("mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama/models /root/models", self.boot_src)
+        self.assertNotIn("ln -sfn /workspace/models/ollama", self.boot_src)
+        self.assertIn("Staging Ollama models from /workspace to local NVMe SSD (/root/.ollama/models)...", self.boot_src)
+        self.assertIn('if [ -d "/root/.ollama/models/manifests" ]; then', self.boot_src)
+        self.assertIn("export OLLAMA_MODELS=/root/.ollama/models", self.boot_src)
+        self.assertIn("export OLLAMA_MODELS=/workspace/models/ollama", self.boot_src)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

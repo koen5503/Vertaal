@@ -289,10 +289,14 @@ class LocalSTTEngine(BaseSTTEngine):
                 continue
 
             if time.time() > self.engine.session_expiry_time:
-                print(f"TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing.")
-                self.engine.is_paused = True
-                await self.engine.broadcast({"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"})
-                await asyncio.sleep(0.5)
+                if not getattr(self.engine, "_session_expired", False):
+                    if hasattr(self.engine, "_session_expired"):
+                        self.engine._session_expired = True
+                    print(f"TIMEOUT REACHED (expiry={self.engine.session_expiry_time:.1f}). Auto-pausing.")
+                    self.engine.is_paused = True
+                    await self.engine.broadcast({"action": "auto_paused", "reason": f"{int(self.engine.initial_session_window_minutes)}_min_limit"})
+                while getattr(self.engine, "_session_expired", False) or bool(getattr(self.engine, "is_paused", False) is True):
+                    await asyncio.sleep(1.0)
                 continue
 
             if not self.engine.audio_stream.running:

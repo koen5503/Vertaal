@@ -654,6 +654,148 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
                 auto_paused = [m for m in broadcast_events if m.get("action") == "auto_paused"]
                 self.assertTrue(len(auto_paused) > 0)
 
+    def test_repeated_timeout_prevented_in_all_stt_engines(self):
+        """Verify that timeout triggers auto-pause and pod termination only once in RunPod, Local, and Cloud engines."""
+        import asyncio
+        import time
+        from unittest.mock import AsyncMock, MagicMock
+        from core.stt.local_engine import LocalSTTEngine
+        from core.stt.cloud_engine import CloudSTTEngine
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        async def run_timeout_tests():
+            # 1. RunPodSTTEngine audio sender loop
+            broadcasts_runpod = []
+            mock_engine_rp = MagicMock()
+            mock_engine_rp.source_lang = "nl"
+            mock_engine_rp.target_lang_1 = "en"
+            mock_engine_rp.target_lang_2 = "ru"
+            mock_engine_rp.target_lang_3 = "nl"
+            mock_engine_rp.target_lang_4 = "nl"
+            mock_engine_rp.enable_trans_3 = True
+            mock_engine_rp.enable_trans_4 = True
+            mock_engine_rp.restart_required = False
+            mock_engine_rp.session_expiry_time = time.time() - 10.0  # Already expired
+            mock_engine_rp.initial_session_window_minutes = 15
+            mock_engine_rp._session_expired = False
+            mock_engine_rp.is_paused = False
+            mock_engine_rp.broadcast = AsyncMock(side_effect=lambda m: broadcasts_runpod.append(m))
+            mock_engine_rp.audio_stream.running = True
+
+            rp_engine = RunPodSTTEngine(engine=mock_engine_rp)
+            stop_pod_calls = []
+            async def fake_stop_pod():
+                stop_pod_calls.append(1)
+            rp_engine.stop_runpod_pod = fake_stop_pod
+
+            # Run sender loop for a short time (e.g. 0.05s) with mocked sleep
+            # To test the while loop without hanging 1s, we can check that after 1 iteration,
+            # _session_expired is True and stop_runpod_pod was called exactly once.
+            original_sleep = asyncio.sleep
+            sleep_calls = 0
+            async def fast_sleep(s):
+                nonlocal sleep_calls
+                sleep_calls += 1
+                if sleep_calls >= 3:
+                    mock_engine_rp.restart_required = True
+                await original_sleep(0.001)
+
+            with patch("asyncio.sleep", side_effect=fast_sleep):
+                # We invoke the inner sender loop logic by running RunPodSTTEngine with a mock websocket
+                # Or directly running the sender segment of run()
+                # Let's mock websockets.connect so rp_engine.run() enters the inner block
+                class MockSenderWS:
+                    async def send(self, data):
+                        pass
+                    def __aiter__(self):
+                        return self
+                    async def __anext__(self):
+                        await asyncio.sleep(1.0)
+                        raise StopIteration
+
+                class MockSenderConnect:
+                    def __init__(self, *args, **kwargs):
+                        pass
+                    async def __aenter__(self):
+                        return MockSenderWS()
+                    async def __aexit__(self, *args):
+                        pass
+
+                rp_engine.discover_runpod_url = MagicMock(return_value="ws://127.0.0.1:8000/stream")
+                mock_ws_mod = MagicMock()
+                mock_ws_mod.connect = MockSenderConnect
+                with patch("core.stt.runpod_engine.websockets", mock_ws_mod):
+                    try:
+                        await asyncio.wait_for(rp_engine.run(), timeout=0.1)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pass
+
+            self.assertTrue(mock_engine_rp._session_expired)
+            self.assertEqual(len(stop_pod_calls), 1)
+            self.assertEqual(len([b for b in broadcasts_runpod if b.get("action") == "auto_paused"]), 1)
+
+            # 2. LocalSTTEngine loop
+            broadcasts_local = []
+            mock_engine_local = MagicMock()
+            mock_engine_local.restart_required = False
+            mock_engine_local.session_expiry_time = time.time() - 10.0
+            mock_engine_local.initial_session_window_minutes = 15
+            mock_engine_local._session_expired = False
+            mock_engine_local.is_paused = False
+            mock_engine_local.broadcast = AsyncMock(side_effect=lambda m: broadcasts_local.append(m))
+            mock_engine_local.audio_stream.running = True
+
+            local_engine = LocalSTTEngine(engine=mock_engine_local)
+            sleep_calls_loc = 0
+            async def fast_sleep_loc(s):
+                nonlocal sleep_calls_loc
+                sleep_calls_loc += 1
+                if sleep_calls_loc >= 3:
+                    # Cancel loop by setting restart_required or raising CancelledError
+                    raise asyncio.CancelledError()
+                await original_sleep(0.001)
+
+            with patch("asyncio.sleep", side_effect=fast_sleep_loc):
+                try:
+                    await local_engine.run()
+                except asyncio.CancelledError:
+                    pass
+
+            self.assertTrue(mock_engine_local._session_expired)
+            self.assertEqual(len([b for b in broadcasts_local if b.get("action") == "auto_paused"]), 1)
+
+            # 3. CloudSTTEngine loop
+            broadcasts_cloud = []
+            mock_engine_cloud = MagicMock()
+            mock_engine_cloud.restart_required = False
+            mock_engine_cloud.session_expiry_time = time.time() - 10.0
+            mock_engine_cloud.initial_session_window_minutes = 15
+            mock_engine_cloud._session_expired = False
+            mock_engine_cloud.is_paused = False
+            mock_engine_cloud.broadcast = AsyncMock(side_effect=lambda m: broadcasts_cloud.append(m))
+            mock_engine_cloud.audio_stream.running = True
+
+            cloud_engine = CloudSTTEngine.__new__(CloudSTTEngine)
+            cloud_engine.engine = mock_engine_cloud
+            sleep_calls_cloud = 0
+            async def fast_sleep_cloud(s):
+                nonlocal sleep_calls_cloud
+                sleep_calls_cloud += 1
+                if sleep_calls_cloud >= 3:
+                    raise asyncio.CancelledError()
+                await original_sleep(0.001)
+
+            with patch("asyncio.sleep", side_effect=fast_sleep_cloud):
+                try:
+                    await cloud_engine.run()
+                except asyncio.CancelledError:
+                    pass
+
+            self.assertTrue(mock_engine_cloud._session_expired)
+            self.assertEqual(len([b for b in broadcasts_cloud if b.get("action") == "auto_paused"]), 1)
+
+        asyncio.run(run_timeout_tests())
+
 
 if __name__ == "__main__":
     unittest.main()

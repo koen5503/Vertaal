@@ -78,24 +78,30 @@ sync_repo_file "setup_once.sh" "/workspace/setup_once.sh"
 sync_repo_file "runpod_server.py" "/workspace/app/runpod_server.py"
 
 # Self-Initialization Check: If venv_bundle or models are missing, run automated setup_once.sh
-if [ ! -s "/workspace/venv_bundle.tar" ] || [ ! -d "/workspace/models/faster-whisper-large-v3" ] || [ ! -d "/workspace/models/ollama" ]; then
+if { [ ! -s "/workspace/venv_bundle.tar.zst" ] && [ ! -s "/workspace/venv_bundle.tar" ]; } || [ ! -d "/workspace/models/faster-whisper-large-v3" ] || [ ! -d "/workspace/models/ollama" ]; then
     echo "[Boot] First run detected on /workspace: running automated setup_once.sh..."
     bash /workspace/setup_once.sh
 fi
 
 echo "=== [3/8] Verifying Ollama Installation in Container OS ==="
+OLLAMA_EXTRACT_PID=""
 if ! command -v ollama >/dev/null 2>&1; then
-    if [ -s "/workspace/ollama_bundle.tar" ]; then
+    if [ -s "/workspace/ollama_bundle.tar.zst" ]; then
         echo "Restoring Ollama engine from Global Volume cache (1-2s)..."
-        tar -xf /workspace/ollama_bundle.tar -C /usr/local/
+        tar -I zstd -xf /workspace/ollama_bundle.tar.zst -C /usr/local/ &
+        OLLAMA_EXTRACT_PID=$!
+    elif [ -s "/workspace/ollama_bundle.tar" ]; then
+        echo "Restoring Ollama engine from Global Volume cache (1-2s)..."
+        tar -xf /workspace/ollama_bundle.tar -C /usr/local/ &
+        OLLAMA_EXTRACT_PID=$!
     else
         echo "Installing Ollama engine into container (first-time install)..."
         curl -fsSL https://ollama.com/install.sh | sh
-        echo "Caching Ollama engine to /workspace/ollama_bundle.tar via /tmp..."
-        tar -cf /tmp/ollama_bundle.tar -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
-        if [ -s "/tmp/ollama_bundle.tar" ]; then
-            cp -f /tmp/ollama_bundle.tar /workspace/ollama_bundle.tar
-            rm -f /tmp/ollama_bundle.tar
+        echo "Caching Ollama engine to /workspace/ollama_bundle.tar.zst via /tmp..."
+        tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
+        if [ -s "/tmp/ollama_bundle.tar.zst" ]; then
+            cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst
+            rm -f /tmp/ollama_bundle.tar.zst
         fi
     fi
 fi
@@ -105,7 +111,9 @@ mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama /root/models
 
 echo "=== [5/8] Extracting Python Virtual Environment to NVMe SSD (/root/venv) ==="
 extract_failed=false
-if [ -s "/workspace/venv_bundle.tar" ]; then
+if [ -s "/workspace/venv_bundle.tar.zst" ]; then
+    tar -I zstd -xf /workspace/venv_bundle.tar.zst -C /root/ 2>/dev/null || extract_failed=true
+elif [ -s "/workspace/venv_bundle.tar" ]; then
     tar -xf /workspace/venv_bundle.tar -C /root/ 2>/dev/null || extract_failed=true
 else
     extract_failed=true
@@ -113,7 +121,7 @@ fi
 
 if [ "$extract_failed" = true ] || [ ! -f "/root/venv/bin/python3" ]; then
     echo "[Boot] Warning: Corrupted or missing /workspace/venv_bundle.tar detected. Self-healing via setup_once.sh..."
-    rm -f /workspace/venv_bundle.tar
+    rm -f /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar
     bash /workspace/setup_once.sh
 fi
 
@@ -121,6 +129,8 @@ if [ ! -f "/root/venv/bin/python3" ]; then
     echo "ERROR: /root/venv/bin/python3 still missing after self-healing setup_once.sh!" >&2
     exit 1
 fi
+
+wait "${OLLAMA_EXTRACT_PID:-}" 2>/dev/null || true
 
 echo "=== [6/8] Syncing Application Code to /root/app ==="
 if [ -d "/workspace/app" ]; then
@@ -162,12 +172,34 @@ fi
 
 echo "=== [8/8] Starting Services ==="
 pkill -9 -f "ollama serve" 2>/dev/null || true
-sleep 1
 ollama serve &
-sleep 3
+
+# Fast readiness poll: check http://127.0.0.1:11434/api/tags every 0.2s (up to 25 iterations / 5s max)
+for i in $(seq 1 25); do
+    if curl -s http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+        break
+    fi
+    sleep 0.2
+done
 
 echo "Pre-warming Ollama aya-expanse:8b in GPU VRAM..."
-ollama run aya-expanse:8b "hi" >/dev/null 2>&1 || true
+(ollama run aya-expanse:8b "hi" >/dev/null 2>&1 || true) &
+
+# Background Auto-Migration: If volume only had uncompressed .tar files, migrate to .tar.zst
+if [ ! -s "/workspace/venv_bundle.tar.zst" ] || [ ! -s "/workspace/ollama_bundle.tar.zst" ]; then
+    (
+        echo "[Migration] Background compressing bundles to zstd for instant future boots..."
+        if [ ! -s "/workspace/ollama_bundle.tar.zst" ] && [ -d /usr/local/lib/ollama ]; then
+            tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
+            [ -s /tmp/ollama_bundle.tar.zst ] && cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst && rm -f /tmp/ollama_bundle.tar.zst
+        fi
+        if [ ! -s "/workspace/venv_bundle.tar.zst" ] && [ -d /root/venv ]; then
+            tar -I "zstd -1 -T0" -cf /tmp/venv_bundle.tar.zst -C /root venv 2>/dev/null || true
+            [ -s /tmp/venv_bundle.tar.zst ] && cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst && rm -f /tmp/venv_bundle.tar.zst
+        fi
+        echo "[Migration] Completed zstd bundle migration on /workspace."
+    ) >/dev/null 2>&1 &
+fi
 
 echo "Launching Live Translation Server on port 8000..."
 cd /root/app

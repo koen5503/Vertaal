@@ -404,44 +404,54 @@ class RunPodSTTEngine(BaseSTTEngine):
 
         for gpu_id in gpu_fallbacks:
             if is_global_volume:
-                print(f"[RunPod Deploy v2] Attempting to rent {gpu_id} with Global Volume {volume_id}...")
                 v2_url = "https://api.runpod.io/v2/pods"
                 v2_headers = {
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 }
-                payload = {
-                    "name": "ondertitels-gpu",
-                    "templateId": template_id,
-                    "gpu": {"id": gpu_id, "count": 1},
-                    "mounts": {
-                        "global": [{"volumeId": volume_id, "path": "/workspace"}]
-                    }
-                }
-                data = json.dumps(payload).encode('utf-8')
-                req = urllib.request.Request(v2_url, data=data, headers=v2_headers, method="POST")
 
-                try:
-                    with urllib.request.urlopen(req, timeout=15) as f:
-                        res = json.loads(f.read().decode('utf-8'))
-                        pod_id = res.get("id") or (res.get("data", {}).get("id") if isinstance(res.get("data"), dict) else None)
-                        if pod_id:
-                            self.active_pod_id = str(pod_id)
-                            self.active_gpu_name = gpu_id
-                        print(f"[RunPod Deploy v2] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
-                        return True
-                except urllib.error.HTTPError as he:
-                    err_body = he.read().decode('utf-8', errors='ignore')
-                    print(f"[RunPod Deploy v2] HTTP {he.code} for {gpu_id}: {err_body}")
-                    self.last_deploy_error = f"GPU {gpu_id}: HTTP {he.code} - {err_body}"
-                    if "stock" in err_body.lower() or "supply" in err_body.lower() or "unavailable" in err_body.lower() or he.code == 400:
+                dc_list = [d.strip() for d in dc_id.split(",") if d.strip()] if dc_id else []
+                # First attempt preferred datacenter(s) if configured, then fallback to any region
+                attempts = [dc_list, None] if dc_list else [None]
+
+                for attempt_dc in attempts:
+                    dc_label = f"in datacenter(s) {attempt_dc}" if attempt_dc else "in any region (global fallback)"
+                    print(f"[RunPod Deploy v2] Attempting to rent {gpu_id} with Global Volume {volume_id} {dc_label}...")
+                    payload = {
+                        "name": "ondertitels-gpu",
+                        "templateId": template_id,
+                        "gpu": {"id": gpu_id, "count": 1},
+                        "mounts": {
+                            "global": [{"volumeId": volume_id, "path": "/workspace"}]
+                        }
+                    }
+                    if attempt_dc:
+                        payload["dataCenterIds"] = attempt_dc
+
+                    data = json.dumps(payload).encode('utf-8')
+                    req = urllib.request.Request(v2_url, data=data, headers=v2_headers, method="POST")
+
+                    try:
+                        with urllib.request.urlopen(req, timeout=15) as f:
+                            res = json.loads(f.read().decode('utf-8'))
+                            pod_id = res.get("id") or (res.get("data", {}).get("id") if isinstance(res.get("data"), dict) else None)
+                            if pod_id:
+                                self.active_pod_id = str(pod_id)
+                                self.active_gpu_name = gpu_id
+                            print(f"[RunPod Deploy v2] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
+                            return True
+                    except urllib.error.HTTPError as he:
+                        err_body = he.read().decode('utf-8', errors='ignore')
+                        print(f"[RunPod Deploy v2] HTTP {he.code} for {gpu_id} ({dc_label}): {err_body}")
+                        self.last_deploy_error = f"GPU {gpu_id} ({dc_label}): HTTP {he.code} - {err_body}"
+                        if "stock" in err_body.lower() or "supply" in err_body.lower() or "unavailable" in err_body.lower() or he.code == 400:
+                            continue
+                        return False
+                    except Exception as e:
+                        print(f"[RunPod Deploy v2] System Error trying {gpu_id} ({dc_label}): {e}")
+                        self.last_deploy_error = f"GPU {gpu_id} ({dc_label}): {e}"
                         continue
-                    return False
-                except Exception as e:
-                    print(f"[RunPod Deploy v2] System Error trying {gpu_id}: {e}")
-                    self.last_deploy_error = f"GPU {gpu_id}: {e}"
-                    continue
             else:
                 # Fallback to legacy GraphQL mutation
                 print(f"[RunPod Deploy GraphQL] Attempting to rent {gpu_id} in {region_display}...")

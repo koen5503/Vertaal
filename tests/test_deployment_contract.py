@@ -146,31 +146,26 @@ class TestDeploymentContract(unittest.TestCase):
             "setup_once.sh must verify Ollama blobs before pulling model",
         )
 
-        # Ollama binary bundle caching & restore check
-        self.assertIn(
-            "/workspace/ollama_bundle.tar",
-            self.setup_src,
-            "setup_once.sh must cache Ollama binaries to /workspace/ollama_bundle.tar",
+        # Ollama binary bundle caching & restore check (supporting .tar.zst alongside .tar)
+        self.assertTrue(
+            "/workspace/ollama_bundle.tar.zst" in self.setup_src or "/workspace/ollama_bundle.tar" in self.setup_src,
+            "setup_once.sh must cache Ollama binaries to /workspace/ollama_bundle.tar.zst or .tar",
         )
-        self.assertIn(
-            "/workspace/ollama_bundle.tar",
-            self.boot_src,
-            "boot.sh must restore Ollama binaries from /workspace/ollama_bundle.tar",
+        self.assertTrue(
+            "/workspace/ollama_bundle.tar.zst" in self.boot_src or "/workspace/ollama_bundle.tar" in self.boot_src,
+            "boot.sh must restore Ollama binaries from /workspace/ollama_bundle.tar.zst or .tar",
         )
-        self.assertIn(
-            '[ -s "/workspace/ollama_bundle.tar" ]',
-            self.boot_src,
-            "boot.sh must verify that ollama_bundle.tar is non-empty before extracting",
+        self.assertTrue(
+            '[ -s "/workspace/ollama_bundle.tar.zst" ]' in self.boot_src or '[ -s "/workspace/ollama_bundle.tar" ]' in self.boot_src,
+            "boot.sh must verify that ollama bundle is non-empty before extracting",
         )
-        self.assertIn(
-            "/tmp/ollama_bundle.tar",
-            self.setup_src,
-            "setup_once.sh must stage ollama_bundle.tar via /tmp to prevent partial writes",
+        self.assertTrue(
+            "/tmp/ollama_bundle.tar.zst" in self.setup_src or "/tmp/ollama_bundle.tar" in self.setup_src,
+            "setup_once.sh must stage ollama bundle via /tmp to prevent partial writes",
         )
-        self.assertIn(
-            "/tmp/ollama_bundle.tar",
-            self.boot_src,
-            "boot.sh must stage ollama_bundle.tar via /tmp to prevent partial writes",
+        self.assertTrue(
+            "/tmp/ollama_bundle.tar.zst" in self.boot_src or "/tmp/ollama_bundle.tar" in self.boot_src,
+            "boot.sh must stage ollama bundle via /tmp to prevent partial writes",
         )
 
     # --------------------------------------------------------------------------
@@ -292,6 +287,11 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("export OLLAMA_NUM_PARALLEL=2", self.boot_src)
         self.assertIn("Pre-warming Ollama aya-expanse:8b in GPU VRAM", self.boot_src)
         self.assertIn('ollama run aya-expanse:8b "hi"', self.boot_src)
+        self.assertRegex(
+            self.boot_src,
+            r'\(ollama run aya-expanse:8b "hi".*?\)\s*&',
+            "boot.sh must pre-warm Ollama aya-expanse:8b non-blocking in background (&) for concurrent VRAM loading",
+        )
 
     def test_whisper_nvme_staging_and_path_resolution(self):
         """Verify Faster-Whisper is linked to /root/models in boot.sh via ln -sfn and resolved with local_files_only."""
@@ -369,20 +369,37 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn('sync_repo_file "runpod_server.py" "/workspace/app/runpod_server.py"', self.boot_src)
         self.assertIn('[ -s "$dest_path" ]', self.boot_src)
 
-        # Risk 2: venv_bundle.tar atomic creation and self-healing
+        # Risk 2: venv_bundle atomic creation and self-healing (supporting .tar.zst alongside .tar)
         # setup_once.sh step 7 creates in /tmp first and checks non-empty
-        self.assertIn("tar -cf /tmp/venv_bundle.tar -C /root venv", self.setup_src)
-        self.assertIn('[ -s "/tmp/venv_bundle.tar" ]', self.setup_src)
-        self.assertIn("cp -f /tmp/venv_bundle.tar /workspace/venv_bundle.tar", self.setup_src)
+        self.assertTrue(
+            'tar -I "zstd -1 -T0" -cf /tmp/venv_bundle.tar.zst -C /root venv' in self.setup_src
+            or "tar -cf /tmp/venv_bundle.tar -C /root venv" in self.setup_src,
+            "setup_once.sh must archive venv via /tmp",
+        )
+        self.assertTrue(
+            '[ -s "/tmp/venv_bundle.tar.zst" ]' in self.setup_src or '[ -s "/tmp/venv_bundle.tar" ]' in self.setup_src,
+            "setup_once.sh must verify non-empty venv archive in /tmp",
+        )
+        self.assertTrue(
+            "cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst" in self.setup_src
+            or "cp -f /tmp/venv_bundle.tar /workspace/venv_bundle.tar" in self.setup_src,
+            "setup_once.sh must copy venv bundle to /workspace",
+        )
 
-        # boot.sh step 2 checks [ ! -s "/workspace/venv_bundle.tar" ]
-        self.assertIn('[ ! -s "/workspace/venv_bundle.tar" ]', self.boot_src)
+        # boot.sh step 2 checks for presence of venv_bundle (zst or tar)
+        self.assertTrue(
+            '[ ! -s "/workspace/venv_bundle.tar.zst" ]' in self.boot_src or '[ ! -s "/workspace/venv_bundle.tar" ]' in self.boot_src,
+            "boot.sh must check for presence of venv bundle on /workspace",
+        )
         # boot.sh step 5 self-heals by running setup_once.sh if extraction fails or python binary is missing
         step5_boot = re.search(r"=== \[5/8\].*?(?==== \[6/8\])", self.boot_src, re.DOTALL)
         self.assertIsNotNone(step5_boot)
         step5_text = step5_boot.group(0)
         self.assertIn("setup_once.sh", step5_text)
-        self.assertIn("rm -f /workspace/venv_bundle.tar", step5_text)
+        self.assertTrue(
+            "rm -f /workspace/venv_bundle.tar" in step5_text or "rm -f /workspace/venv_bundle.tar.zst" in step5_text,
+            "boot.sh must clean up corrupt venv bundle",
+        )
         self.assertIn("/root/venv/bin/python3", step5_text)
 
         # Risk 3: Instant symlinks on /root for both Ollama and Faster-Whisper

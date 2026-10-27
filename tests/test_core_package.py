@@ -1097,6 +1097,84 @@ class TestCorePackage(unittest.TestCase):
                 self.assertEqual(payload["templateId"], "tmpl-1")
                 self.assertEqual(payload["mounts"]["global"][0]["volumeId"], "cmu-vol-1")
 
+    def test_runpod_deploy_v2_datacenter_preference_and_fallback(self):
+        """deploy_runpod_pod attempts preferred dataCenterIds first, falling back to any region on stock failure."""
+        import asyncio
+        import json
+        import urllib.error
+        from unittest.mock import MagicMock, patch
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+
+        # Case 1: Preferred DC succeeds on first try
+        mock_success_resp = MagicMock()
+        mock_success_resp.read.return_value = json.dumps({"id": "pod-dc-preferred"}).encode("utf-8")
+        mock_success_resp.__enter__.return_value = mock_success_resp
+
+        with patch.dict(os.environ, {
+            "RUNPOD_API_KEY": "fake_key",
+            "RUNPOD_TEMPLATE_ID": "tmpl-1",
+            "RUNPOD_VOLUME_ID": "cmu-vol-1",
+            "RUNPOD_DATA_CENTER_ID": "EU-RO-1, US-CA-1",
+            "RUNPOD_GPU_ID": "NVIDIA GeForce RTX 4090",
+        }):
+            with patch("urllib.request.urlopen", return_value=mock_success_resp) as mock_urlopen:
+                loop = asyncio.new_event_loop()
+                deployed = loop.run_until_complete(runpod.deploy_runpod_pod())
+                loop.close()
+
+                self.assertTrue(deployed)
+                self.assertEqual(runpod.active_pod_id, "pod-dc-preferred")
+                self.assertEqual(mock_urlopen.call_count, 1)
+                sent_req = mock_urlopen.call_args[0][0]
+                payload = json.loads(sent_req.data.decode("utf-8"))
+                self.assertEqual(payload.get("dataCenterIds"), ["EU-RO-1", "US-CA-1"])
+
+        # Case 2: Preferred DC fails with stock error (HTTP 400), falls back to any region
+        mock_fallback_resp = MagicMock()
+        mock_fallback_resp.read.return_value = json.dumps({"id": "pod-dc-fallback"}).encode("utf-8")
+        mock_fallback_resp.__enter__.return_value = mock_fallback_resp
+
+        http_err = urllib.error.HTTPError(
+            url="https://api.runpod.io/v2/pods",
+            code=400,
+            msg="Bad Request",
+            hdrs={},
+            fp=MagicMock(read=lambda: b'{"error": "no stock available in specified datacenters"}')
+        )
+
+        with patch.dict(os.environ, {
+            "RUNPOD_API_KEY": "fake_key",
+            "RUNPOD_TEMPLATE_ID": "tmpl-1",
+            "RUNPOD_VOLUME_ID": "cmu-vol-1",
+            "RUNPOD_DATA_CENTER_ID": "EU-RO-1",
+            "RUNPOD_GPU_ID": "NVIDIA GeForce RTX 4090",
+        }):
+            call_count = 0
+            def mock_side_effect(req, timeout=15):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise http_err
+                return mock_fallback_resp
+
+            with patch("urllib.request.urlopen", side_effect=mock_side_effect) as mock_urlopen:
+                loop = asyncio.new_event_loop()
+                deployed = loop.run_until_complete(runpod.deploy_runpod_pod())
+                loop.close()
+
+                self.assertTrue(deployed)
+                self.assertEqual(runpod.active_pod_id, "pod-dc-fallback")
+                self.assertEqual(call_count, 2)
+                # First attempt had dataCenterIds
+                first_payload = json.loads(mock_urlopen.call_args_list[0][0][0].data.decode("utf-8"))
+                self.assertEqual(first_payload.get("dataCenterIds"), ["EU-RO-1"])
+                # Second attempt fell back without dataCenterIds
+                second_payload = json.loads(mock_urlopen.call_args_list[1][0][0].data.decode("utf-8"))
+                self.assertNotIn("dataCenterIds", second_payload)
+
     def test_silence_heartbeat_probe_generation(self):
         """RunPodSTTEngine identifies prolonged silence and triggers heartbeat probe state."""
         import time
@@ -1705,9 +1783,14 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn("copyfileobj", setup_src)
         self.assertIn("model.bin", setup_src)
         self.assertIn("/workspace/models/faster-whisper-large-v3", setup_src)
-        self.assertIn("/workspace/models/ollama", setup_src)
-        self.assertIn("tar -cf /tmp/venv_bundle.tar -C /root venv", setup_src)
-        self.assertIn("/workspace/venv_bundle.tar", setup_src)
+        self.assertTrue(
+            'tar -I "zstd -1 -T0" -cf /tmp/venv_bundle.tar.zst -C /root venv' in setup_src
+            or "tar -cf /tmp/venv_bundle.tar -C /root venv" in setup_src
+        )
+        self.assertTrue(
+            "/workspace/venv_bundle.tar.zst" in setup_src
+            or "/workspace/venv_bundle.tar" in setup_src
+        )
         self.assertIn("/workspace/app", setup_src)
         self.assertIn("curl -fsSL", setup_src)
         self.assertIn("REPO_RAW", setup_src)

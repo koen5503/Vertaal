@@ -7,7 +7,7 @@
 #
 # Constraints honored:
 # - NO symlinks on /workspace (FUSE S3 object storage cannot handle symlinks)
-# - Python venv lives on volatile /root and is archived into /workspace/venv_bundle.tar
+# - Python venv lives on volatile /root and is archived into /workspace/venv_bundle.tar.zst (compatible with /workspace/venv_bundle.tar)
 # - Models downloaded & verified on local NVMe SSD, then copied with --no-preserve=mode,ownership
 # ==============================================================================
 
@@ -25,12 +25,12 @@ echo "=== [2/8] Installing Ollama ==="
 if ! command -v ollama >/dev/null 2>&1; then
     curl -fsSL https://ollama.com/install.sh | sh
 fi
-if [ ! -s "/workspace/ollama_bundle.tar" ] && [ -f "/usr/local/bin/ollama" ]; then
-    echo "Caching Ollama binaries to /workspace/ollama_bundle.tar via /tmp..."
-    tar -cf /tmp/ollama_bundle.tar -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
-    if [ -s "/tmp/ollama_bundle.tar" ]; then
-        cp -f /tmp/ollama_bundle.tar /workspace/ollama_bundle.tar
-        rm -f /tmp/ollama_bundle.tar
+if { [ ! -s "/workspace/ollama_bundle.tar.zst" ] && [ ! -s "/workspace/ollama_bundle.tar" ]; } && [ -f "/usr/local/bin/ollama" ]; then
+    echo "Caching Ollama binaries to /workspace/ollama_bundle.tar.zst via /tmp..."
+    tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
+    if [ -s "/tmp/ollama_bundle.tar.zst" ]; then
+        cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst
+        rm -f /tmp/ollama_bundle.tar.zst
     fi
 fi
 
@@ -88,13 +88,14 @@ for root, dirs, files in os.walk('/root/.ollama/models'):
 "
 fi
 
-echo "=== [7/8] Archiving /root/venv into /workspace/venv_bundle.tar (via /tmp) ==="
-tar -cf /tmp/venv_bundle.tar -C /root venv
-if [ -s "/tmp/venv_bundle.tar" ]; then
-    cp -f /tmp/venv_bundle.tar /workspace/venv_bundle.tar
-    rm -f /tmp/venv_bundle.tar
+echo "=== [7/8] Archiving /root/venv into /workspace/venv_bundle.tar.zst (via /tmp) ==="
+# Creates /workspace/venv_bundle.tar.zst (compatible with /workspace/venv_bundle.tar)
+tar -I "zstd -1 -T0" -cf /tmp/venv_bundle.tar.zst -C /root venv
+if [ -s "/tmp/venv_bundle.tar.zst" ]; then
+    cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst
+    rm -f /tmp/venv_bundle.tar.zst
 else
-    echo "ERROR: Failed to create non-empty /tmp/venv_bundle.tar!" >&2
+    echo "ERROR: Failed to create non-empty /tmp/venv_bundle.tar.zst!" >&2
     exit 1
 fi
 

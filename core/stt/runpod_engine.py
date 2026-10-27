@@ -393,35 +393,123 @@ class RunPodSTTEngine(BaseSTTEngine):
                     continue
 
                 ports = runtime.get('ports', [])
+                has_port_8000 = any(p.get('privatePort') == 8000 for p in ports)
+                if not has_port_8000:
+                    continue
+
+                # Extract GPU model name from pod machine metadata
+                pod_gpu = pod.get("machine", {}).get("gpuDisplayName") if isinstance(pod.get("machine"), dict) else None
+                self.active_gpu_name = pod_gpu or self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
+
+                self.active_pod_id = pod_id
+                self.proxy_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
+                self.direct_tcp_url = None
+
                 for port_map in ports:
-                    if port_map.get('privatePort') == 8000 and port_map.get('type') != 'udp':
-                        ip = port_map.get('ip')
-                        public_port = port_map.get('publicPort')
+                    if port_map.get('privatePort') == 8000:
+                        if port_map.get('type') == 'tcp' and port_map.get('isIpPublic') and port_map.get('publicPort'):
+                            ip = port_map.get('ip')
+                            public_port = port_map.get('publicPort')
+                            if ip and public_port:
+                                self.direct_tcp_url = f"ws://{ip}:{public_port}/stream"
 
-                        # Extract GPU model name from pod machine metadata
-                        pod_gpu = pod.get("machine", {}).get("gpuDisplayName") if isinstance(pod.get("machine"), dict) else None
-                        self.active_gpu_name = pod_gpu or self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
-
-                        self.active_pod_id = pod_id
-                        self.proxy_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
-                        if ip and port_map.get('isIpPublic') and public_port:
-                            self.direct_tcp_url = f"ws://{ip}:{public_port}/stream"
-                        else:
-                            self.direct_tcp_url = None
-
-                        prefer_proxy = os.getenv("RUNPOD_PREFER_PROXY", "false").lower() == "true"
-                        if self.direct_tcp_url and not prefer_proxy:
-                            print(f"[RunPod Auto-Discovery] Found TCP Link: {self.direct_tcp_url} (Proxy fallback: {self.proxy_url}) (GPU: {self.active_gpu_name})")
-                            return self.direct_tcp_url
-                        else:
-                            print(f"[RunPod Auto-Discovery] Found Cloudflare Proxy Link: {self.proxy_url} (GPU: {self.active_gpu_name})")
-                            return self.proxy_url
+                prefer_proxy = os.getenv("RUNPOD_PREFER_PROXY", "false").lower() == "true"
+                if prefer_proxy:
+                    print(f"[RunPod Auto-Discovery] Found Cloudflare Proxy Link (prefer_proxy=true): {self.proxy_url} (GPU: {self.active_gpu_name})")
+                    return self.proxy_url
+                elif self.direct_tcp_url:
+                    print(f"[RunPod Auto-Discovery] Found TCP Link: {self.direct_tcp_url} (Proxy fallback: {self.proxy_url}) (GPU: {self.active_gpu_name})")
+                    return self.direct_tcp_url
+                else:
+                    print(f"[RunPod Auto-Discovery] Found Cloudflare Proxy Link: {self.proxy_url} (GPU: {self.active_gpu_name})")
+                    return self.proxy_url
 
             print("[RunPod Auto-Discovery] No running pod with port 8000 found.")
         except Exception as e:
             print(f"[RunPod Auto-Discovery] Error fetching API: {e}")
 
         return None
+
+    def ensure_template_http_ports(self, api_key: str, template_id: str) -> bool:
+        """Verify RunPod template exposes 8000/http for Cloudflare proxy routing, updating it if needed."""
+        if not api_key or not template_id:
+            return False
+
+        api_key = api_key.strip().strip('\'" ')
+        url = f"https://api.runpod.io/graphql?api_key={api_key}"
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        query = """
+        query PodTemplates {
+          myself {
+            podTemplates {
+              id
+              name
+              imageName
+              containerDiskInGb
+              volumeInGb
+              volumeMountPath
+              ports
+              dockerArgs
+              env {
+                key
+                value
+              }
+            }
+          }
+        }
+        """
+        try:
+            req = urllib.request.Request(url, data=json.dumps({"query": query}).encode("utf-8"), headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+
+            pod_templates = res.get("data", {}).get("myself", {}).get("podTemplates", [])
+            template = next((t for t in pod_templates if t.get("id") == template_id), None)
+            if not template:
+                return False
+
+            ports = template.get("ports") or ""
+            if "8000/http" in ports:
+                return True
+
+            fields = [f'id: {json.dumps(template_id)}', 'ports: "8000/http,8000/tcp"']
+            for k in ("name", "imageName", "containerDiskInGb", "volumeInGb", "volumeMountPath"):
+                if k in template and template[k] is not None:
+                    fields.append(f"{k}: {json.dumps(template[k])}")
+            if template.get("dockerArgs") is not None:
+                fields.append(f"dockerArgs: {json.dumps(template['dockerArgs'])}")
+            if template.get("env") is not None:
+                env_items = []
+                for e in template["env"]:
+                    if isinstance(e, dict):
+                        env_items.append(f"{{key: {json.dumps(e.get('key', ''))}, value: {json.dumps(e.get('value', ''))}}}")
+                fields.append(f"env: [{', '.join(env_items)}]")
+
+            mutation = f"""
+            mutation {{
+              saveTemplate(input: {{ {', '.join(fields)} }}) {{
+                id
+                ports
+              }}
+            }}
+            """
+            mut_data = json.dumps({"query": mutation}).encode("utf-8")
+            mut_req = urllib.request.Request(url, data=mut_data, headers=headers, method="POST")
+            with urllib.request.urlopen(mut_req, timeout=10) as mut_resp:
+                mut_res = json.loads(mut_resp.read().decode("utf-8"))
+
+            if "errors" in mut_res:
+                print(f"[RunPod Template] Error updating template {template_id}: {mut_res['errors']}")
+                return False
+
+            print(f"[RunPod Template] Auto-configured template {template_id} to expose 8000/http,8000/tcp for Cloudflare proxy support.")
+            return True
+        except Exception as e:
+            print(f"[RunPod Template] Warning: Could not verify/update template {template_id}: {e}")
+            return False
 
     async def deploy_runpod_pod(self) -> bool:
         """Deploy a RunPod pod using REST API v2 (for Global Volumes) or legacy GraphQL mutation."""
@@ -439,6 +527,11 @@ class RunPodSTTEngine(BaseSTTEngine):
             self.last_deploy_error = "Missing RUNPOD_API_KEY or RUNPOD_TEMPLATE_ID in environment."
             print("[RunPod Deploy] Error: Missing API_KEY or TEMPLATE_ID in .env")
             return False
+
+        try:
+            self.ensure_template_http_ports(api_key, template_id)
+        except Exception as e:
+            print(f"[RunPod Deploy] Warning: Failed template port check: {e}")
 
         region_display = dc_id if dc_id else "Any Region"
         is_global_volume = bool(volume_id and (volume_id.startswith("cmu") or "global" in volume_id.lower()))

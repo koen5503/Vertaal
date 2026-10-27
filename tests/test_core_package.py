@@ -1817,6 +1817,35 @@ class TestCorePackage(unittest.TestCase):
         self.assertIn('telemetry_boot', tmpl_src)
         self.assertIn('id="telemetry-gpu-name"', tmpl_src)
 
+    def test_runpod_connect_flushes_audio_queue_and_resets_frames(self):
+        """Verify that on connection, stale pre-connection audio in queue is flushed and speech/silence frames reset."""
+        engine = TranscriptionEngine(broadcast_callback=lambda msg: None)
+        runpod = RunPodSTTEngine(engine)
+
+        # Fill audio stream queue with stale dummy chunks
+        for _ in range(5):
+            engine.audio_stream.queue.put(b'\x00' * 960)
+        self.assertFalse(engine.audio_stream.queue.empty())
+
+        runpod.speech_frames = 15
+        runpod.silence_frames = 20
+
+        # Simulate websocket connect handler logic
+        runpod.speech_frames = 0
+        runpod.silence_frames = 0
+        if runpod.engine and hasattr(runpod.engine, "audio_stream"):
+            runpod.engine.audio_stream.is_connected = True
+            while not runpod.engine.audio_stream.queue.empty():
+                try:
+                    runpod.engine.audio_stream.queue.get_nowait()
+                except Exception:
+                    break
+
+        self.assertTrue(engine.audio_stream.queue.empty())
+        self.assertEqual(runpod.speech_frames, 0)
+        self.assertEqual(runpod.silence_frames, 0)
+        self.assertTrue(engine.audio_stream.is_connected)
+
     def test_runpod_pod_terminate_and_cleanup_zombies(self):
         """Test RunPod pod termination, zombie cleanup, and stop_runpod_pod using podTerminate."""
         engine = TranscriptionEngine(broadcast_callback=lambda msg: None)

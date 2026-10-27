@@ -215,6 +215,58 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
         self.assertIn("const isReady = statusUpper === 'CONNECTED';", tmpl_content)
         self.assertIn("⏳ Server gestart, verbinding maken...", tmpl_content)
 
+    def test_telemetry_vad_badge_gating_and_boot_timer_reset(self):
+        """Verify VAD badge is gated on CONNECTED and >=3 speech frames, and boot timer resets properly."""
+        with open("templates/telemetry.html", "r", encoding="utf-8") as f:
+            tmpl_content = f.read()
+
+        # 1. Verify VAD badge requires currentStatus === 'CONNECTED'
+        self.assertIn("if (currentStatus !== 'CONNECTED')", tmpl_content)
+        self.assertIn("vadBadge.innerText = 'Wachten op server...';", tmpl_content)
+
+        # 2. Verify speech frames threshold requires >= 3 frames
+        self.assertIn("speechFrames >= 3 && silenceSec < 0.4", tmpl_content)
+        self.assertIn("vadBadge.innerText = 'Spraak actief';", tmpl_content)
+
+        # 3. Verify timer resets on transition into starting/initializing/provisioning
+        self.assertIn("currentStatus === 'STARTING' || currentStatus === 'INITIALIZING' || currentStatus === 'PROVISIONING'", tmpl_content)
+        self.assertIn("bootStartTime = Date.now();", tmpl_content)
+
+        # 4. Verify auto_paused terminates session and clears timer
+        self.assertIn("currentStatus = 'TERMINATED';", tmpl_content)
+        self.assertIn("bootStartTime = null;", tmpl_content)
+        self.assertIn("vadBadge.innerText = 'Inactief (Sessie beëindigd)';", tmpl_content)
+
+        # 5. Logic simulation of VAD badge decision function
+        def evaluate_vad_badge(current_status, speech_frames, silence_sec):
+            if current_status != 'CONNECTED':
+                return 'vad-indicator vad-silence', 'Wachten op server...'
+            elif speech_frames >= 3 and silence_sec < 0.4:
+                return 'vad-indicator vad-speech', 'Spraak actief'
+            else:
+                return 'vad-indicator vad-silence', 'Stilte'
+
+        # Isolated click (1 frame) while connected -> Stilte
+        cls, text = evaluate_vad_badge('CONNECTED', 1, 0.0)
+        self.assertEqual(text, 'Stilte')
+
+        # 2 frames (<3) while connected -> Stilte
+        cls, text = evaluate_vad_badge('CONNECTED', 2, 0.0)
+        self.assertEqual(text, 'Stilte')
+
+        # 3 frames while connected -> Spraak actief
+        cls, text = evaluate_vad_badge('CONNECTED', 3, 0.1)
+        self.assertEqual(text, 'Spraak actief')
+        self.assertEqual(cls, 'vad-indicator vad-speech')
+
+        # 5 frames while NOT connected (e.g. STARTING/INITIALIZING) -> Wachten op server...
+        cls, text = evaluate_vad_badge('INITIALIZING', 5, 0.0)
+        self.assertEqual(text, 'Wachten op server...')
+        self.assertEqual(cls, 'vad-indicator vad-silence')
+
+        cls, text = evaluate_vad_badge('STARTING', 10, 0.0)
+        self.assertEqual(text, 'Wachten op server...')
+
     def test_sse_stream_parser_and_status_derivation(self):
         """Simulate RunPod SSE streaming endpoint (/v2/pods/{id}/logs) with mixed formats and corrupt JSON."""
         sse_lines = [

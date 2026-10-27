@@ -325,7 +325,7 @@
             <div class="card">
                 <div class="card-header">
                     <div class="card-title">🎙 Audio & VAD Telemetrie</div>
-                    <span id="vad-badge" class="vad-indicator vad-silence">Stilte</span>
+                    <span id="vad-badge" class="vad-indicator vad-silence">Wachten op server...</span>
                 </div>
                 <div class="vu-container">
                     <div class="metric-row">
@@ -514,17 +514,25 @@
                 const speechFrames = data.speech_frames || 0;
                 const nextHb = data.next_heartbeat_in !== undefined ? data.next_heartbeat_in : 60;
 
-                document.getElementById('silence-duration').innerText = `${silenceSec.toFixed(1)}s`;
-                document.getElementById('speech-frames').innerText = `${speechFrames} frames`;
-                document.getElementById('next-heartbeat').innerText = `in ${nextHb}s`;
+                const silEl = document.getElementById('silence-duration');
+                if (silEl) silEl.innerText = `${silenceSec.toFixed(1)}s`;
+                const spEl = document.getElementById('speech-frames');
+                if (spEl) spEl.innerText = `${speechFrames} frames`;
+                const nhEl = document.getElementById('next-heartbeat');
+                if (nhEl) nhEl.innerText = `in ${nextHb}s`;
 
                 const vadBadge = document.getElementById('vad-badge');
-                if (speechFrames > 0 && silenceSec < 0.4) {
-                    vadBadge.className = 'vad-indicator vad-speech';
-                    vadBadge.innerText = 'Spraak actief';
-                } else {
-                    vadBadge.className = 'vad-indicator vad-silence';
-                    vadBadge.innerText = 'Stilte';
+                if (vadBadge) {
+                    if (currentStatus !== 'CONNECTED') {
+                        vadBadge.className = 'vad-indicator vad-silence';
+                        vadBadge.innerText = 'Wachten op server...';
+                    } else if (speechFrames >= 3 && silenceSec < 0.4) {
+                        vadBadge.className = 'vad-indicator vad-speech';
+                        vadBadge.innerText = 'Spraak actief';
+                    } else {
+                        vadBadge.className = 'vad-indicator vad-silence';
+                        vadBadge.innerText = 'Stilte';
+                    }
                 }
             }
 
@@ -615,6 +623,9 @@
 
             // 7. Auto pause notice
             if (data.action === 'auto_paused') {
+                currentStatus = 'TERMINATED';
+                bootStartTime = null;
+
                 const sessionStateEl = document.getElementById('session-state');
                 if (sessionStateEl) sessionStateEl.innerText = 'Gepauzeerd (Time-out)';
 
@@ -636,6 +647,12 @@
                     bootStageBadge.className = 'badge normal';
                 }
 
+                const vadBadge = document.getElementById('vad-badge');
+                if (vadBadge) {
+                    vadBadge.className = 'vad-indicator vad-silence';
+                    vadBadge.innerText = 'Inactief (Sessie beëindigd)';
+                }
+
                 stopBootTimer();
             }
 
@@ -649,13 +666,14 @@
             }
         }
 
+        let currentStatus = 'INITIALIZING';
         let bootStartTime = null;
         let bootTimerInterval = null;
         const accumulatedBootLogs = [];
         const seenLogLines = new Set();
 
-        function startBootTimer() {
-            if (!bootStartTime) {
+        function startBootTimer(reset = false) {
+            if (reset || !bootStartTime) {
                 bootStartTime = Date.now();
             }
             if (!bootTimerInterval) {
@@ -711,31 +729,49 @@
             }
 
             if (data.status) {
-                statusText.innerText = String(data.status).toUpperCase();
+                const prevStatus = currentStatus;
+                currentStatus = String(data.status).toUpperCase();
+                if (statusText) statusText.innerText = currentStatus;
+
+                // If transitioning into STARTING/INITIALIZING/PROVISIONING from a stopped or terminal state, reset timer
+                if ((prevStatus === 'CONNECTED' || prevStatus === 'TERMINATED' || prevStatus === 'TIMEOUT' || prevStatus === 'FAILED') &&
+                    (currentStatus === 'STARTING' || currentStatus === 'INITIALIZING' || currentStatus === 'PROVISIONING')) {
+                    bootStartTime = Date.now();
+                }
             }
 
             if (data.stage) {
-                badge.innerText = data.stage;
+                if (badge) badge.innerText = data.stage;
                 const stageLower = data.stage.toLowerCase();
-                const statusUpper = String(data.status || '').toUpperCase();
+                const statusUpper = currentStatus;
                 const isReady = statusUpper === 'CONNECTED';
                 if (isReady) {
-                    badge.className = 'badge fast';
-                    connIndicator.innerText = '✅ Systeem verbonden en gereed';
+                    if (badge) badge.className = 'badge fast';
+                    if (connIndicator) connIndicator.innerText = '✅ Systeem verbonden en gereed';
                     stopBootTimer();
                     updateBootTimerDisplay();
+                } else if (currentStatus === 'TERMINATED') {
+                    if (badge) badge.className = 'badge normal';
+                    if (connIndicator) connIndicator.innerText = '⏸️ Sessie beëindigd';
+                    stopBootTimer();
+                    bootStartTime = null;
+                    const vadBadge = document.getElementById('vad-badge');
+                    if (vadBadge) {
+                        vadBadge.className = 'vad-indicator vad-silence';
+                        vadBadge.innerText = 'Inactief (Sessie beëindigd)';
+                    }
                 } else if (statusUpper === 'ERROR' || statusUpper === 'FAILED' || statusUpper === 'TIMEOUT' || stageLower.includes('fout') || stageLower.includes('mislukt')) {
-                    badge.className = 'badge slow';
-                    connIndicator.innerText = '⚠️ ' + data.stage;
+                    if (badge) badge.className = 'badge slow';
+                    if (connIndicator) connIndicator.innerText = '⚠️ ' + data.stage;
                     stopBootTimer();
                     updateBootTimerDisplay();
                 } else if (stageLower.includes('operationeel') || stageLower.includes('luistert')) {
-                    badge.className = 'badge normal pulse-anim';
-                    connIndicator.innerText = '⏳ Server gestart, verbinding maken...';
+                    if (badge) badge.className = 'badge normal pulse-anim';
+                    if (connIndicator) connIndicator.innerText = '⏳ Server gestart, verbinding maken...';
                     startBootTimer();
                 } else {
-                    badge.className = 'badge normal pulse-anim';
-                    connIndicator.innerText = '⏳ ' + data.stage;
+                    if (badge) badge.className = 'badge normal pulse-anim';
+                    if (connIndicator) connIndicator.innerText = '⏳ ' + data.stage;
                     startBootTimer();
                 }
             }

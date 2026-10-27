@@ -837,6 +837,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         auto_deploy_val = os.getenv("AUTO_DEPLOY_RUNPOD", "false").lower()
         if not wss_url and auto_deploy_val == "true":
             print("[RunPod] No active pod found. Attempting Auto-Deployment/Resume...")
+            start_wait = time.time()
             await self.broadcast_boot_telemetry(self.active_pod_id, "Pod provisioning via REST/GraphQL API...", "STARTING", ["Auto-deployment geactiveerd. Pod aanmaken of opzoeken..."])
             deploy_success = await self.manage_runpod_deployment()
             if deploy_success:
@@ -886,6 +887,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         connect_start_time = time.time()
         while True:
             if not wss_url:
+                connect_start_time = time.time()
                 wss_url = self.discover_runpod_url()
                 if not wss_url and os.getenv("RUNPOD_API_KEY"):
                     await self.manage_runpod_deployment()
@@ -903,12 +905,20 @@ class RunPodSTTEngine(BaseSTTEngine):
                     max_size=10_000_000,
                 ) as ws:
                     print("Connected to RunPod.")
-                    await self.broadcast_boot_telemetry(self.active_pod_id, "Server operationeel op poort 8000", "CONNECTED", ["WebSocket verbonden op poort 8000. Pipeline actief."])
+                    connect_start_time = time.time()
+                    self.speech_frames = 0
+                    self.silence_frames = 0
                     self.intentional_shutdown = False
                     self.last_speech_or_heartbeat_time = time.time()
+                    await self.broadcast_boot_telemetry(self.active_pod_id, "Server operationeel op poort 8000", "CONNECTED", ["WebSocket verbonden op poort 8000. Pipeline actief."])
 
                     if self.engine and hasattr(self.engine, "audio_stream"):
                         self.engine.audio_stream.is_connected = True
+                        while not self.engine.audio_stream.queue.empty():
+                            try:
+                                self.engine.audio_stream.queue.get_nowait()
+                            except Exception:
+                                break
                         if not self.engine.audio_stream.running:
                             print("[Audio] Starting audio stream / demo file playback now that RunPod is connected.")
                             self.engine.audio_stream.start()
@@ -1352,6 +1362,7 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                     recv_task.cancel()
                     self.engine.restart_required = False
+                    connect_start_time = time.time()
                     if self.engine and hasattr(self.engine, "audio_stream"):
                         self.engine.audio_stream.is_connected = False
                     if not self.engine.audio_stream.running:
@@ -1369,6 +1380,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                     print("[RunPod] Session resumed. Re-discovering endpoint...")
                     self.intentional_shutdown = False
                     wss_url = None
+                    connect_start_time = time.time()
                     continue
 
                 print(f"RunPod Server Connection Error. Retrying in 4s... ({e})")

@@ -5,6 +5,7 @@ from collections import deque
 import difflib
 import json
 import os
+import random
 import re
 import string
 import time
@@ -27,6 +28,101 @@ from core.stt.base import BaseSTTEngine
 from core.stt.local_engine import filter_anti_hallucination, TAIL_HALLUCINATION_PATTERN
 from core.translation import clean_translation_meta
 from core.utils import DEFAULT_RUNPOD_GPU, get_runpod_gpu_fallbacks
+
+
+class RunPodResponse:
+    """Wrapper around urllib response providing status_code, json(), text, and context-manager support."""
+
+    def __init__(self, raw_resp):
+        self._raw_resp = raw_resp
+        self.status = int(getattr(raw_resp, "status", getattr(raw_resp, "status_code", getattr(raw_resp, "code", 200))))
+        self.status_code = self.status
+        self.headers = getattr(raw_resp, "headers", {})
+        self._content = None
+
+    def read(self, *args, **kwargs) -> bytes:
+        if self._content is None:
+            raw = self._raw_resp.read(*args, **kwargs)
+            if not args and not kwargs:
+                self._content = raw
+            return raw
+        return self._content
+
+    def getcode(self) -> int:
+        return self.status
+
+    @property
+    def text(self) -> str:
+        data = self.read()
+        if isinstance(data, (bytes, bytearray)):
+            return data.decode("utf-8", errors="replace")
+        return str(data)
+
+    def json(self):
+        return json.loads(self.text)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if hasattr(self._raw_resp, "__exit__"):
+            return self._raw_resp.__exit__(exc_type, exc_val, exc_tb)
+        if hasattr(self._raw_resp, "close"):
+            self._raw_resp.close()
+
+    def __iter__(self):
+        if hasattr(self._raw_resp, "__iter__"):
+            return iter(self._raw_resp)
+        return iter([])
+
+    def __getattr__(self, name):
+        return getattr(self._raw_resp, name)
+
+
+def _runpod_request(
+    method: str,
+    url: str,
+    headers: Optional[Dict[str, str]] = None,
+    json_payload: Optional[dict] = None,
+    timeout: float = 15.0,
+    max_retries: int = 4,
+    base_delay: float = 1.0,
+) -> RunPodResponse:
+    """Execute RunPod HTTP request with exponential backoff for rate limits (429) and transient 5xx errors."""
+    req_headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    if headers:
+        req_headers.update(headers)
+    if json_payload is not None:
+        if "Content-Type" not in req_headers:
+            req_headers["Content-Type"] = "application/json"
+        data = json.dumps(json_payload).encode("utf-8")
+    else:
+        data = None
+
+    req = urllib.request.Request(url, data=data, headers=req_headers, method=method.upper())
+
+    for attempt in range(max_retries):
+        try:
+            raw_resp = urllib.request.urlopen(req, timeout=timeout)
+            return RunPodResponse(raw_resp)
+        except urllib.error.HTTPError as he:
+            if he.code in (429, 502, 503, 504) and attempt < max_retries - 1:
+                delay = None
+                if hasattr(he, "headers") and he.headers:
+                    retry_after = he.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = float(retry_after)
+                        except (ValueError, TypeError):
+                            delay = None
+                if delay is None or delay < 0:
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                print(f"[RunPod] Rate limit / server busy ({he.code}) bereikt, wacht {delay:.1f}s (poging {attempt + 1}/{max_retries})...")
+                time.sleep(delay)
+                continue
+            raise
 
 
 def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
@@ -328,17 +424,80 @@ class RunPodSTTEngine(BaseSTTEngine):
                 continue
         return False
 
-    def discover_runpod_url(self) -> Optional[str]:
-        """Auto-discover running RunPod endpoint via GraphQL API."""
-        api_key = os.getenv("RUNPOD_API_KEY")
+    def _fetch_pods_list(self, api_key: str) -> List[dict]:
+        """Fetch list of user pods with REST API v2 primary and legacy GraphQL fallback."""
         if not api_key:
-            return None
+            return []
 
         api_key = api_key.strip().strip('\'" ')
-        masked_key = api_key[:4] + "***" + api_key[-4:] if len(api_key) > 8 else "INVALID_LENGTH"
-        print(f"[RunPod Auto-Discovery] Booting with API Key {masked_key} (len: {len(api_key)})")
 
-        url = f"https://api.runpod.io/graphql?api_key={api_key}"
+        # 1. Primary: REST API v2 GET https://api.runpod.io/v2/pods
+        v2_url = "https://api.runpod.io/v2/pods"
+        v2_headers = {
+            "Authorization": f"Bearer {api_key}",
+        }
+        fallback_reason = None
+        try:
+            resp = _runpod_request("GET", v2_url, headers=v2_headers, timeout=10.0)
+            status = getattr(resp, "status_code", getattr(resp, "status", 200))
+            if status == 200:
+                res = resp.json()
+                raw_pods = None
+                if isinstance(res, list):
+                    raw_pods = res
+                elif isinstance(res, dict):
+                    if "pods" in res and isinstance(res["pods"], list):
+                        raw_pods = res["pods"]
+                    elif "data" in res:
+                        if isinstance(res["data"], list):
+                            raw_pods = res["data"]
+                        elif isinstance(res["data"], dict):
+                            if "pods" in res["data"] and isinstance(res["data"]["pods"], list):
+                                raw_pods = res["data"]["pods"]
+                            elif "myself" in res["data"] and isinstance(res["data"]["myself"], dict) and isinstance(res["data"]["myself"].get("pods"), list):
+                                raw_pods = res["data"]["myself"]["pods"]
+
+                if raw_pods is not None:
+                    normalized = []
+                    for p in raw_pods:
+                        if not isinstance(p, dict):
+                            continue
+                        norm = dict(p)
+                        norm["id"] = str(p.get("id") or p.get("podId") or "")
+                        norm["name"] = p.get("name") or ""
+                        norm["desiredStatus"] = p.get("desiredStatus") or p.get("status") or ""
+
+                        machine = p.get("machine")
+                        if isinstance(machine, dict):
+                            m_dict = dict(machine)
+                            if "gpuDisplayName" not in m_dict:
+                                m_dict["gpuDisplayName"] = p.get("gpuDisplayName") or (p.get("gpu", {}).get("name") if isinstance(p.get("gpu"), dict) else None)
+                        else:
+                            gpu_name = p.get("gpuDisplayName") or (p.get("gpu", {}).get("name") if isinstance(p.get("gpu"), dict) else None)
+                            m_dict = {"gpuDisplayName": gpu_name}
+                        norm["machine"] = m_dict
+
+                        runtime = p.get("runtime")
+                        if isinstance(runtime, dict):
+                            r_dict = dict(runtime)
+                            if "ports" not in r_dict:
+                                r_dict["ports"] = p.get("ports") or []
+                        else:
+                            r_dict = {"ports": p.get("ports") or []}
+                        norm["runtime"] = r_dict
+
+                        normalized.append(norm)
+                    return normalized
+                else:
+                    fallback_reason = "Unrecognized REST v2 response format"
+            else:
+                fallback_reason = f"HTTP {status}"
+        except Exception as e:
+            fallback_reason = str(e)
+
+        # 2. Fallback: Legacy GraphQL query
+        print(f"[RunPod] REST API v2 pods list failed ({fallback_reason}), falling back to legacy GraphQL...")
+        gql_url = f"https://api.runpod.io/graphql?api_key={api_key}"
         query = '''
         query Pods {
           myself {
@@ -362,21 +521,38 @@ class RunPodSTTEngine(BaseSTTEngine):
           }
         }
         '''
+        try:
+            resp = _runpod_request("POST", gql_url, json_payload={"query": query}, timeout=10.0)
+            res = resp.json()
+            raw_pods = res.get("data", {}).get("myself", {}).get("pods", [])
+            normalized = []
+            for p in raw_pods:
+                if not isinstance(p, dict):
+                    continue
+                norm = dict(p)
+                norm["id"] = str(p.get("id") or "")
+                norm["name"] = p.get("name") or ""
+                norm["desiredStatus"] = p.get("desiredStatus") or ""
+                norm["machine"] = p.get("machine") if isinstance(p.get("machine"), dict) else {"gpuDisplayName": None}
+                norm["runtime"] = p.get("runtime") if isinstance(p.get("runtime"), dict) else {"ports": []}
+                normalized.append(norm)
+            return normalized
+        except Exception as gql_err:
+            print(f"[RunPod] GraphQL fallback failed: {gql_err}")
+            return []
 
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        data = json.dumps({"query": query}).encode('utf-8')
+    def discover_runpod_url(self) -> Optional[str]:
+        """Auto-discover running RunPod endpoint via REST API v2 with GraphQL fallback."""
+        api_key = os.getenv("RUNPOD_API_KEY")
+        if not api_key:
+            return None
+
+        api_key = api_key.strip().strip('\'" ')
+        masked_key = api_key[:4] + "***" + api_key[-4:] if len(api_key) > 8 else "INVALID_LENGTH"
+        print(f"[RunPod Auto-Discovery] Booting with API Key {masked_key} (len: {len(api_key)})")
 
         try:
-            req = urllib.request.Request(url, data=data, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
-                result = json.loads(response.read())
-
-            data_obj = result.get('data') or {}
-            myself_obj = data_obj.get('myself') or {}
-            pods = myself_obj.get('pods') or []
+            pods = self._fetch_pods_list(api_key)
             print(f"[RunPod Auto-Discovery] Found {len(pods)} pods in your account.")
 
             for pod in pods:
@@ -448,10 +624,6 @@ class RunPodSTTEngine(BaseSTTEngine):
 
         api_key = api_key.strip().strip('\'" ')
         url = f"https://api.runpod.io/graphql?api_key={api_key}"
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        }
         query = """
         query PodTemplates {
           myself {
@@ -473,9 +645,8 @@ class RunPodSTTEngine(BaseSTTEngine):
         }
         """
         try:
-            req = urllib.request.Request(url, data=json.dumps({"query": query}).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                res = json.loads(resp.read().decode("utf-8"))
+            resp = _runpod_request("POST", url, json_payload={"query": query}, timeout=10.0)
+            res = resp.json()
 
             pod_templates = res.get("data", {}).get("myself", {}).get("podTemplates", [])
             template = next((t for t in pod_templates if t.get("id") == template_id), None)
@@ -507,10 +678,8 @@ class RunPodSTTEngine(BaseSTTEngine):
               }}
             }}
             """
-            mut_data = json.dumps({"query": mutation}).encode("utf-8")
-            mut_req = urllib.request.Request(url, data=mut_data, headers=headers, method="POST")
-            with urllib.request.urlopen(mut_req, timeout=10) as mut_resp:
-                mut_res = json.loads(mut_resp.read().decode("utf-8"))
+            mut_resp = _runpod_request("POST", url, json_payload={"query": mutation}, timeout=10.0)
+            mut_res = mut_resp.json()
 
             if "errors" in mut_res:
                 print(f"[RunPod Template] Error updating template {template_id}: {mut_res['errors']}")
@@ -551,9 +720,7 @@ class RunPodSTTEngine(BaseSTTEngine):
             if is_global_volume:
                 v2_url = "https://api.runpod.io/v2/pods"
                 v2_headers = {
-                    "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 }
 
                 dc_list = [d.strip() for d in dc_id.split(",") if d.strip()] if dc_id else []
@@ -574,12 +741,9 @@ class RunPodSTTEngine(BaseSTTEngine):
                     if attempt_dc:
                         payload["dataCenterIds"] = attempt_dc
 
-                    data = json.dumps(payload).encode('utf-8')
-                    req = urllib.request.Request(v2_url, data=data, headers=v2_headers, method="POST")
-
                     try:
-                        with urllib.request.urlopen(req, timeout=15) as f:
-                            res = json.loads(f.read().decode('utf-8'))
+                        with _runpod_request("POST", v2_url, headers=v2_headers, json_payload=payload, timeout=15.0) as f:
+                            res = f.json()
                             pod_id = res.get("id") or (res.get("data", {}).get("id") if isinstance(res.get("data"), dict) else None)
                             if pod_id:
                                 self.active_pod_id = str(pod_id)
@@ -587,7 +751,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                             print(f"[RunPod Deploy v2] Success! Rented {gpu_id}. New Pod ID: {pod_id}")
                             return True
                     except urllib.error.HTTPError as he:
-                        err_body = he.read().decode('utf-8', errors='ignore')
+                        err_body = he.read().decode('utf-8', errors='ignore') if hasattr(he, "read") else str(he)
                         print(f"[RunPod Deploy v2] HTTP {he.code} for {gpu_id} ({dc_label}): {err_body}")
                         self.last_deploy_error = f"GPU {gpu_id} ({dc_label}): HTTP {he.code} - {err_body}"
                         if "stock" in err_body.lower() or "supply" in err_body.lower() or "unavailable" in err_body.lower() or he.code == 400:
@@ -601,10 +765,6 @@ class RunPodSTTEngine(BaseSTTEngine):
                 # Fallback to legacy GraphQL mutation
                 print(f"[RunPod Deploy GraphQL] Attempting to rent {gpu_id} in {region_display}...")
                 url = f"https://api.runpod.io/graphql?api_key={api_key}"
-                headers = {
-                    "Content-Type": "application/json",
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                }
                 vol_clause = f'networkVolumeId: "{volume_id}",' if volume_id else ''
                 dc_clause = f'dataCenterId: "{dc_id}",' if dc_id else ''
 
@@ -625,12 +785,9 @@ class RunPodSTTEngine(BaseSTTEngine):
                   }}
                 }}
                 '''
-                data = json.dumps({"query": mutation}).encode('utf-8')
-                req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-
                 try:
-                    with urllib.request.urlopen(req, timeout=15) as f:
-                        res = json.loads(f.read().decode('utf-8'))
+                    with _runpod_request("POST", url, json_payload={"query": mutation}, timeout=15.0) as f:
+                        res = f.json()
                         if "errors" in res:
                             err_msg = res["errors"][0].get("message", "")
                             self.last_deploy_error = f"GPU {gpu_id}: GraphQL error - {err_msg or res.get('errors')}"
@@ -664,21 +821,8 @@ class RunPodSTTEngine(BaseSTTEngine):
             return False
         api_key = api_key.strip().strip('\'" ')
 
-        url = f"https://api.runpod.io/graphql?api_key={api_key}"
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-
-        # 1. Fetch current pods
-        query = '{ myself { pods { id name desiredStatus } } }'
-        req = urllib.request.Request(url, data=json.dumps({"query": query}).encode('utf-8'), headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                pods = json.loads(response.read()).get('data', {}).get('myself', {}).get('pods', [])
-        except Exception as e:
-            print(f"[RunPod Deploy] Error fetching pods: {e}")
-            pods = []
+        # 1. Fetch current pods via REST v2 (with GraphQL fallback)
+        pods = self._fetch_pods_list(api_key)
 
         # 2. Check if an active pod is ALREADY RUNNING
         running_pods = [
@@ -700,60 +844,49 @@ class RunPodSTTEngine(BaseSTTEngine):
         return await self.deploy_runpod_pod()
 
     def terminate_runpod_pod(self, pod_id: str) -> bool:
-        """Terminate a RunPod pod completely via GraphQL mutation with REST API v2 DELETE fallback."""
+        """Terminate a RunPod pod completely via REST API v2 DELETE with legacy GraphQL fallback."""
         api_key = os.getenv("RUNPOD_API_KEY")
         if not api_key or not pod_id:
             return False
 
         api_key = api_key.strip().strip('\'" ')
-        user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        rest_error = None
 
-        # 1. Primary: GraphQL podTerminate mutation
-        graphql_error = None
+        # 1. Primary: REST API v2 DELETE https://api.runpod.io/v2/pods/{pod_id}
+        try:
+            rest_url = f"https://api.runpod.io/v2/pods/{pod_id}"
+            rest_headers = {
+                "Authorization": f"Bearer {api_key}",
+            }
+            resp = _runpod_request("DELETE", rest_url, headers=rest_headers, timeout=10.0)
+            status = getattr(resp, "status_code", getattr(resp, "status", 200))
+            if status in (200, 202, 204) or (200 <= status < 300):
+                print(f"[RunPod Terminate] Successfully terminated pod {pod_id} via REST v2.")
+                return True
+            else:
+                rest_error = f"HTTP {status}"
+                print(f"[RunPod Terminate] REST v2 returned status {status} for pod {pod_id}. Trying GraphQL fallback...")
+        except Exception as e:
+            rest_error = e
+            print(f"[RunPod Terminate] REST v2 failed for pod {pod_id}: {e}. Trying GraphQL fallback...")
+
+        # 2. Fallback: GraphQL podTerminate mutation
         try:
             url = f"https://api.runpod.io/graphql?api_key={api_key}"
-            headers = {
-                "Content-Type": "application/json",
-                "User-Agent": user_agent,
-            }
             mutation = f'''
             mutation {{
               podTerminate(input: {{podId: "{pod_id}"}})
             }}
             '''
-            data = json.dumps({"query": mutation}).encode('utf-8')
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-
-            with urllib.request.urlopen(req, timeout=10) as response:
-                res = json.loads(response.read().decode('utf-8'))
-                if "errors" in res:
-                    graphql_error = res['errors']
-                    print(f"[RunPod Terminate] GraphQL error terminating pod {pod_id}: {graphql_error}. Trying REST v2 fallback...")
-                else:
-                    print(f"[RunPod Terminate] Successfully terminated pod {pod_id} via GraphQL.")
-                    return True
-        except Exception as e:
-            graphql_error = e
-            print(f"[RunPod Terminate] GraphQL failed for pod {pod_id}: {e}. Trying REST v2 fallback...")
-
-        # 2. Fallback: REST API v2 DELETE https://api.runpod.io/v2/pods/{pod_id}
-        try:
-            rest_url = f"https://api.runpod.io/v2/pods/{pod_id}"
-            rest_headers = {
-                "Authorization": f"Bearer {api_key}",
-                "User-Agent": user_agent,
-            }
-            rest_req = urllib.request.Request(rest_url, headers=rest_headers, method="DELETE")
-            with urllib.request.urlopen(rest_req, timeout=10) as response:
-                status = getattr(response, 'status', response.getcode())
-                if 200 <= status < 300:
-                    print(f"[RunPod Terminate] Successfully terminated pod {pod_id} via REST v2 fallback.")
-                    return True
-                else:
-                    print(f"[RunPod Terminate] REST v2 fallback returned status {status} for pod {pod_id}.")
-                    return False
-        except Exception as rest_e:
-            print(f"[RunPod Terminate] Failed to terminate pod {pod_id} via both GraphQL ({graphql_error}) and REST v2: {rest_e}")
+            resp = _runpod_request("POST", url, json_payload={"query": mutation}, timeout=10.0)
+            res = resp.json()
+            if "errors" in res:
+                print(f"[RunPod Terminate] GraphQL fallback error terminating pod {pod_id}: {res['errors']}")
+                return False
+            print(f"[RunPod Terminate] Successfully terminated pod {pod_id} via GraphQL fallback.")
+            return True
+        except Exception as gql_e:
+            print(f"[RunPod Terminate] Failed to terminate pod {pod_id} via both REST v2 ({rest_error}) and GraphQL: {gql_e}")
             return False
 
     def cleanup_exited_pods(self) -> int:
@@ -763,19 +896,7 @@ class RunPodSTTEngine(BaseSTTEngine):
             return 0
 
         api_key = api_key.strip().strip('\'" ')
-        url = f"https://api.runpod.io/graphql?api_key={api_key}"
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        query = '{ myself { pods { id name desiredStatus } } }'
-        req = urllib.request.Request(url, data=json.dumps({"query": query}).encode('utf-8'), headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                pods = json.loads(response.read().decode('utf-8')).get('data', {}).get('myself', {}).get('pods', [])
-        except Exception as e:
-            print(f"[RunPod Cleanup] Error querying pods: {e}")
-            return 0
+        pods = self._fetch_pods_list(api_key)
 
         terminated_count = 0
         for pod in pods:
@@ -794,19 +915,7 @@ class RunPodSTTEngine(BaseSTTEngine):
         if not api_key:
             return False
         api_key = api_key.strip().strip('\'" ')
-        url = f"https://api.runpod.io/graphql?api_key={api_key}"
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        query = '{ myself { pods { id name desiredStatus } } }'
-        req = urllib.request.Request(url, data=json.dumps({"query": query}).encode('utf-8'), headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                pods = json.loads(response.read().decode('utf-8')).get('data', {}).get('myself', {}).get('pods', [])
-        except Exception as e:
-            print(f"[RunPod Orphan Cleanup] Error querying pods: {e}")
-            return False
+        pods = self._fetch_pods_list(api_key)
 
         any_terminated = False
         for pod in pods:
@@ -848,28 +957,14 @@ class RunPodSTTEngine(BaseSTTEngine):
 
         api_key = api_key.strip().strip('\'" ')
 
-        # 1. Fetch Pod Desired Status via lightweight GraphQL query
+        # 1. Fetch Pod Desired Status via _fetch_pods_list
         desired_status: Optional[str] = None
         try:
-            status_query = 'query { myself { pods { id desiredStatus } } }'
-            status_data = json.dumps({"query": status_query}).encode('utf-8')
-            status_headers = {
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            }
-            status_req = urllib.request.Request(
-                f"https://api.runpod.io/graphql?api_key={api_key}",
-                data=status_data,
-                headers=status_headers,
-                method="POST",
-            )
-            with urllib.request.urlopen(status_req, timeout=4) as status_resp:
-                res = json.loads(status_resp.read().decode('utf-8'))
-                pods = res.get('data', {}).get('myself', {}).get('pods', [])
-                for p in pods:
-                    if p.get('id') == pod_id:
-                        desired_status = p.get('desiredStatus')
-                        break
+            pods = self._fetch_pods_list(api_key)
+            for p in pods:
+                if str(p.get('id')) == str(pod_id):
+                    desired_status = p.get('desiredStatus')
+                    break
         except Exception:
             pass
 
@@ -877,16 +972,14 @@ class RunPodSTTEngine(BaseSTTEngine):
         logs_url = f"https://api.runpod.io/v2/pods/{pod_id}/logs"
         logs_headers = {
             "Authorization": f"Bearer {api_key}",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
-        logs_req = urllib.request.Request(logs_url, headers=logs_headers, method="GET")
 
         clean_lines = deque(maxlen=200)
         last_msg: Optional[str] = None
         start_time = time.time()
 
         try:
-            with urllib.request.urlopen(logs_req, timeout=3.0) as response:
+            with _runpod_request("GET", logs_url, headers=logs_headers, timeout=3.0) as response:
                 for raw in response:
                     if (time.time() - start_time) > 3.0:
                         break

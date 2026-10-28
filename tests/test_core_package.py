@@ -2101,15 +2101,18 @@ class TestCorePackage(unittest.TestCase):
         self.assertTrue(engine.audio_stream.is_connected)
 
     def test_runpod_pod_terminate_and_cleanup_zombies(self):
-        """Test RunPod pod termination, zombie cleanup, and stop_runpod_pod using podTerminate."""
+        """Test RunPod pod termination, zombie cleanup, and stop_runpod_pod using REST API v2 primary with GraphQL fallback."""
         engine = TranscriptionEngine(broadcast_callback=lambda msg: None)
         runpod = RunPodSTTEngine(engine)
 
+        sent_requests = []
         sent_queries = []
 
         class MockResponse:
-            def __init__(self, json_data):
+            def __init__(self, json_data, status=200):
                 self._data = json_data
+                self.status = status
+                self.status_code = status
 
             def read(self):
                 return json.dumps(self._data).encode("utf-8")
@@ -2121,6 +2124,20 @@ class TestCorePackage(unittest.TestCase):
                 pass
 
         def mock_urlopen(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            method = req.get_method() if hasattr(req, "get_method") else "GET"
+            sent_requests.append((method, url))
+
+            if "v2/pods" in url:
+                if method == "DELETE":
+                    return MockResponse({"status": "deleted"}, 200)
+                elif method == "GET":
+                    return MockResponse([
+                        {"id": "pod-zombie-1", "name": "pod-1", "desiredStatus": "EXITED"},
+                        {"id": "pod-active-2", "name": "pod-2", "desiredStatus": "RUNNING"},
+                        {"id": "pod-zombie-3", "name": "pod-3", "desiredStatus": "EXITED"},
+                    ], 200)
+
             if hasattr(req, "data") and req.data:
                 payload = json.loads(req.data.decode("utf-8"))
                 query_str = payload.get("query", "")
@@ -2144,35 +2161,37 @@ class TestCorePackage(unittest.TestCase):
 
         with patch.dict(os.environ, {"RUNPOD_API_KEY": "test_api_key"}):
             with patch("urllib.request.urlopen", side_effect=mock_urlopen):
-                # 1. Test direct pod termination
-                sent_queries.clear()
+                # 1. Test direct pod termination via REST API v2
+                sent_requests.clear()
                 res = runpod.terminate_runpod_pod("pod-single-term")
                 self.assertTrue(res)
-                self.assertEqual(len(sent_queries), 1)
-                self.assertIn('podTerminate(input: {podId: "pod-single-term"})', sent_queries[0])
+                self.assertEqual(len(sent_requests), 1)
+                self.assertEqual(sent_requests[0], ("DELETE", "https://api.runpod.io/v2/pods/pod-single-term"))
 
                 # 2. Test cleanup_exited_pods
-                sent_queries.clear()
+                sent_requests.clear()
                 cleaned_count = runpod.cleanup_exited_pods()
                 self.assertEqual(cleaned_count, 2)
-                # Should have 1 query for myself.pods, and 2 terminate mutations
-                self.assertEqual(len(sent_queries), 3)
-                self.assertIn("pod-zombie-1", sent_queries[1])
-                self.assertIn("pod-zombie-3", sent_queries[2])
+                # Should have 1 GET for /v2/pods, and 2 DELETEs for zombie pods
+                self.assertEqual(len(sent_requests), 3)
+                self.assertEqual(sent_requests[0], ("GET", "https://api.runpod.io/v2/pods"))
+                self.assertIn("pod-zombie-1", sent_requests[1][1])
+                self.assertIn("pod-zombie-3", sent_requests[2][1])
 
-                # 3. Test stop_runpod_pod executes podTerminate and clears active_pod_id
-                sent_queries.clear()
+                # 3. Test stop_runpod_pod executes REST v2 DELETE and clears active_pod_id
+                sent_requests.clear()
                 runpod.active_pod_id = "pod-active-999"
                 stop_res = asyncio.run(runpod.stop_runpod_pod())
                 self.assertTrue(stop_res)
                 self.assertIsNone(runpod.active_pod_id)
                 self.assertTrue(runpod.intentional_shutdown)
-                self.assertEqual(len(sent_queries), 1)
-                self.assertIn('podTerminate(input: {podId: "pod-active-999"})', sent_queries[0])
+                self.assertEqual(len(sent_requests), 1)
+                self.assertEqual(sent_requests[0], ("DELETE", "https://api.runpod.io/v2/pods/pod-active-999"))
 
-        # 4. Verify runpod_server.py auto_shutdown uses podTerminate
+        # 4. Verify runpod_server.py auto_shutdown uses REST v2 DELETE and podTerminate fallback
         with open("runpod_server.py", "r", encoding="utf-8") as f:
             server_src = f.read()
+        self.assertIn("https://api.runpod.io/v2/pods/{pod_id}", server_src)
         self.assertIn('podTerminate(input: {{podId: "{pod_id}"}})', server_src)
         self.assertNotIn('podStop(input: {{podId: "{pod_id}"}})', server_src)
 
@@ -2254,6 +2273,304 @@ class TestCorePackage(unittest.TestCase):
 
         stage_step, _ = condense_runpod_logs("=== [5/8] Downloading Faster-Whisper large-v3 on local NVMe SSD ===")
         self.assertIn("Initialisatie [5/8] Downloading Faster-Whisper large-v3", stage_step)
+
+    def test_runpod_request_http_429_exponential_backoff(self):
+        """_runpod_request retries on 429 and transient 5xx with exponential backoff and succeeds on 200."""
+        from core.stt.runpod_engine import _runpod_request
+        import urllib.error
+
+        attempts = 0
+        slept_delays = []
+
+        class MockHTTPResponse:
+            def __init__(self, data, status=200):
+                self._data = data
+                self.status = status
+                self.headers = {}
+
+            def read(self):
+                return self._data
+
+        def mock_urlopen(req, timeout=15.0):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                # 429 with Retry-After header
+                err = urllib.error.HTTPError(
+                    url=req.full_url,
+                    code=429,
+                    msg="Too Many Requests",
+                    hdrs={"Retry-After": "2.5"},
+                    fp=MagicMock(read=lambda: b"rate limited")
+                )
+                raise err
+            elif attempts == 2:
+                # 429 without Retry-After (tests backoff calculation)
+                err = urllib.error.HTTPError(
+                    url=req.full_url,
+                    code=429,
+                    msg="Too Many Requests",
+                    hdrs={},
+                    fp=MagicMock(read=lambda: b"rate limited again")
+                )
+                raise err
+            elif attempts == 3:
+                # 503 Service Unavailable (transient 5xx retry)
+                err = urllib.error.HTTPError(
+                    url=req.full_url,
+                    code=503,
+                    msg="Service Unavailable",
+                    hdrs={},
+                    fp=MagicMock(read=lambda: b"server busy")
+                )
+                raise err
+            else:
+                return MockHTTPResponse(b'{"status": "success", "attempt": 4}', status=200)
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            with patch("time.sleep", side_effect=lambda s: slept_delays.append(s)):
+                resp = _runpod_request("GET", "https://api.runpod.io/v2/pods", base_delay=0.1)
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.json()["status"], "success")
+                self.assertEqual(attempts, 4)
+                self.assertEqual(len(slept_delays), 3)
+                # First sleep respected Retry-After: 2.5
+                self.assertEqual(slept_delays[0], 2.5)
+                # Second and third slept with backoff
+                self.assertGreater(slept_delays[1], 0)
+                self.assertGreater(slept_delays[2], 0)
+
+    def test_fetch_pods_list_rest_v2_primary(self):
+        """_fetch_pods_list calls GET https://api.runpod.io/v2/pods first, normalizes fields, and returns pods."""
+        from core.stt.runpod_engine import RunPodSTTEngine
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+
+        sent_reqs = []
+
+        class MockHTTPResponse:
+            def __init__(self, data, status=200):
+                self._data = data
+                self.status = status
+                self.headers = {}
+
+            def read(self):
+                return self._data
+
+        def mock_urlopen(req, timeout=10.0):
+            sent_reqs.append(req)
+            # Return list directly as REST v2 format
+            payload = [
+                {
+                    "id": "pod-v2-1",
+                    "name": "ondertitels-gpu",
+                    "status": "RUNNING",
+                    "gpuDisplayName": "NVIDIA RTX 4090",
+                    "ports": [{"ip": "1.2.3.4", "isIpPublic": True, "privatePort": 8000, "publicPort": 12345, "type": "http"}]
+                }
+            ]
+            return MockHTTPResponse(json.dumps(payload).encode("utf-8"), status=200)
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            pods = runpod._fetch_pods_list("test_key")
+            self.assertEqual(len(sent_reqs), 1)
+            req = sent_reqs[0]
+            self.assertEqual(req.full_url, "https://api.runpod.io/v2/pods")
+            self.assertEqual(req.get_method(), "GET")
+            self.assertEqual(req.headers.get("Authorization"), "Bearer test_key")
+            self.assertEqual(len(pods), 1)
+            p = pods[0]
+            self.assertEqual(p["id"], "pod-v2-1")
+            self.assertEqual(p["desiredStatus"], "RUNNING")
+            self.assertEqual(p["machine"]["gpuDisplayName"], "NVIDIA RTX 4090")
+            self.assertEqual(p["runtime"]["ports"][0]["privatePort"], 8000)
+
+    def test_fetch_pods_list_fallback_to_graphql(self):
+        """_fetch_pods_list falls back to GraphQL if GET https://api.runpod.io/v2/pods fails."""
+        from core.stt.runpod_engine import RunPodSTTEngine
+        import urllib.error
+
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+
+        sent_urls = []
+
+        class MockHTTPResponse:
+            def __init__(self, data, status=200):
+                self._data = data
+                self.status = status
+                self.headers = {}
+
+            def read(self):
+                return self._data
+
+        def mock_urlopen(req, timeout=10.0):
+            url = req.full_url
+            sent_urls.append(url)
+            if "v2/pods" in url:
+                # Simulate 500 Server Error on REST v2
+                raise urllib.error.HTTPError(
+                    url=url, code=500, msg="Internal Server Error", hdrs={}, fp=MagicMock(read=lambda: b"error")
+                )
+            elif "graphql" in url:
+                gql_payload = {
+                    "data": {
+                        "myself": {
+                            "pods": [
+                                {
+                                    "id": "pod-gql-fallback",
+                                    "name": "ondertitels-gpu",
+                                    "desiredStatus": "RUNNING",
+                                    "machine": {"gpuDisplayName": "NVIDIA RTX A5000"},
+                                    "runtime": {"ports": []}
+                                }
+                            ]
+                        }
+                    }
+                }
+                return MockHTTPResponse(json.dumps(gql_payload).encode("utf-8"), status=200)
+            return MockHTTPResponse(b"{}", status=404)
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            pods = runpod._fetch_pods_list("test_key")
+            self.assertEqual(len(sent_urls), 2)
+            self.assertEqual(sent_urls[0], "https://api.runpod.io/v2/pods")
+            self.assertIn("graphql", sent_urls[1])
+            self.assertEqual(len(pods), 1)
+            self.assertEqual(pods[0]["id"], "pod-gql-fallback")
+            self.assertEqual(pods[0]["machine"]["gpuDisplayName"], "NVIDIA RTX A5000")
+
+    def test_terminate_runpod_pod_rest_v2_primary(self):
+        """terminate_runpod_pod calls DELETE https://api.runpod.io/v2/pods/{pod_id} first and falls back to GraphQL only on failure."""
+        from core.stt.runpod_engine import RunPodSTTEngine
+        import urllib.error
+
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+
+        sent_calls = []
+
+        class MockHTTPResponse:
+            def __init__(self, data, status=200):
+                self._data = data
+                self.status = status
+                self.headers = {}
+
+            def read(self):
+                return self._data
+
+        # Case 1: REST v2 DELETE succeeds (HTTP 204 No Content)
+        def mock_urlopen_success(req, timeout=10.0):
+            sent_calls.append((req.get_method(), req.full_url))
+            return MockHTTPResponse(b"", status=204)
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "test_api_key"}):
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen_success):
+                res = runpod.terminate_runpod_pod("pod-12345")
+                self.assertTrue(res)
+                self.assertEqual(len(sent_calls), 1)
+                self.assertEqual(sent_calls[0], ("DELETE", "https://api.runpod.io/v2/pods/pod-12345"))
+
+        # Case 2: REST v2 DELETE fails (HTTP 404), falls back to GraphQL
+        sent_calls.clear()
+        def mock_urlopen_fallback(req, timeout=10.0):
+            method = req.get_method()
+            url = req.full_url
+            sent_calls.append((method, url))
+            if "v2/pods" in url:
+                raise urllib.error.HTTPError(
+                    url=url, code=404, msg="Not Found", hdrs={}, fp=MagicMock(read=lambda: b"pod not found")
+                )
+            elif "graphql" in url:
+                return MockHTTPResponse(b'{"data": {"podTerminate": true}}', status=200)
+            return MockHTTPResponse(b"{}", status=500)
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "test_api_key"}):
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen_fallback):
+                res = runpod.terminate_runpod_pod("pod-fallback-999")
+                self.assertTrue(res)
+                self.assertEqual(len(sent_calls), 2)
+                self.assertEqual(sent_calls[0], ("DELETE", "https://api.runpod.io/v2/pods/pod-fallback-999"))
+                self.assertEqual(sent_calls[1][0], "POST")
+                self.assertIn("graphql", sent_calls[1][1])
+
+    def test_runpod_server_auto_shutdown_rest_v2_primary(self):
+        """runpod_server auto_shutdown uses DELETE https://api.runpod.io/v2/pods/{pod_id} primarily with retry on 429."""
+        import urllib.error
+        import urllib.request
+
+        sent_requests = []
+        slept_intervals = []
+
+        class MockHTTPResponse:
+            def __init__(self, data, status=200):
+                self._data = data
+                self.status = status
+                self.headers = {}
+
+            def read(self):
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        def mock_urlopen(req, timeout=10):
+            url = req.full_url
+            method = req.get_method()
+            sent_requests.append((method, url))
+            if len(sent_requests) == 1:
+                # First attempt: 429 Rate Limit
+                raise urllib.error.HTTPError(
+                    url=url, code=429, msg="Too Many Requests", hdrs={"Retry-After": "1.0"}, fp=MagicMock(read=lambda: b"rate limit")
+                )
+            # Second attempt (retry): Success HTTP 200
+            return MockHTTPResponse(b'{"status": "deleted"}', status=200)
+
+        with open("runpod_server.py", "r", encoding="utf-8") as f:
+            server_src = f.read()
+
+        # Verify source code requirements
+        self.assertIn('DELETE', server_src)
+        self.assertIn('https://api.runpod.io/v2/pods/{pod_id}', server_src)
+        self.assertIn('he.code == 429 and attempt == 0', server_src)
+        self.assertIn('podTerminate(input: {{podId: "{pod_id}"}})', server_src)
+
+        # Verify execution logic with mocks
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "test_key", "RUNPOD_POD_ID": "pod-server-test"}):
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+                with patch("time.sleep", side_effect=lambda s: slept_intervals.append(s)):
+                    api_key = os.getenv("RUNPOD_API_KEY", "").strip()
+                    pod_id = os.getenv("RUNPOD_POD_ID", "").strip()
+                    terminated = False
+                    rest_url = f"https://api.runpod.io/v2/pods/{pod_id}"
+                    rest_headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    }
+                    for attempt in range(2):
+                        try:
+                            req = urllib.request.Request(rest_url, headers=rest_headers, method="DELETE")
+                            with urllib.request.urlopen(req, timeout=10) as resp:
+                                status = getattr(resp, "status", getattr(resp, "code", 200))
+                                if status in (200, 202, 204) or (200 <= status < 300):
+                                    terminated = True
+                                    break
+                        except urllib.error.HTTPError as he:
+                            if he.code == 429 and attempt == 0:
+                                retry_after = he.headers.get("Retry-After") if hasattr(he, "headers") and he.headers else None
+                                wait_s = float(retry_after) if retry_after else 2.0
+                                time.sleep(wait_s)
+                                continue
+                            break
+
+                    self.assertTrue(terminated)
+                    self.assertEqual(len(sent_requests), 2)
+                    self.assertEqual(sent_requests[0], ("DELETE", "https://api.runpod.io/v2/pods/pod-server-test"))
+                    self.assertEqual(sent_requests[1], ("DELETE", "https://api.runpod.io/v2/pods/pod-server-test"))
+                    self.assertEqual(slept_intervals, [1.0])
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import string
 import threading
 import time
 from typing import Dict, Optional, Set
+import urllib.error
 import urllib.request
 
 import numpy as np
@@ -210,24 +211,60 @@ def auto_shutdown():
     pod_id = os.getenv("RUNPOD_POD_ID", "").strip()
     
     if api_key and pod_id:
-        try:
-            url = "https://api.runpod.io/graphql"
-            mutation = f"""
-            mutation {{
-                podTerminate(input: {{podId: "{pod_id}"}})
-            }}
-            """
-            data = json.dumps({"query": mutation}).encode("utf-8")
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-            req = urllib.request.Request(url, data=data, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
-                print("RunPod Terminate API Response:", response.read().decode())
-        except Exception as e:
-            print(f"Failed to call RunPod API: {e}")
+        terminated = False
+        # 1. Primary: REST API v2 DELETE https://api.runpod.io/v2/pods/{pod_id}
+        rest_url = f"https://api.runpod.io/v2/pods/{pod_id}"
+        rest_headers = {
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(rest_url, headers=rest_headers, method="DELETE")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    status = getattr(resp, "status", getattr(resp, "code", 200))
+                    if status in (200, 202, 204) or (200 <= status < 300):
+                        print(f"SHUTDOWN TIMER: Successfully stopped pod {pod_id} via REST v2 (status {status}).")
+                        terminated = True
+                        break
+            except urllib.error.HTTPError as he:
+                if he.code == 429 and attempt == 0:
+                    retry_after = he.headers.get("Retry-After") if hasattr(he, "headers") and he.headers else None
+                    wait_s = 2.0
+                    if retry_after:
+                        try:
+                            wait_s = float(retry_after)
+                        except (ValueError, TypeError):
+                            wait_s = 2.0
+                    print(f"SHUTDOWN TIMER: Rate limited (429) on REST v2 DELETE, retrying in {wait_s:.1f}s...")
+                    time.sleep(wait_s)
+                    continue
+                print(f"SHUTDOWN TIMER: REST v2 DELETE failed (HTTP {he.code}). Trying GraphQL fallback...")
+                break
+            except Exception as e:
+                print(f"SHUTDOWN TIMER: REST v2 DELETE error: {e}. Trying GraphQL fallback...")
+                break
+
+        # 2. Fallback: GraphQL podTerminate
+        if not terminated:
+            try:
+                url = "https://api.runpod.io/graphql"
+                mutation = f"""
+                mutation {{
+                    podTerminate(input: {{podId: "{pod_id}"}})
+                }}
+                """
+                data = json.dumps({"query": mutation}).encode("utf-8")
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                }
+                req = urllib.request.Request(url, data=data, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    print("RunPod Terminate API Response (GraphQL fallback):", response.read().decode())
+            except Exception as e:
+                print(f"Failed to call RunPod API: {e}")
     else:
         print("WARNING: RUNPOD_API_KEY or RUNPOD_POD_ID not found in environment.")
         print("The server will exit, but RunPod might restart it automatically. Please add RUNPOD_API_KEY to your template.")

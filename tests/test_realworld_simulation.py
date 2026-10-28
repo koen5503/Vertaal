@@ -683,6 +683,12 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
                         mock_res.read.return_value = json.dumps({"data": {"podTerminate": None}}).encode("utf-8")
                     mock_res.status = 200
                     mock_res.getcode.return_value = 200
+                elif "api.runpod.io/v2/pods" in url:
+                    if req.get_method() == "DELETE" and "pod-active-sim-1" in url:
+                        terminated_ids.append("pod-active-sim-1")
+                    mock_res.read.return_value = b"{}"
+                    mock_res.status = 200
+                    mock_res.getcode.return_value = 200
                 mock_res.__enter__.return_value = mock_res
                 return mock_res
 

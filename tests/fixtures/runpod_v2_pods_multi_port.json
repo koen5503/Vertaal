@@ -1,0 +1,52 @@
+{
+  "pagination": {
+    "hasNextPage": false,
+    "nextCursor": null
+  },
+  "pods": [
+    {
+      "id": "g7kt0vxny22w2b",
+      "name": "ondertitels-gpu",
+      "status": "RUNNING",
+      "cloud": "SECURE",
+      "cost": 0.28,
+      "gpu": {
+        "id": "NVIDIA RTX 4000 Ada Generation",
+        "count": 1,
+        "memory": 62,
+        "vcpuCount": 16
+      },
+      "mounts": {
+        "global": [
+          {
+            "volumeId": "cmujjjemv000007l5hmrx9azk",
+            "path": "/workspace"
+          }
+        ]
+      },
+      "ports": [
+        "8000/http",
+        "8001/tcp"
+      ],
+      "runtime": {
+        "ports": [
+          {
+            "ip": null,
+            "isIpPublic": false,
+            "privatePort": 8000,
+            "publicPort": null,
+            "type": "http"
+          },
+          {
+            "ip": "213.192.2.92",
+            "isIpPublic": true,
+            "privatePort": 8001,
+            "publicPort": 40199,
+            "type": "tcp"
+          }
+        ]
+      },
+      "startedAt": "2026-10-28T21:18:00.166Z"
+    }
+  ]
+}

@@ -507,12 +507,13 @@ class RunPodSTTEngine(BaseSTTEngine):
                         norm["desiredStatus"] = p.get("desiredStatus") or p.get("status") or ""
 
                         machine = p.get("machine")
+                        gpu_obj = p.get("gpu") if isinstance(p.get("gpu"), dict) else {}
+                        gpu_name = p.get("gpuDisplayName") or gpu_obj.get("name") or gpu_obj.get("id")
                         if isinstance(machine, dict):
                             m_dict = dict(machine)
-                            if "gpuDisplayName" not in m_dict:
-                                m_dict["gpuDisplayName"] = p.get("gpuDisplayName") or (p.get("gpu", {}).get("name") if isinstance(p.get("gpu"), dict) else None)
+                            if not m_dict.get("gpuDisplayName"):
+                                m_dict["gpuDisplayName"] = gpu_name
                         else:
-                            gpu_name = p.get("gpuDisplayName") or (p.get("gpu", {}).get("name") if isinstance(p.get("gpu"), dict) else None)
                             m_dict = {"gpuDisplayName": gpu_name}
                         norm["machine"] = m_dict
 
@@ -666,6 +667,8 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                 # Extract GPU model name from pod machine metadata
                 pod_gpu = pod.get("machine", {}).get("gpuDisplayName") if isinstance(pod.get("machine"), dict) else None
+                if not pod_gpu and isinstance(pod.get("gpu"), dict):
+                    pod_gpu = pod.get("gpu", {}).get("name") or pod.get("gpu", {}).get("id")
                 self.active_gpu_name = pod_gpu or self.active_gpu_name or os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
 
                 self.active_pod_id = pod_id
@@ -674,12 +677,11 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                 for port_map in ports:
                     p_num, ptype, ip, public_port, is_ip_public = _parse_port_entry(port_map)
-                    if p_num == 8000:
-                        if ptype == 'http':
-                            self.proxy_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
-                        elif ptype == 'tcp' and is_ip_public and public_port:
-                            if ip and public_port:
-                                self.direct_tcp_url = f"ws://{ip}:{public_port}/stream"
+                    if p_num == 8000 and ptype == 'http':
+                        self.proxy_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
+                    elif (p_num in (8000, 8001) or ptype == 'tcp') and ptype == 'tcp' and is_ip_public and public_port:
+                        if ip and public_port:
+                            self.direct_tcp_url = f"ws://{ip}:{public_port}/stream"
 
                 # Fallback: if no specific http port was marked, default proxy URL for pod_id
                 if not self.proxy_url:

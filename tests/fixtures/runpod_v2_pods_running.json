@@ -1,0 +1,34 @@
+{
+  "pagination": {
+    "hasNextPage": false,
+    "nextCursor": null
+  },
+  "pods": [
+    {
+      "id": "g7kt0vxny22w2b",
+      "name": "ondertitels-gpu",
+      "status": "RUNNING",
+      "cloud": "SECURE",
+      "cost": 0.28,
+      "gpu": {
+        "id": "NVIDIA RTX 4000 Ada Generation",
+        "count": 1,
+        "memory": 62,
+        "vcpuCount": 16
+      },
+      "mounts": {
+        "global": [
+          {
+            "volumeId": "cmujjjemv000007l5hmrx9azk",
+            "path": "/workspace"
+          }
+        ]
+      },
+      "ports": [
+        "8000/http"
+      ],
+      "runtime": null,
+      "startedAt": "2026-10-28T21:18:00.166Z"
+    }
+  ]
+}

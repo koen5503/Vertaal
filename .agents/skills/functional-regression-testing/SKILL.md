@@ -1,97 +1,163 @@
 ---
 name: functional-regression-testing
 description: >-
-  Build, run, and maintain functional regression test suites that eliminate mock-drift,
-  verify end-to-end user workflows using real golden production fixtures, and enforce
-  measurable branch and line code coverage. Activate this skill when the user asks to
+  Build, run, and maintain multi-tiered functional regression test suites that eliminate mock-drift,
+  verify live external API contracts, test end-to-end pipeline execution over real loopback sockets,
+  and enforce measurable branch and line code coverage. Activate this skill when the user asks to
   create regression tests, eliminate synthetic mocks, measure test coverage, or verify
   bug fixes against real production contracts.
 ---
 
-# Functional Regression Testing & Coverage Skill
+# Multi-Tiered Functional Regression Testing & Coverage Skill
 
-This skill guides the design, implementation, and verification of **functional regression test suites** that target observable behavioral contracts rather than internal implementation details, eliminating the blind spots caused by synthetic unit mocks.
-
----
-
-## 1. Core Philosophy: The Anti-Mock-Drift Principle
-
-Unit test mocks often create a false sense of security because the developer writes the mock based on **assumptions** about how external APIs or services behave. When the real service returns a different data type (e.g., `["8000/http"]` instead of `[{"privatePort": 8000}]`), 100% of the unit tests pass while production crashes with an `AttributeError` or `KeyError`.
-
-### Three Rules to Eliminate Mock Drift
-1. **Golden Production Fixtures**: Store actual, raw JSON/SSE responses captured from real production endpoints in `tests/fixtures/<service>_<endpoint>.json`. Tests must load these verbatim files rather than defining inline `MagicMock` dictionaries.
-2. **Defensive Contract Validation**: Parsers and normalizers must be tested against all schema variations:
-   - `list[dict]` vs. `list[str]` vs. `str` (comma-separated)
-   - `null` / `None` values where objects or lists were expected
-   - Missing fields, unexpected fields, and mixed types
-3. **Reproduce First, Fix Second**: Before fixing any production defect, create a regression test reproducing the exact input payload that triggered the failure. Verify that the test fails before making code changes, and passes afterward.
+This skill guides the design, implementation, and maintenance of **comprehensive, production-grade functional regression test suites**. It addresses the common failure modes of software testing—especially **Mock Drift**, **Silent Upstream API Breaks**, and **Untested Asynchronous Pipelines**—by establishing four complementary testing tiers and enforcing measurable branch coverage.
 
 ---
 
-## 2. Standard Regression Workflow
-
-Follow this procedure when creating functional regression tests:
+## The Four Pillars of Functional Regression Testing
 
 ```mermaid
 flowchart TD
-    Capture["1. Capture Real-World Production Payload"] --> Fixture["2. Save to tests/fixtures/*.json"]
-    Fixture --> ContractTest["3. Write Golden Contract Test"]
-    ContractTest --> Pipeline["4. Test Full Pipeline (Ingest -> Process -> Emit)"]
-    Pipeline --> Coverage["5. Measure Branch & Line Coverage"]
-    Coverage --> Gate{"Coverage >= Target & 0 Regressions?"}
-    Gate -- No --> Improve["Add Edge-Case Tests"]
-    Improve --> Coverage
-    Gate -- Yes --> Commit["Commit Code & Tests"]
-```
+    subgraph OfflineTiers ["Offline & CI Safe (Millisecond Execution)"]
+        Tier1["Pillar 1: Golden Fixture Contract Tests<br/>(Raw authentic JSON/SSE dumps, zero synthetic mocks)"]
+        Tier3["Pillar 3: Ephemeral Loopback Pipeline Tests<br/>(Real server + client on loopback port, real streams)"]
+    end
+    subgraph LiveTier ["Conditional / Opt-In (Environment Gated)"]
+        Tier2["Pillar 2: Live API Contract Smoke Tests<br/>(Opt-in via API Key, tests real external cloud endpoints)"]
+    end
+    subgraph QualityGate ["Verification & Coverage Gate"]
+        Tier4["Pillar 4: Quality Gate & Branch Coverage<br/>(100% pass rate, branch coverage >= 85%, zero regressions)"]
+    end
 
-### Step 1: Capture and Save Production Fixtures
-Capture authentic payloads (sanitizing sensitive tokens/secrets) and place them under `tests/fixtures/`:
-- `tests/fixtures/<provider>_<api>_response.json`
-- `tests/fixtures/<provider>_<api>_error_429.json`
-- `tests/fixtures/<provider>_<api>_stream_sample.sse`
-
-### Step 2: Implement Contract & Regression Tests
-In `tests/test_golden_contract.py` or domain-specific test suites:
-- Load the raw fixture from disk via `json.load()`.
-- Pass the fixture through the full parsing and normalization pipeline.
-- Assert observable outcomes: verified endpoints, transformed domain objects, and operational state transitions.
-
-### Step 3: Run With Coverage Analysis
-Execute the test suite with line and branch coverage enabled:
-```bash
-# Run tests with branch coverage
-python3 -m coverage run --branch -m unittest discover -s tests -p "test_*.py" -v
-
-# Generate terminal coverage report with missing line numbers
-python3 -m coverage report -m --fail-under=85
+    Tier1 --> Tier4
+    Tier3 --> Tier4
+    Tier2 -.->|When API key present| Tier4
 ```
 
 ---
 
-## 3. Coverage Analysis & Metrics
+## Pillar 1: Golden Production Fixtures (Anti-Mock Contract Testing)
 
-Coverage provides an objective metric to ensure all execution paths are exercised:
+### Why Unit Mocks Fail
+When engineers write unit mocks (e.g. `mock_resp.json.return_value = {"ports": [{"privatePort": 8000}]}`), they test their **mental model** of the third-party service, not reality. When the real API returns `{"ports": ["8000/http"], "runtime": null}`, unit tests remain 100% green while production crashes with an `AttributeError` or `KeyError`.
 
-Metric | What It Measures | Target
-:--- | :--- | :---
-**Statement Coverage** | Whether each line of code was executed at least once | >= 90%
-**Branch Coverage** | Whether both `True` and `False` branches of every `if`, `while`, and `try/except` were taken | >= 85%
-**Regression Coverage** | 100% of previously discovered bugs have dedicated reproducing tests | 100%
-
-### Checking Untested Branches
-In the output of `coverage report -m`, examine the `Missing` column:
-```text
-Name                       Stmts   Miss Branch BrPart  Cover   Missing
-----------------------------------------------------------------------
-core/stt/runpod_engine.py    450     12     80      4    96%   412-415, 580->585
-```
-- `412-415`: Unexecuted statements (e.g., error fallback branch).
-- `580->585`: Branch partition where only one direction of a conditional was tested. Add test cases specifically triggering the missing condition.
+### General Implementation Pattern
+1. **Directory Structure**: Store verbatim snapshots in `tests/fixtures/<service>_<endpoint>_<scenario>.json`:
+   - `tests/fixtures/service_v2_resource_active.json`
+   - `tests/fixtures/service_v2_resource_empty.json`
+   - `tests/fixtures/service_v2_resource_edge_types.json`
+2. **Defensive Type Permutations**: Test parsers against:
+   - Scalar string vs. list of strings vs. list of dictionaries.
+   - `null` / `None` values where objects or lists were expected.
+   - Unexpected extra fields and missing optional keys.
+3. **Fixture Ingestion Test**:
+   ```python
+   def test_golden_contract_ingestion(self):
+       with open("tests/fixtures/service_v2_resource_active.json", "r", encoding="utf-8") as f:
+           raw_payload = json.load(f)
+       # Feed directly into production parser / client
+       result = client.parse_resource(raw_payload)
+       self.assertIsNotNone(result.endpoint_url)
+       self.assertEqual(result.status, "ACTIVE")
+   ```
 
 ---
 
-## 4. Reusable Test Templates
+## Pillar 2: Live API Contract Smoke Tests (Opt-In / Conditional)
 
-See the companion references and scripts:
-- [Anti-Mock Patterns & Golden Fixtures](./references/anti_mock_patterns.md)
-- [Automated Coverage Runner Script](./scripts/run_coverage.py)
+### Purpose
+Detects breaking changes in upstream third-party APIs (e.g., deprecated fields, changed response schemas, rate-limit adjustments) before code reaches end users.
+
+### General Implementation Pattern
+- **Conditional Execution**: Gate tests on the presence of the live environment variable or API key so that local development and offline CI runs pass without requiring credentials or incurring cloud costs:
+  - **Python (`unittest`)**: `@unittest.skipUnless(os.getenv("<SERVICE>_API_KEY"), "Live <SERVICE>_API_KEY required")`
+  - **Python (`pytest`)**: `@pytest.mark.skipif(not os.getenv("<SERVICE>_API_KEY"), reason="...")`
+  - **JavaScript (`Jest`)**: `const describeIfLive = process.env.API_KEY ? describe : describe.skip;`
+  - **Go**: `if os.Getenv("API_KEY") == "" { t.Skip("Skipping live test") }`
+- **What to Verify in Live Smoke Tests**:
+  1. **Schema Integrity**: Query the live endpoint (e.g. `GET /v2/resources`) and assert that all required keys are present and have expected types.
+  2. **Rate-Limit Compliance**: Verify that headers (`Retry-After`, `X-RateLimit-Remaining`) are parsed correctly.
+  3. **Live Health Probe**: If active resources exist on the account, send a lightweight `GET /health` probe to verify end-to-end network routability.
+
+```python
+@unittest.skipUnless(os.getenv("SERVICE_API_KEY"), "Live SERVICE_API_KEY required for smoke test")
+class TestLiveAPIContract(unittest.TestCase):
+    def test_live_schema_and_endpoint_health(self):
+        api_key = os.getenv("SERVICE_API_KEY")
+        client = ServiceClient(api_key=api_key)
+        resources = client.fetch_resources()
+        self.assertIsInstance(resources, list)
+        for res in resources:
+            self.assertTrue(hasattr(res, "id") and len(res.id) > 0)
+```
+
+---
+
+## Pillar 3: Ephemeral End-to-End Pipeline Smoke Tests (Real Loopback Sockets)
+
+### Purpose
+Verifies full client-server workflows without synthetic function stubs by executing actual network I/O over the local OS loopback interface (`127.0.0.1`).
+
+### General Implementation Pattern
+1. **Dynamic Ephemeral Port**: Bind the server to port `0` or an ephemeral OS port (e.g. `8800-8999`) to prevent port collisions in concurrent test runners.
+2. **Real Protocol Communication**: Connect the real client using real HTTP, WebSocket, gRPC, or TCP sockets.
+3. **Realistic Ingestion Stream**: Stream authentic domain chunks (e.g., PCM audio, binary event packets, streaming NDJSON) through the pipeline.
+4. **Observable State Verification**: Assert:
+   - Chunk reception and downstream event emissions.
+   - Incremental state transitions (e.g., `in_progress` -> `finalized`).
+   - Clean shutdown without unclosed resource warnings, socket leaks, or hanging event loops.
+
+```python
+class TestPipelineIntegration(unittest.TestCase):
+    def setUp(self):
+        # Start in-process or daemon server on ephemeral loopback port
+        self.server_port = 8899
+        self.server = start_local_server(port=self.server_port)
+
+    def tearDown(self):
+        self.server.stop()
+
+    def test_end_to_end_stream_processing(self):
+        client = PipelineClient(url=f"ws://127.0.0.1:{self.server_port}/stream")
+        client.connect()
+        client.stream_chunk(b"sample_data")
+        response = client.receive_event(timeout=5.0)
+        self.assertEqual(response.status, "processed")
+        client.close()
+```
+
+---
+
+## Pillar 4: Pre-Flight Verification Gate & Coverage Enforcement
+
+### Purpose
+Provides a quantitative guarantee that all critical logic, error recovery branches, and edge-cases are actively exercised before merging or deploying.
+
+### General Implementation Pattern
+1. **Measure Branch & Line Coverage**:
+   Use standard coverage tools configured to track branches:
+   - **Python**: `python3 -m coverage run --branch -m unittest discover -s tests -p "test_*.py" -v`
+   - **Node.js**: `jest --coverage --coverageReporters="text" --coverageThreshold='{"global":{"branches":85}}'`
+   - **Go**: `go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out`
+2. **Coverage Thresholds**:
+   - **Statement Coverage**: >= 90% on business and networking logic.
+   - **Branch Coverage**: >= 85% across all conditional evaluations (`if/else`, `try/except`, `while`).
+   - **Regression Coverage**: 100% of previously resolved production defects must have an explicit, reproducing test.
+3. **Inspecting Missing Branches**:
+   Review the coverage report's missing line annotations:
+   - Ensure rate-limit backoff paths (`HTTP 429`), network disconnection handlers, and fallback routes are tested.
+
+---
+
+## Standard Runbook for New Features & Bug Fixes
+
+When implementing new features or fixing defects:
+
+1. **Bug Reproduction**: Create a failing test in the appropriate tier reproducing the defect using the exact payload or event sequence that triggered the bug.
+2. **Fixture Capture**: If the bug was caused by an unexpected external API payload, store the authentic payload in `tests/fixtures/`.
+3. **Implementation**: Fix the defect in code with defensive type handling.
+4. **Verification Gate**: Execute the full test suite and coverage runner:
+   ```bash
+   python3 .agents/skills/functional-regression-testing/scripts/run_coverage.py 85
+   ```
+5. **Confirmation**: Ensure 100% of tests pass across all tiers with zero regressions.

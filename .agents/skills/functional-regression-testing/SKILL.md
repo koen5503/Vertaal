@@ -161,3 +161,19 @@ When implementing new features or fixing defects:
    python3 .agents/skills/functional-regression-testing/scripts/run_coverage.py 85
    ```
 5. **Confirmation**: Ensure 100% of tests pass across all tiers with zero regressions.
+
+---
+
+## 5. Autonomous Agent Enforcement (Zero User Burden)
+
+This skill is designed specifically to relieve the human user of **all** testing and maintenance burdens:
+
+1. **Zero User Execution**:
+   - The AI agent MUST NEVER ask the user to run `unittest`, `pytest`, coverage scripts, or test commands.
+   - The AI agent autonomously executes the test runner via tool calls before reporting completion. A task is strictly not done until the agent observes 100% passing tests.
+2. **Zero User Maintenance**:
+   - The user never writes mocks, asserts schemas, or edits test files.
+   - Whenever the agent modifies an API client, refactors a parser, or resolves a production defect, the agent **autonomously captures the new fixture, updates the corresponding tests, and verifies coverage** in the exact same commit.
+3. **Self-Healing Test Suites**:
+   - When external API contracts evolve, the agent is responsible for capturing the new production payload into `tests/fixtures/` and adapting the contract tests so the test suite maintains itself over time.
+

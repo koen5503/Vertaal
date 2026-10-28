@@ -357,6 +357,45 @@ RUNPOD_BOOT_CMD = '[ -f /workspace/boot.sh ] && bash /workspace/boot.sh || (curl
 RUNPOD_OVERRIDE_CMD = RUNPOD_BOOT_CMD
 
 
+def _normalize_pod_ports(raw_ports) -> List[dict]:
+    """Normalize pod ports into a list of dictionaries with privatePort, type, ip, publicPort, isIpPublic."""
+    if isinstance(raw_ports, str):
+        raw_ports = [x.strip() for x in raw_ports.split(",") if x.strip()]
+    elif not isinstance(raw_ports, list):
+        raw_ports = []
+
+    normalized_ports: List[dict] = []
+    for item in raw_ports:
+        if isinstance(item, dict):
+            p_dict = dict(item)
+            if "privatePort" in p_dict and p_dict["privatePort"] is not None:
+                try:
+                    p_dict["privatePort"] = int(p_dict["privatePort"])
+                except (ValueError, TypeError):
+                    pass
+            elif "port" in p_dict and p_dict["port"] is not None:
+                try:
+                    p_dict["privatePort"] = int(p_dict["port"])
+                except (ValueError, TypeError):
+                    pass
+            normalized_ports.append(p_dict)
+        elif isinstance(item, str):
+            parts = item.strip().split("/")
+            try:
+                port_num = int(parts[0])
+                port_type = parts[1].lower() if len(parts) > 1 else "http"
+                normalized_ports.append({
+                    "privatePort": port_num,
+                    "type": port_type,
+                    "ip": None,
+                    "publicPort": None,
+                    "isIpPublic": False,
+                })
+            except (ValueError, IndexError):
+                pass
+    return normalized_ports
+
+
 class RunPodSTTEngine(BaseSTTEngine):
     """RunPod remote streaming engine with auto-discovery and deployment."""
 
@@ -478,13 +517,20 @@ class RunPodSTTEngine(BaseSTTEngine):
                         norm["machine"] = m_dict
 
                         runtime = p.get("runtime")
+                        raw_ports = []
+                        if isinstance(runtime, dict) and "ports" in runtime:
+                            raw_ports = runtime.get("ports") or []
+                        elif p.get("ports"):
+                            raw_ports = p.get("ports") or []
+
+                        normalized_ports = _normalize_pod_ports(raw_ports)
                         if isinstance(runtime, dict):
                             r_dict = dict(runtime)
-                            if "ports" not in r_dict:
-                                r_dict["ports"] = p.get("ports") or []
+                            r_dict["ports"] = normalized_ports
                         else:
-                            r_dict = {"ports": p.get("ports") or []}
+                            r_dict = {"ports": normalized_ports}
                         norm["runtime"] = r_dict
+                        norm["ports"] = normalized_ports
 
                         normalized.append(norm)
                     return normalized
@@ -534,7 +580,21 @@ class RunPodSTTEngine(BaseSTTEngine):
                 norm["name"] = p.get("name") or ""
                 norm["desiredStatus"] = p.get("desiredStatus") or ""
                 norm["machine"] = p.get("machine") if isinstance(p.get("machine"), dict) else {"gpuDisplayName": None}
-                norm["runtime"] = p.get("runtime") if isinstance(p.get("runtime"), dict) else {"ports": []}
+                runtime = p.get("runtime")
+                raw_ports = []
+                if isinstance(runtime, dict) and "ports" in runtime:
+                    raw_ports = runtime.get("ports") or []
+                elif p.get("ports"):
+                    raw_ports = p.get("ports") or []
+
+                normalized_ports = _normalize_pod_ports(raw_ports)
+                if isinstance(runtime, dict):
+                    r_dict = dict(runtime)
+                    r_dict["ports"] = normalized_ports
+                else:
+                    r_dict = {"ports": normalized_ports}
+                norm["runtime"] = r_dict
+                norm["ports"] = normalized_ports
                 normalized.append(norm)
             return normalized
         except Exception as gql_err:
@@ -566,10 +626,41 @@ class RunPodSTTEngine(BaseSTTEngine):
 
                 runtime = pod.get('runtime')
                 if not runtime:
+                    if pod.get('ports'):
+                        runtime = {'ports': pod.get('ports')}
+                    else:
+                        continue
+                if not isinstance(runtime, dict):
                     continue
 
-                ports = runtime.get('ports', [])
-                has_port_8000 = any(p.get('privatePort') == 8000 for p in ports)
+                raw_ports = runtime.get('ports', [])
+                if isinstance(raw_ports, (str, list)):
+                    ports = _normalize_pod_ports(raw_ports)
+                else:
+                    ports = []
+
+                def _parse_port_entry(item):
+                    if isinstance(item, dict):
+                        p_num = item.get('privatePort')
+                        if p_num is None:
+                            p_num = item.get('port')
+                        try:
+                            p_num = int(p_num) if p_num is not None else None
+                        except (ValueError, TypeError):
+                            p_num = None
+                        p_type = str(item.get('type') or 'http').lower()
+                        return p_num, p_type, item.get('ip'), item.get('publicPort'), bool(item.get('isIpPublic'))
+                    elif isinstance(item, str):
+                        parts = item.strip().split('/')
+                        try:
+                            p_num = int(parts[0])
+                        except (ValueError, TypeError):
+                            p_num = None
+                        p_type = parts[1].lower() if len(parts) > 1 else 'http'
+                        return p_num, p_type, None, None, False
+                    return None, 'http', None, None, False
+
+                has_port_8000 = any(_parse_port_entry(p)[0] == 8000 for p in ports)
                 if not has_port_8000:
                     continue
 
@@ -582,13 +673,11 @@ class RunPodSTTEngine(BaseSTTEngine):
                 self.direct_tcp_url = None
 
                 for port_map in ports:
-                    if port_map.get('privatePort') == 8000:
-                        ptype = (port_map.get('type') or '').lower()
+                    p_num, ptype, ip, public_port, is_ip_public = _parse_port_entry(port_map)
+                    if p_num == 8000:
                         if ptype == 'http':
                             self.proxy_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
-                        elif ptype == 'tcp' and port_map.get('isIpPublic') and port_map.get('publicPort'):
-                            ip = port_map.get('ip')
-                            public_port = port_map.get('publicPort')
+                        elif ptype == 'tcp' and is_ip_public and public_port:
                             if ip and public_port:
                                 self.direct_tcp_url = f"ws://{ip}:{public_port}/stream"
 

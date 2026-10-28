@@ -2385,6 +2385,74 @@ class TestCorePackage(unittest.TestCase):
             self.assertEqual(p["machine"]["gpuDisplayName"], "NVIDIA RTX 4090")
             self.assertEqual(p["runtime"]["ports"][0]["privatePort"], 8000)
 
+    def test_fetch_pods_list_and_discover_url_with_rest_v2_string_ports(self):
+        """Pass a mock REST v2 pod with 'ports': ['8000/http'] and runtime: None.
+        Verify _fetch_pods_list normalizes ports to dicts and discover_runpod_url()
+        returns wss://{pod_id}-8000.proxy.runpod.net/stream without any 'str' object has no attribute 'get' error.
+        """
+        from core.stt.runpod_engine import RunPodSTTEngine
+        engine = MagicMock()
+        runpod = RunPodSTTEngine(engine)
+
+        mock_pods_payload = [
+            {
+                "id": "pod-str-port-1",
+                "name": "ondertitels-gpu",
+                "status": "RUNNING",
+                "gpuDisplayName": "NVIDIA RTX 4090",
+                "ports": ["8000/http"],
+                "runtime": None,
+            }
+        ]
+
+        class MockHTTPResponse:
+            def __init__(self, data, status=200):
+                self._data = data
+                self.status = status
+                self.headers = {}
+
+            def read(self):
+                return self._data
+
+        def mock_urlopen(req, timeout=10.0):
+            return MockHTTPResponse(json.dumps(mock_pods_payload).encode("utf-8"), status=200)
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            with patch.dict(os.environ, {"RUNPOD_API_KEY": "test_api_key_12345", "RUNPOD_PREFER_TCP": "false"}):
+                # 1. Verify _fetch_pods_list normalizes ports to dicts
+                pods = runpod._fetch_pods_list("test_api_key_12345")
+                self.assertEqual(len(pods), 1)
+                pod = pods[0]
+                self.assertEqual(pod["id"], "pod-str-port-1")
+                self.assertEqual(pod["desiredStatus"], "RUNNING")
+                self.assertIsInstance(pod["runtime"], dict)
+                self.assertIn("ports", pod["runtime"])
+                self.assertEqual(len(pod["runtime"]["ports"]), 1)
+                self.assertEqual(pod["runtime"]["ports"][0]["privatePort"], 8000)
+                self.assertEqual(pod["runtime"]["ports"][0]["type"], "http")
+                self.assertEqual(pod["ports"][0]["privatePort"], 8000)
+
+                # 2. Verify discover_runpod_url returns wss://{pod_id}-8000.proxy.runpod.net/stream
+                url = runpod.discover_runpod_url()
+                self.assertEqual(url, "wss://pod-str-port-1-8000.proxy.runpod.net/stream")
+                self.assertEqual(runpod.proxy_url, "wss://pod-str-port-1-8000.proxy.runpod.net/stream")
+                self.assertEqual(runpod.active_pod_id, "pod-str-port-1")
+
+        # 3. Defensive test: discover_runpod_url handles raw string ports directly in runtime without AttributeError
+        runpod_raw = RunPodSTTEngine(engine)
+        raw_pods = [
+            {
+                "id": "pod-raw-str-2",
+                "name": "ondertitels-gpu-raw",
+                "desiredStatus": "RUNNING",
+                "runtime": {"ports": ["8000/http"]},
+            }
+        ]
+        with patch.object(runpod_raw, "_fetch_pods_list", return_value=raw_pods):
+            with patch.dict(os.environ, {"RUNPOD_API_KEY": "test_api_key_12345", "RUNPOD_PREFER_TCP": "false"}):
+                url2 = runpod_raw.discover_runpod_url()
+                self.assertEqual(url2, "wss://pod-raw-str-2-8000.proxy.runpod.net/stream")
+
     def test_fetch_pods_list_fallback_to_graphql(self):
         """_fetch_pods_list falls back to GraphQL if GET https://api.runpod.io/v2/pods fails."""
         from core.stt.runpod_engine import RunPodSTTEngine

@@ -649,9 +649,118 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("BROADCAST_CREDIT_PATTERN", server_src)
         self.assertIn("filter_anti_hallucination", server_src)
 
+    def test_warmup_ollama_timeout_and_retry(self):
+        """Verify warmup_ollama has timeout >= 240s, retries on transient errors, and logs gracefully."""
+        runpod_path = os.path.join(self.project_root, "runpod_server.py")
+        with open(runpod_path, "r", encoding="utf-8") as f:
+            server_src = f.read()
+
+        # Contract verification
+        self.assertIn('def warmup_ollama(model_name: str, host: str = "http://127.0.0.1:11434", max_retries: int = 2):', server_src)
+        match = re.search(r"urllib\.request\.urlopen\(req,\s*timeout=(\d+)\)", server_src)
+        self.assertIsNotNone(match, "urlopen in runpod_server.py must specify timeout")
+        timeout_val = int(match.group(1))
+        self.assertGreaterEqual(timeout_val, 240, f"warmup_ollama timeout must be >= 240s, found {timeout_val}")
+
+        # Dynamic simulation of retry and fallback
+        import json
+        import logging
+        import time
+        from unittest.mock import MagicMock, patch
+
+        warmup_start = server_src.find("def warmup_ollama")
+        warmup_end = server_src.find("warmup_ollama(OLLAMA_MODEL", warmup_start)
+        warmup_code = server_src[warmup_start:warmup_end]
+
+        namespace = {"urllib": __import__("urllib.request"), "json": json, "logging": logging, "time": time}
+        exec(compile(warmup_code, "runpod_server.py", "exec"), namespace)
+        warmup_func = namespace["warmup_ollama"]
+
+        # 1. First attempt fails, second attempt succeeds
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__.return_value = mock_resp
+
+        calls = [0]
+        def mock_urlopen(req, timeout=None):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise OSError("Connection reset by peer")
+            return mock_resp
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen), patch("time.sleep") as mock_sleep:
+            res = warmup_func("test-model", host="http://127.0.0.1:11434", max_retries=2)
+            self.assertTrue(res)
+            self.assertEqual(calls[0], 2)
+            mock_sleep.assert_called_once_with(3.0)
+
+        # 2. Both attempts fail -> returns False without unhandled exception
+        calls[0] = 0
+        def fail_urlopen(req, timeout=None):
+            calls[0] += 1
+            raise TimeoutError("timed out waiting for llama-server to start")
+
+        with patch("urllib.request.urlopen", side_effect=fail_urlopen), patch("time.sleep"):
+            res = warmup_func("test-model", host="http://127.0.0.1:11434", max_retries=2)
+            self.assertFalse(res)
+            self.assertEqual(calls[0], 2)
+
+    def test_process_translation_chain_shield_and_timeout(self):
+        """Verify process_translation_chain shields prev_task with timeout=3.0 and translate_text returns text on error."""
+        runpod_path = os.path.join(self.project_root, "runpod_server.py")
+        with open(runpod_path, "r", encoding="utf-8") as f:
+            server_src = f.read()
+
+        # Contract check: bounded wait on shielded prev_task
+        self.assertIn("await asyncio.wait_for(asyncio.shield(prev_task), timeout=3.0)", server_src)
+
+        # Contract check: translate_text error logging and raw text fallback
+        self.assertIn('logging.error(f"[Ollama] Translation Error ({source_code}->{target_code}): {e}")', server_src)
+        self.assertIn("return text", server_src)
+
+        # Dynamic simulation of shield and bounded wait behavior
+        import asyncio
+        import time
+
+        async def run_shield_test():
+            # A previous task that takes 0.5 seconds (simulating a slow/stalled LLM translation)
+            prev_task_started = asyncio.Event()
+            prev_task_finished = asyncio.Event()
+
+            async def slow_prev_translation():
+                prev_task_started.set()
+                await asyncio.sleep(0.5)
+                prev_task_finished.set()
+                return "finished late"
+
+            prev_task = asyncio.create_task(slow_prev_translation())
+            await prev_task_started.wait()
+
+            # The current task waits with a bounded timeout (here 0.05s) using the exact same shield pattern
+            t0 = time.time()
+            if prev_task and not prev_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(prev_task), timeout=0.05)
+                except Exception:
+                    pass
+            elapsed = time.time() - t0
+
+            # Must have returned immediately at ~0.05s, NOT blocked for 0.5s
+            self.assertLess(elapsed, 0.3)
+            # prev_task must NOT be cancelled (because of asyncio.shield)
+            self.assertFalse(prev_task.cancelled())
+            self.assertFalse(prev_task.done())
+
+            # Await completion cleanly
+            await prev_task
+            self.assertTrue(prev_task_finished.is_set())
+
+        asyncio.run(run_shield_test())
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

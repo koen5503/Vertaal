@@ -246,28 +246,32 @@ def load_whisper_model(model_name: str, device: str = "cuda", compute_type: str 
 model = load_whisper_model(WHISPER_MODEL, device="cuda", compute_type="float16")
 logging.info("Whisper model initialized and ready.")
 
-def warmup_ollama(model_name: str, host: str = "http://127.0.0.1:11434"):
+def warmup_ollama(model_name: str, host: str = "http://127.0.0.1:11434", max_retries: int = 2):
     """Pre-warm Ollama LLM into GPU VRAM so subsequent translation requests are instantaneous."""
-    logging.info(f"[Ollama Init] Pre-warming Ollama {model_name} in GPU VRAM...")
-    t0 = time.time()
-    try:
-        req = urllib.request.Request(
-            f"{host}/api/chat",
-            data=json.dumps({
-                "model": model_name,
-                "messages": [{"role": "user", "content": "hi"}],
-                "stream": False,
-                "options": {"temperature": 0}
-            }).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            if resp.status == 200:
-                logging.info(f"[Ollama Init] Ollama {model_name} pre-warmed in GPU VRAM in {time.time() - t0:.2f}s!")
-                return True
-    except Exception as e:
-        logging.warning(f"[Ollama Init] Pre-warming notice: {e}")
+    for attempt in range(max_retries):
+        logging.info(f"[Ollama Init] Pre-warming Ollama {model_name} in GPU VRAM (attempt {attempt + 1}/{max_retries})...")
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(
+                f"{host}/api/chat",
+                data=json.dumps({
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": False,
+                    "options": {"temperature": 0}
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                if resp.status == 200:
+                    logging.info(f"[Ollama Init] Ollama {model_name} pre-warmed in GPU VRAM in {time.time() - t0:.2f}s!")
+                    return True
+        except Exception as e:
+            logging.warning(f"[Ollama Init] Pre-warming attempt {attempt + 1} notice: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(3.0)
+    logging.error(f"[Ollama Init] Warning: Ollama {model_name} could not be pre-warmed within timeout.")
     return False
 
 warmup_ollama(OLLAMA_MODEL, OLLAMA_URL)
@@ -504,8 +508,8 @@ async def translate_text(text: str, target_lang: str, source_lang: str):
         logging.info(f"[Ollama] Translated ({source_code}->{target_code}) in {trans_elapsed:.3f}s: '{cleaned}'")
         return cleaned
     except Exception as e:
-        logging.error(f"Translation Error: {e}")
-        return f"[Translation Error: {e}]"
+        logging.error(f"[Ollama] Translation Error ({source_code}->{target_code}): {e}")
+        return text
 
 
 @app.websocket("/stream")
@@ -645,7 +649,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     async def process_translation_chain(col_key_1, lang_1, col_key_2, lang_2, segment_id, segment_status, current_text, prev_task):
                         if prev_task and not prev_task.done():
                             try:
-                                await prev_task
+                                await asyncio.wait_for(asyncio.shield(prev_task), timeout=3.0)
                             except Exception:
                                 pass
                         chain_busy[col_key_1] = True

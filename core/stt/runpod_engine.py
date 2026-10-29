@@ -236,16 +236,19 @@ def condense_runpod_logs(raw_logs: str) -> Tuple[str, List[str]]:
         stage = f"Fout in container: {error_line[:120]}"
         return stage, clean_lines[-6:]
 
-    is_server_listening = any(k in full_text for k in ["application startup complete", "uvicorn running on", "whisper model initialized and ready"])
-    is_whisper_loading = (any(k in full_text for k in ["whisper init"]) or bool(re.search(r"\bloading faster-whisper", full_text))) and not is_server_listening
-    is_ollama_prewarming = "pre-warming ollama" in full_text and not is_server_listening
+    is_server_listening = any(k in full_text for k in ["application startup complete", "uvicorn running on"])
+    is_ollama_prewarming = "pre-warming ollama" in full_text and "ollama model initialized and ready" not in full_text and not is_server_listening
+    is_models_ready = any(k in full_text for k in ["whisper model initialized and ready", "ollama model initialized and ready"]) and not is_server_listening
+    is_whisper_loading = (any(k in full_text for k in ["whisper init"]) or bool(re.search(r"\bloading faster-whisper", full_text))) and not is_server_listening and not is_models_ready
 
     if is_server_listening:
         stage = "Server operationeel op poort 8000"
-    elif is_whisper_loading:
-        stage = "Faster-Whisper model inladen in GPU VRAM..."
     elif is_ollama_prewarming:
         stage = "Ollama model pre-warmen in GPU VRAM..."
+    elif is_models_ready:
+        stage = "AI-modellen gereed in GPU VRAM, server starten..."
+    elif is_whisper_loading:
+        stage = "Faster-Whisper model inladen in GPU VRAM..."
     elif latest_step:
         stage = f"Initialisatie {latest_step}"
         if progress_info and progress_info.lower() not in latest_step.lower():
@@ -1250,7 +1253,6 @@ class RunPodSTTEngine(BaseSTTEngine):
                     is_server_listening = any(k in full_text for k in [
                         "application startup complete",
                         "uvicorn running on",
-                        "whisper model initialized and ready",
                     ]) or stage == "Server operationeel op poort 8000"
 
                     if not is_server_listening and wss_url:

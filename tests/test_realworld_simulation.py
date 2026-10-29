@@ -195,15 +195,22 @@ Pre-warming Ollama aya-expanse:8b in GPU VRAM...
         stage_prewarm, _ = condense_runpod_logs(ollama_prewarm_logs)
         self.assertEqual(stage_prewarm, "Ollama model pre-warmen in GPU VRAM...")
 
-        # 5. True server ready triggers: startup complete, uvicorn running on, or whisper model initialized and ready
+        # 5. Whisper model initialized should reflect model readiness, NOT server operational listening
         ready_logs_1 = """
 === [8/8] Starting Services ===
 [Whisper Init] Loading faster-whisper from local directory...
 Whisper model initialized and ready.
 """
         stage_ready_1, _ = condense_runpod_logs(ready_logs_1)
-        self.assertEqual(stage_ready_1, "Server operationeel op poort 8000")
+        self.assertEqual(stage_ready_1, "AI-modellen gereed in GPU VRAM, server starten...")
+        self.assertNotEqual(stage_ready_1, "Server operationeel op poort 8000")
 
+        # Verify is_server_listening does NOT trigger prematurely on Whisper model ready alone
+        full_text_whisper = ready_logs_1.lower()
+        is_server_listening_whisper = any(k in full_text_whisper for k in ["application startup complete", "uvicorn running on"])
+        self.assertFalse(is_server_listening_whisper)
+
+        # 6. True server ready triggers: startup complete or uvicorn running on port 8000
         ready_logs_2 = """
 === [8/8] Starting Services ===
 INFO:     Application startup complete.
@@ -211,6 +218,10 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 """
         stage_ready_2, _ = condense_runpod_logs(ready_logs_2)
         self.assertEqual(stage_ready_2, "Server operationeel op poort 8000")
+
+        full_text_server = ready_logs_2.lower()
+        is_server_listening_server = any(k in full_text_server for k in ["application startup complete", "uvicorn running on"])
+        self.assertTrue(is_server_listening_server)
 
         # 6. Verify telemetry template contract requires statusUpper === 'CONNECTED'
         with open("templates/telemetry.html", "r", encoding="utf-8") as f:

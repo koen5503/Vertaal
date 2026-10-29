@@ -386,10 +386,10 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
                 print(f"[RunPod E2E] Streamed {len(pcm_16k_mono)} bytes of authentic sermon speech audio.")
 
                 # Await business outcomes: STT transcription (col1_text) & Translation (col2_text)
-                deadline = time.time() + 60.0
+                deadline = time.time() + 90.0
                 while time.time() < deadline:
                     try:
-                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=12.0)
+                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=15.0)
                         msg = json.loads(raw_msg)
                         print(f"[RunPod E2E WebSocket Inbound] {msg}")
 

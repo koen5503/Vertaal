@@ -173,7 +173,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small") # small, medium, large-v3, or path
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "aya-expanse:8b")
 OLLAMA_MODELS = os.getenv("OLLAMA_MODELS", "/root/.ollama/models" if os.path.isdir("/root/.ollama/models") else "/workspace/models/ollama")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 
 def resolve_whisper_model_path(model_name_or_path: str) -> Optional[str]:
     """Resolve local flat model directory in /root/models, /workspace/models or filesystem if present."""
@@ -246,8 +246,35 @@ def load_whisper_model(model_name: str, device: str = "cuda", compute_type: str 
 model = load_whisper_model(WHISPER_MODEL, device="cuda", compute_type="float16")
 logging.info("Whisper model initialized and ready.")
 
+def warmup_ollama(model_name: str, host: str = "http://127.0.0.1:11434"):
+    """Pre-warm Ollama LLM into GPU VRAM so subsequent translation requests are instantaneous."""
+    logging.info(f"[Ollama Init] Pre-warming Ollama {model_name} in GPU VRAM...")
+    t0 = time.time()
+    try:
+        req = urllib.request.Request(
+            f"{host}/api/chat",
+            data=json.dumps({
+                "model": model_name,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+                "options": {"temperature": 0}
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            if resp.status == 200:
+                logging.info(f"[Ollama Init] Ollama {model_name} pre-warmed in GPU VRAM in {time.time() - t0:.2f}s!")
+                return True
+    except Exception as e:
+        logging.warning(f"[Ollama Init] Pre-warming notice: {e}")
+    return False
+
+warmup_ollama(OLLAMA_MODEL, OLLAMA_URL)
+logging.info("Ollama model initialized and ready.")
+
 # Global Client for Ollama
-client = ollama.AsyncClient(host=OLLAMA_URL)
+client = ollama.AsyncClient(host=OLLAMA_URL, timeout=120.0)
 
 # --- Automatic Shutdown Timer (Activity-Based) ---
 # Default to 90 minutes (5400 seconds) to prevent runaway costs

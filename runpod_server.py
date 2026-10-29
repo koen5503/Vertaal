@@ -525,7 +525,10 @@ async def websocket_endpoint(websocket: WebSocket):
     current_sample_width = 4
     last_processed_seg_id = None
     active_chain_tasks: Dict[str, asyncio.Task] = {}
+    chain_active_count: Dict[str, int] = {"trans1": 0, "trans2": 0}
     chain_busy: Dict[str, bool] = {"trans1": False, "trans2": False}
+    chain_task_gen: Dict[str, int] = {"trans1": 0, "trans2": 0}
+    latest_final_seg: Dict[str, str] = {}
     
     # Default configs
     config = {
@@ -646,29 +649,54 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     
                     # Dispatch parallel translation chains with is_busy skip logic and guaranteed final completion
-                    async def process_translation_chain(col_key_1, lang_1, col_key_2, lang_2, segment_id, segment_status, current_text, prev_task):
-                        if prev_task and not prev_task.done():
-                            try:
-                                await asyncio.wait_for(asyncio.shield(prev_task), timeout=3.0)
-                            except Exception:
-                                pass
+                    async def process_translation_chain(col_key_1, lang_1, col_key_2, lang_2, segment_id, segment_status, current_text, prev_task, my_gen):
+                        chain_active_count[col_key_1] += 1
                         chain_busy[col_key_1] = True
                         try:
+                            if prev_task and not prev_task.done():
+                                try:
+                                    await asyncio.wait_for(asyncio.shield(prev_task), timeout=3.0)
+                                except Exception:
+                                    pass
+
                             # First translation (e.g. NL -> EN / RU)
                             text_1 = await translate_text(current_text, lang_1, config["source_lang"])
                             col_idx_1 = "col2_text" if col_key_1 == "trans1" else "col3_text"
-                            
+
+                            is_superseded = (
+                                segment_status == "interim"
+                                and (
+                                    latest_final_seg.get(col_key_1) == segment_id
+                                    or my_gen < chain_task_gen.get(col_key_1, 0)
+                                )
+                            )
+                            if is_superseded:
+                                logging.info(f"[{col_key_1}] Suppressed stale interim translation for segment {segment_id} (superseded by final/newer)")
+                                return
+
                             await websocket.send_json({
                                 "id": segment_id,
                                 "status": segment_status,
                                 "is_delta": False,
                                 col_idx_1: text_1
                             })
-                            
+
                             # Second translation (Back-translation: e.g. EN / RU -> NL) - ONLY on final chunks
                             if col_key_2 and lang_2 and segment_status == "final":
                                 text_2 = await translate_text(text_1, lang_2, lang_1)
                                 col_idx_2 = "col4_text" if col_key_2 == "trans3" else "col5_text"
+
+                                is_superseded_back = (
+                                    segment_status == "interim"
+                                    and (
+                                        latest_final_seg.get(col_key_1) == segment_id
+                                        or my_gen < chain_task_gen.get(col_key_1, 0)
+                                    )
+                                )
+                                if is_superseded_back:
+                                    logging.info(f"[{col_key_1}] Suppressed stale interim translation for segment {segment_id} (superseded by final/newer)")
+                                    return
+
                                 await websocket.send_json({
                                     "id": segment_id,
                                     "status": segment_status,
@@ -678,7 +706,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         except Exception as ex:
                             logging.error(f"Error in translation chain {col_key_1}: {ex}", exc_info=True)
                         finally:
-                            chain_busy[col_key_1] = False
+                            chain_active_count[col_key_1] = max(0, chain_active_count[col_key_1] - 1)
+                            chain_busy[col_key_1] = (chain_active_count[col_key_1] > 0)
 
                     # Chain 1: trans1 -> trans3 (Back-translation 1)
                     if config.get("target_lang_1"):
@@ -686,16 +715,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         c3_lang = config.get("target_lang_3") if config.get("enable_trans_3") else None
                         if chain_busy.get("trans1", False):
                             if status == "final":
+                                chain_task_gen["trans1"] += 1
+                                my_gen1 = chain_task_gen["trans1"]
+                                latest_final_seg["trans1"] = seg_id
                                 prev1 = active_chain_tasks.get("trans1")
                                 active_chain_tasks["trans1"] = asyncio.create_task(
-                                    process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status, text, prev1)
+                                    process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status, text, prev1, my_gen1)
                                 )
                             # else: skip interim chunk while trans1 is busy to prevent socket aborts
                         else:
+                            chain_task_gen["trans1"] += 1
+                            my_gen1 = chain_task_gen["trans1"]
+                            if status == "final":
+                                latest_final_seg["trans1"] = seg_id
                             chain_busy["trans1"] = True
                             prev1 = active_chain_tasks.get("trans1")
                             active_chain_tasks["trans1"] = asyncio.create_task(
-                                process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status, text, prev1)
+                                process_translation_chain("trans1", config.get("target_lang_1"), c3_key, c3_lang, seg_id, status, text, prev1, my_gen1)
                             )
 
                     # Chain 2: trans2 -> trans4 (Back-translation 2)
@@ -704,16 +740,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         c4_lang = config.get("target_lang_4") if config.get("enable_trans_4") else None
                         if chain_busy.get("trans2", False):
                             if status == "final":
+                                chain_task_gen["trans2"] += 1
+                                my_gen2 = chain_task_gen["trans2"]
+                                latest_final_seg["trans2"] = seg_id
                                 prev2 = active_chain_tasks.get("trans2")
                                 active_chain_tasks["trans2"] = asyncio.create_task(
-                                    process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id, status, text, prev2)
+                                    process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id, status, text, prev2, my_gen2)
                                 )
                             # else: skip interim chunk while trans2 is busy to prevent socket aborts
                         else:
+                            chain_task_gen["trans2"] += 1
+                            my_gen2 = chain_task_gen["trans2"]
+                            if status == "final":
+                                latest_final_seg["trans2"] = seg_id
                             chain_busy["trans2"] = True
                             prev2 = active_chain_tasks.get("trans2")
                             active_chain_tasks["trans2"] = asyncio.create_task(
-                                process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id, status, text, prev2)
+                                process_translation_chain("trans2", config.get("target_lang_2"), c4_key, c4_lang, seg_id, status, text, prev2, my_gen2)
                             )
                 except Exception as e:
                     logging.error(f"Error processing audio chunk: {e}", exc_info=True)

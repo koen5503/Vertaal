@@ -718,6 +718,15 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn('logging.error(f"[Ollama] Translation Error ({source_code}->{target_code}): {e}")', server_src)
         self.assertIn("return text", server_src)
 
+        # Contract check: reference counted busy tracking and suppression logic
+        self.assertIn("chain_active_count", server_src)
+        self.assertIn("chain_task_gen", server_src)
+        self.assertIn("latest_final_seg", server_src)
+        self.assertIn("chain_active_count[col_key_1] = max(0, chain_active_count[col_key_1] - 1)", server_src)
+        self.assertIn("chain_busy[col_key_1] = (chain_active_count[col_key_1] > 0)", server_src)
+        self.assertIn("is_superseded", server_src)
+        self.assertIn("Suppressed stale interim translation", server_src)
+
         # Dynamic simulation of shield and bounded wait behavior
         import asyncio
         import time
@@ -756,6 +765,88 @@ class TestDeploymentContract(unittest.TestCase):
             self.assertTrue(prev_task_finished.is_set())
 
         asyncio.run(run_shield_test())
+
+        # Dynamic simulation of reference-counted chain_busy and stale interim suppression
+        async def run_reference_count_and_suppression_test():
+            chain_active_count = {"trans1": 0, "trans2": 0}
+            chain_busy = {"trans1": False, "trans2": False}
+            chain_task_gen = {"trans1": 0, "trans2": 0}
+            latest_final_seg = {}
+            dispatched = []
+
+            async def mock_translate(text, delay=0.01):
+                await asyncio.sleep(delay)
+                return f"trans_{text}"
+
+            async def process_chain_sim(col_key_1, seg_id, status, text, prev_task, my_gen, delay=0.01):
+                chain_active_count[col_key_1] += 1
+                chain_busy[col_key_1] = True
+                try:
+                    if prev_task and not prev_task.done():
+                        try:
+                            await asyncio.wait_for(asyncio.shield(prev_task), timeout=0.05)
+                        except Exception:
+                            pass
+
+                    t1 = await mock_translate(text, delay=delay)
+                    is_superseded = (
+                        status == "interim"
+                        and (
+                            latest_final_seg.get(col_key_1) == seg_id
+                            or my_gen < chain_task_gen.get(col_key_1, 0)
+                        )
+                    )
+                    if is_superseded:
+                        return
+
+                    dispatched.append({"id": seg_id, "status": status, "text": t1})
+                finally:
+                    chain_active_count[col_key_1] = max(0, chain_active_count[col_key_1] - 1)
+                    chain_busy[col_key_1] = (chain_active_count[col_key_1] > 0)
+
+            # 1. Test reference-counted chain_busy when prev_task times out
+            # Task 1 (slow, delay 0.2s)
+            chain_task_gen["trans1"] += 1
+            gen1 = chain_task_gen["trans1"]
+            task1 = asyncio.create_task(process_chain_sim("trans1", "seg1", "interim", "hello", None, gen1, delay=0.2))
+            await asyncio.sleep(0.01) # let task1 enter
+            self.assertEqual(chain_active_count["trans1"], 1)
+            self.assertTrue(chain_busy["trans1"])
+
+            # Task 2 (final seg1, timeout 0.05s triggers, delay 0.3s)
+            chain_task_gen["trans1"] += 1
+            gen2 = chain_task_gen["trans1"]
+            latest_final_seg["trans1"] = "seg1"
+            task2 = asyncio.create_task(process_chain_sim("trans1", "seg1", "final", "hello world", task1, gen2, delay=0.3))
+
+            # Wait 0.1s: task2 timed out waiting for task1, both are active!
+            await asyncio.sleep(0.1)
+            self.assertEqual(chain_active_count["trans1"], 2)
+            self.assertTrue(chain_busy["trans1"])
+
+            # Wait another 0.15s (total 0.25s): task1 finishes at ~0.20s
+            await asyncio.sleep(0.15)
+            self.assertTrue(task1.done())
+            self.assertFalse(task2.done())
+            # KEY ASSERTION: chain_busy MUST remain True because task2 is still running!
+            self.assertEqual(chain_active_count["trans1"], 1)
+            self.assertTrue(chain_busy["trans1"])
+
+            # Await task2 to completion
+            await task2
+            self.assertTrue(task2.done())
+            # All tasks done -> chain_busy is now False
+            self.assertEqual(chain_active_count["trans1"], 0)
+            self.assertFalse(chain_busy["trans1"])
+
+            # 2. Test stale interim suppression
+            # Task 1 was interim and was superseded by final seg1.
+            # Dispatched should only contain the final translation, NOT the interim one!
+            self.assertEqual(len(dispatched), 1)
+            self.assertEqual(dispatched[0]["status"], "final")
+            self.assertEqual(dispatched[0]["id"], "seg1")
+
+        asyncio.run(run_reference_count_and_suppression_test())
 
 
 if __name__ == "__main__":

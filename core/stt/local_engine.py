@@ -88,6 +88,7 @@ def filter_anti_hallucination(
     text: Optional[str],
     last_transcript: str = "",
     glossary_phrases: Optional[List[str]] = None,
+    is_same_segment: bool = False,
 ) -> Optional[str]:
     """Run anti-hallucination filters on Whisper transcription output."""
     if not text:
@@ -121,7 +122,7 @@ def filter_anti_hallucination(
         return None
 
     # Prompt Leakage Filter (Whisper Hallucination)
-    last_trans = last_transcript or ""
+    last_trans = "" if is_same_segment else (last_transcript or "")
     if last_trans:
         clean_last = last_trans.translate(str.maketrans('', '', string.punctuation)).lower()
         last_words = clean_last.split()

@@ -559,6 +559,57 @@ class TestDeploymentContract(unittest.TestCase):
             success = stt.ensure_template_http_ports("test-key", "tmpl-crash")
             self.assertFalse(success)
 
+    def test_boot_and_setup_synchronize_core_package(self):
+        """Verify boot.sh and setup_once.sh synchronize core/ package to /workspace/app/core/."""
+        # 1. boot.sh step [2/8]
+        self.assertIn("mkdir -p /workspace/app/core /workspace/app/core/stt", self.boot_src)
+        self.assertIn("core/__init__.py core/translation.py core/audio.py core/stt/__init__.py core/stt/base.py core/stt/local_engine.py", self.boot_src)
+        self.assertIn('sync_repo_file "$core_file" "/workspace/app/$core_file"', self.boot_src)
+
+        # 2. setup_once.sh step [8/8]
+        self.assertIn("mkdir -p /workspace/app /workspace/app/core /workspace/app/core/stt", self.setup_src)
+        self.assertIn("core/__init__.py core/translation.py core/audio.py core/stt/__init__.py core/stt/base.py core/stt/local_engine.py", self.setup_src)
+        self.assertIn('sync_repo_file "$core_file" "/workspace/app/$core_file"', self.setup_src)
+
+    def test_atomic_bundle_migration_pattern(self):
+        """Verify atomic preemption-safe migration pattern in boot.sh using .tar.zst.tmp, zstd -t, and mv -f."""
+        # 1. Orphaned tmp cleanup in step [4/8]
+        step4_boot = re.search(r"=== \[4/8\].*?(?==== \[5/8\])", self.boot_src, re.DOTALL)
+        self.assertIsNotNone(step4_boot)
+        self.assertIn("rm -f /workspace/*.tmp", step4_boot.group(0))
+
+        # 2. Background migration block verification
+        migration_block = re.search(r"# Background Auto-Migration:.*?(?=\necho \"Launching Live Translation Server)", self.boot_src, re.DOTALL)
+        self.assertIsNotNone(migration_block)
+        mig_code = migration_block.group(0)
+
+        # Staging file on FUSE:
+        self.assertIn("cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst.tmp", mig_code)
+        # Verify archive integrity:
+        self.assertIn("if zstd -t /workspace/venv_bundle.tar.zst.tmp >/dev/null 2>&1; then", mig_code)
+        # Atomic POSIX rename on /workspace:
+        self.assertIn("mv -f /workspace/venv_bundle.tar.zst.tmp /workspace/venv_bundle.tar.zst", mig_code)
+        self.assertIn("rm -f /workspace/venv_bundle.tar", mig_code)
+
+        # Identical atomic pattern for ollama_bundle:
+        self.assertIn("cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst.tmp", mig_code)
+        self.assertIn("if zstd -t /workspace/ollama_bundle.tar.zst.tmp >/dev/null 2>&1; then", mig_code)
+        self.assertIn("mv -f /workspace/ollama_bundle.tar.zst.tmp /workspace/ollama_bundle.tar.zst", mig_code)
+        self.assertIn("rm -f /workspace/ollama_bundle.tar", mig_code)
+
+    def test_runpod_server_logic_deduplication_imports_core(self):
+        """Verify runpod_server.py imports filtering and translation logic from core package."""
+        runpod_path = os.path.join(self.project_root, "runpod_server.py")
+        with open(runpod_path, "r", encoding="utf-8") as f:
+            server_src = f.read()
+
+        self.assertIn("from core.translation import clean_translation_meta, LANG_NAMES", server_src)
+        self.assertIn("from core.stt.local_engine import (", server_src)
+        self.assertIn("TAIL_HALLUCINATION_PATTERN", server_src)
+        self.assertIn("NOISE_HALLUCINATION_PHRASES", server_src)
+        self.assertIn("BROADCAST_CREDIT_PATTERN", server_src)
+        self.assertIn("filter_anti_hallucination", server_src)
+
 
 if __name__ == "__main__":
     unittest.main()

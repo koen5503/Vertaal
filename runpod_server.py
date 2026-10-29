@@ -19,63 +19,140 @@ import uvicorn
 from faster_whisper import WhisperModel
 import ollama
 
-NOISE_HALLUCINATION_PHRASES: Set[str] = {
-    # Dutch polite closings / noise hallucinations
-    "dank u wel",
-    "dank u",
-    "dank je wel",
-    "dank je",
-    "hartelijk dank",
-    "bedankt",
-    "bedankt voor het kijken",
-    "bedankt voor het luisteren",
-    "tot ziens",
-    "fijne dag",
-    "fijne avond",
-    "dag",
-    # English polite closings / noise hallucinations
-    "thank you",
-    "thank you very much",
-    "thanks",
-    "thanks for watching",
-    "thanks for listening",
-    "bye",
-    "goodbye",
-    # TV / Subtitle credits
-    "subtitles by",
-    "captioned by",
-    "amaraorg",
-    "opensubtitles",
-    "tv gelderland",
-    "omroep gelderland",
-    "rtv oost",
-    "rtv noord",
-    "omroep brabant",
-}
+try:
+    from core.stt.local_engine import (
+        TAIL_HALLUCINATION_PATTERN,
+        NOISE_HALLUCINATION_PHRASES,
+        BROADCAST_CREDIT_PATTERN,
+        filter_anti_hallucination,
+    )
+except ImportError:
+    # Fallback to local definitions if core is unavailable
+    NOISE_HALLUCINATION_PHRASES: Set[str] = {
+        # Dutch polite closings / noise hallucinations
+        "dank u wel",
+        "dank u",
+        "dank je wel",
+        "dank je",
+        "hartelijk dank",
+        "bedankt",
+        "bedankt voor het kijken",
+        "bedankt voor het luisteren",
+        "tot ziens",
+        "fijne dag",
+        "fijne avond",
+        "dag",
+        # English polite closings / noise hallucinations
+        "thank you",
+        "thank you very much",
+        "thanks",
+        "thanks for watching",
+        "thanks for listening",
+        "bye",
+        "goodbye",
+        # TV / Subtitle credits
+        "subtitles by",
+        "captioned by",
+        "amaraorg",
+        "opensubtitles",
+        "tv gelderland",
+        "omroep gelderland",
+        "rtv oost",
+        "rtv noord",
+        "omroep brabant",
+    }
 
-BROADCAST_CREDIT_PATTERN = re.compile(
-    r"^(?:tv|omroep|rtv)\s+[a-z]+(?:\s+\d{4})?$|"
-    r"^(?:npo|rtl|nos)(?:\s+\d+)?(?:\s+\d{4})?$|"
-    r"^(?:ondertiteling|ondertitels|ondertiteld(?:\s+door)?|subtitles(?:\s+by)?|captioned(?:\s+by)?).*$",
-    re.IGNORECASE
-)
+    BROADCAST_CREDIT_PATTERN = re.compile(
+        r"^(?:tv|omroep|rtv)\s+[a-z]+(?:\s+\d{4})?$|"
+        r"^(?:npo|rtl|nos)(?:\s+\d+)?(?:\s+\d{4})?$|"
+        r"^(?:ondertiteling|ondertitels|ondertiteld(?:\s+door)?|subtitles(?:\s+by)?|captioned(?:\s+by)?).*$",
+        re.IGNORECASE
+    )
 
-TAIL_HALLUCINATION_PATTERN = re.compile(
-    r"(?:\s*[\-\:\;]\s*|(?<=[\.\,\!\?])\s+|\s+|^)"
-    r"(?:"
-    r"(?:tv|omroep|rtv)\s+[a-z]+(?:\s+\d{4})?|"
-    r"(?:npo|rtl|nos)(?:\s+\d+)?(?:\s+\d{4})?|"
-    r"ondertiteling(?:\s+door\s+[a-z]+)?|"
-    r"ondertitels|"
-    r"bedankt voor het kijken|"
-    r"bedankt voor het luisteren|"
-    r"thanks for watching|"
-    r"thanks for listening|"
-    r"subtitles by\s+[a-z0-9\.]+|"
-    r"captioned by\s+[a-z0-9\.]+"
-    r")[\.\,\!\?\s]*$",
-    re.IGNORECASE
-)
+    TAIL_HALLUCINATION_PATTERN = re.compile(
+        r"(?:\s*[\-\:\;]\s*|(?<=[\.\,\!\?])\s+|\s+|^)"
+        r"(?:"
+        r"(?:tv|omroep|rtv)\s+[a-z]+(?:\s+\d{4})?|"
+        r"(?:npo|rtl|nos)(?:\s+\d+)?(?:\s+\d{4})?|"
+        r"ondertiteling(?:\s+door\s+[a-z]+)?|"
+        r"ondertitels|"
+        r"bedankt voor het kijken|"
+        r"bedankt voor het luisteren|"
+        r"thanks for watching|"
+        r"thanks for listening|"
+        r"subtitles by\s+[a-z0-9\.]+|"
+        r"captioned by\s+[a-z0-9\.]+"
+        r")[\.\,\!\?\s]*$",
+        re.IGNORECASE
+    )
+
+    def filter_anti_hallucination(
+        text: Optional[str],
+        last_transcript: str = "",
+        glossary_phrases: Optional[list] = None,
+        is_same_segment: bool = False,
+    ) -> Optional[str]:
+        if not text:
+            return None
+        cleaned_tail = TAIL_HALLUCINATION_PATTERN.sub("", text).strip()
+        if not cleaned_tail:
+            return None
+        if cleaned_tail != text.strip():
+            text = cleaned_tail
+
+        clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
+        clean_text = " ".join(clean_text.split())
+        words = clean_text.split()
+        if not words:
+            return None
+
+        clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
+        if (
+            clean_text in NOISE_HALLUCINATION_PHRASES
+            or clean_no_digits in NOISE_HALLUCINATION_PHRASES
+            or BROADCAST_CREDIT_PATTERN.match(clean_text)
+            or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
+        ):
+            return None
+        elif last_transcript and not is_same_segment:
+            clean_last = last_transcript.translate(str.maketrans('', '', string.punctuation)).lower()
+            last_words = clean_last.split()
+            if clean_text == clean_last:
+                return None
+            if len(words) >= 3 and clean_text in clean_last:
+                return None
+
+            matcher = difflib.SequenceMatcher(None, last_words, words)
+            match = matcher.find_longest_match(0, len(last_words), 0, len(words))
+
+            is_large_leak = (match.size >= 4 and match.b <= 5) or (match.size >= 6 and match.b <= 15)
+            is_tail_overlap = (match.size >= 1 and match.b == 0 and match.a + match.size == len(last_words))
+            is_tail_sub = (match.size >= 2 and match.b <= 5 and match.a + match.size == len(last_words))
+
+            if is_large_leak or is_tail_overlap or is_tail_sub:
+                orig_words = text.split()
+                cut_idx = match.b + match.size
+                trimmed_words = orig_words[cut_idx:]
+                text = " ".join(trimmed_words).strip()
+                if not text:
+                    return None
+
+                clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
+                clean_text = " ".join(clean_text.split())
+                words = clean_text.split()
+                if not words:
+                    return None
+
+                clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
+                if (
+                    clean_text in NOISE_HALLUCINATION_PHRASES
+                    or clean_no_digits in NOISE_HALLUCINATION_PHRASES
+                    or BROADCAST_CREDIT_PATTERN.match(clean_text)
+                    or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
+                ):
+                    return None
+
+        return text
 
 app = FastAPI()
 
@@ -273,85 +350,88 @@ def auto_shutdown():
 
 threading.Thread(target=auto_shutdown, daemon=True).start()
 
-LANG_NAMES = {
-    "nl": "Dutch", "en": "English", "de": "German", "ru": "Russian",
-    "fr": "French", "es": "Spanish", "it": "Italian", "uk": "Ukrainian"
-}
+try:
+    from core.translation import clean_translation_meta, LANG_NAMES
+except ImportError:
+    # Fallback to local definitions if core is unavailable
+    LANG_NAMES = {
+        "nl": "Dutch", "en": "English", "de": "German", "ru": "Russian",
+        "fr": "French", "es": "Spanish", "it": "Italian", "uk": "Ukrainian"
+    }
 
-META_PATTERNS = [
-    # English
-    r'(?i)\bthe word\s+["\'«„\w]+.*?\btranslates\b.*',
-    r'(?i)\bhowever,?\s+without\s+context\b.*',
-    r'(?i)\bplease\s+provide\s+(?:the\s+)?(?:full|more|additional)\b.*',
-    r'(?i)\bwithout\s+(?:more\s+)?context\b.*',
-    r'(?i)\bas\s+per\s+your\s+strict\s+requirements\b.*',
-    r'(?i)\bfor\s+example,?\s+if\s+the\s+full\s+sentence\b.*',
-    # French
-    r'(?i)\ble mot\s+[«"\'\w]+.*?\bse traduit\b.*',
-    r'(?i)\bcependant,?\s+sans\s+contexte\b.*',
-    r'(?i)\bsans\s+(?:plus\s+de\s+)?contexte\b.*',
-    r'(?i)\bveuillez\s+fournir\b.*',
-    r'(?i)\bselon\s+vos\s+exigences\s+strictes\b.*',
-    r'(?i)\bpar\s+exemple,?\s+si\s+la\s+phrase\b.*',
-    # Dutch
-    r'(?i)\bhet woord\s+["\'\w]+.*?\bvertaalt\b.*',
-    r'(?i)\bechter,?\s+zonder\s+context\b.*',
-    r'(?i)\bzonder\s+(?:nadere\s+)?context\b.*',
-    r'(?i)\bgeef\s+alstublieft\b.*',
-    r'(?i)\bvolgens\s+uw\s+strikte\s+eisen\b.*',
-    r'(?i)\bbijvoorbeeld,?\s+als\s+de\b.*',
-    # German
-    r'(?i)\bdas wort\s+["\'„\w]+.*?\bübersetzt\b.*',
-    r'(?i)\bjedoch,?\s+ohne\s+kontext\b.*',
-    r'(?i)\bohne\s+(?:weiteren\s+)?kontext\b.*',
-    # Russian
-    r'(?i)\bслово\s+[«"\'\w]+.*?\bпереводится\b.*',
-    r'(?i)\bоднако,?\s+без\s+контекста\b.*',
-    r'(?i)\bбез\s+(?:дополнительного\s+)?контекста\b.*',
-    # Generic note markers across languages
-    r'(?i)\b(?:note|remarque|hinweis|opmerking|примечание|explanation|explication|erklärung|uitleg)\s*:.*',
-    r'(?i)\b(?:here\s+is\s+the\s+translation|voici\s+la\s+traduction|hier\s+is\s+de\s+vertaling|hier\s+ist\s+die\s+übersetzung|вот\s+перевод)\s*:?\s*',
-]
+    META_PATTERNS = [
+        # English
+        r'(?i)\bthe word\s+["\'«„\w]+.*?\btranslates\b.*',
+        r'(?i)\bhowever,?\s+without\s+context\b.*',
+        r'(?i)\bplease\s+provide\s+(?:the\s+)?(?:full|more|additional)\b.*',
+        r'(?i)\bwithout\s+(?:more\s+)?context\b.*',
+        r'(?i)\bas\s+per\s+your\s+strict\s+requirements\b.*',
+        r'(?i)\bfor\s+example,?\s+if\s+the\s+full\s+sentence\b.*',
+        # French
+        r'(?i)\ble mot\s+[«"\'\w]+.*?\bse traduit\b.*',
+        r'(?i)\bcependant,?\s+sans\s+contexte\b.*',
+        r'(?i)\bsans\s+(?:plus\s+de\s+)?contexte\b.*',
+        r'(?i)\bveuillez\s+fournir\b.*',
+        r'(?i)\bselon\s+vos\s+exigences\s+strictes\b.*',
+        r'(?i)\bpar\s+exemple,?\s+si\s+la\s+phrase\b.*',
+        # Dutch
+        r'(?i)\bhet woord\s+["\'\w]+.*?\bvertaalt\b.*',
+        r'(?i)\bechter,?\s+zonder\s+context\b.*',
+        r'(?i)\bzonder\s+(?:nadere\s+)?context\b.*',
+        r'(?i)\bgeef\s+alstublieft\b.*',
+        r'(?i)\bvolgens\s+uw\s+strikte\s+eisen\b.*',
+        r'(?i)\bbijvoorbeeld,?\s+als\s+de\b.*',
+        # German
+        r'(?i)\bdas wort\s+["\'„\w]+.*?\bübersetzt\b.*',
+        r'(?i)\bjedoch,?\s+ohne\s+kontext\b.*',
+        r'(?i)\bohne\s+(?:weiteren\s+)?kontext\b.*',
+        # Russian
+        r'(?i)\bслово\s+[«"\'\w]+.*?\bпереводится\b.*',
+        r'(?i)\bоднако,?\s+без\s+контекста\b.*',
+        r'(?i)\bбез\s+(?:дополнительного\s+)?контекста\b.*',
+        # Generic note markers across languages
+        r'(?i)\b(?:note|remarque|hinweis|opmerking|примечание|explanation|explication|erklärung|uitleg)\s*:.*',
+        r'(?i)\b(?:here\s+is\s+the\s+translation|voici\s+la\s+traduction|hier\s+is\s+de\s+vertaling|hier\s+ist\s+die\s+übersetzung|вот\s+перевод)\s*:?\s*',
+    ]
 
+    def clean_translation_meta(text: str) -> str:
+        """Strip conversational disclaimers, lecturing, and metadata from LLM translations."""
+        if not text:
+            return ""
+        cleaned = text.strip()
 
-def clean_translation_meta(text: str) -> str:
-    """Strip conversational disclaimers, lecturing, and metadata from LLM translations."""
-    if not text:
-        return ""
-    cleaned = text.strip()
+        # If the LLM output a multi-line response with blank line, translation is paragraph 1
+        if "\n\n" in cleaned:
+            cleaned = cleaned.split("\n\n")[0].strip()
 
-    # If the LLM output a multi-line response with blank line, translation is paragraph 1
-    if "\n\n" in cleaned:
-        cleaned = cleaned.split("\n\n")[0].strip()
+        # Strip introductory markers
+        cleaned = re.sub(
+            r'(?i)^(?:here\s+is\s+the\s+translation:?\s*|voici\s+la\s+traduction:?\s*|translation:?\s*|traduction:?\s*|vertaling:?\s*|translated\s+text:?\s*)',
+            '',
+            cleaned
+        ).strip()
 
-    # Strip introductory markers
-    cleaned = re.sub(
-        r'(?i)^(?:here\s+is\s+the\s+translation:?\s*|voici\s+la\s+traduction:?\s*|translation:?\s*|traduction:?\s*|vertaling:?\s*|translated\s+text:?\s*)',
-        '',
-        cleaned
-    ).strip()
+        # Find earliest trailing meta-commentary pattern
+        earliest_idx = len(cleaned)
+        for pat in META_PATTERNS:
+            if "here" in pat or "voici" in pat or "hier" in pat:
+                continue
+            m = re.search(pat, cleaned)
+            if m and m.start() < earliest_idx:
+                earliest_idx = m.start()
 
-    # Find earliest trailing meta-commentary pattern
-    earliest_idx = len(cleaned)
-    for pat in META_PATTERNS:
-        if "here" in pat or "voici" in pat or "hier" in pat:
-            continue
-        m = re.search(pat, cleaned)
-        if m and m.start() < earliest_idx:
-            earliest_idx = m.start()
+        if earliest_idx < len(cleaned):
+            cleaned = cleaned[:earliest_idx].strip()
 
-    if earliest_idx < len(cleaned):
-        cleaned = cleaned[:earliest_idx].strip()
+        # Strip surrounding quotes if wrapped (including French « » and German „ “)
+        if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+            cleaned = cleaned[1:-1].strip()
+        elif cleaned.startswith('«') and cleaned.endswith('»'):
+            cleaned = cleaned[1:-1].strip()
+        elif cleaned.startswith('„') and cleaned.endswith('“'):
+            cleaned = cleaned[1:-1].strip()
 
-    # Strip surrounding quotes if wrapped (including French « » and German „ “)
-    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
-        cleaned = cleaned[1:-1].strip()
-    elif cleaned.startswith('«') and cleaned.endswith('»'):
-        cleaned = cleaned[1:-1].strip()
-    elif cleaned.startswith('„') and cleaned.endswith('“'):
-        cleaned = cleaned[1:-1].strip()
-
-    return cleaned
+        return cleaned
 
 
 async def translate_text(text: str, target_lang: str, source_lang: str):
@@ -510,58 +590,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     # Anti-Hallucination
                     if text:
-                        cleaned_tail = TAIL_HALLUCINATION_PATTERN.sub("", text).strip()
-                        if not cleaned_tail:
-                            text = ""
-                        elif cleaned_tail != text.strip():
-                            text = cleaned_tail
-
-                    if text:
-                        clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
-                        clean_text = " ".join(clean_text.split())
-                        words = clean_text.split()
-
-                        clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
-                        if (
-                            clean_text in NOISE_HALLUCINATION_PHRASES
-                            or clean_no_digits in NOISE_HALLUCINATION_PHRASES
-                            or BROADCAST_CREDIT_PATTERN.match(clean_text)
-                            or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
-                        ):
-                            text = ""
-                        elif last_transcript and not is_same_segment:
-                            clean_last = last_transcript.translate(str.maketrans('', '', string.punctuation)).lower()
-                            last_words = clean_last.split()
-                            
-                            if clean_text == clean_last:
-                                text = ""
-                            elif len(words) >= 3 and clean_text in clean_last:
-                                text = ""
-                            else:
-                                matcher = difflib.SequenceMatcher(None, last_words, words)
-                                match = matcher.find_longest_match(0, len(last_words), 0, len(words))
-
-                                is_large_leak = (match.size >= 4 and match.b <= 5) or (match.size >= 6 and match.b <= 15)
-                                is_tail_overlap = (match.size >= 1 and match.b == 0 and match.a + match.size == len(last_words))
-                                is_tail_sub = (match.size >= 2 and match.b <= 5 and match.a + match.size == len(last_words))
-
-                                if is_large_leak or is_tail_overlap or is_tail_sub:
-                                    orig_words = text.split()
-                                    cut_idx = match.b + match.size
-                                    trimmed_words = orig_words[cut_idx:]
-                                    text = " ".join(trimmed_words).strip()
-
-                                if text:
-                                    clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
-                                    clean_text = " ".join(clean_text.split())
-                                    clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
-                                    if (
-                                        clean_text in NOISE_HALLUCINATION_PHRASES
-                                        or clean_no_digits in NOISE_HALLUCINATION_PHRASES
-                                        or BROADCAST_CREDIT_PATTERN.match(clean_text)
-                                        or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
-                                    ):
-                                        text = ""
+                        filtered = filter_anti_hallucination(
+                            text,
+                            last_transcript=last_transcript,
+                            is_same_segment=is_same_segment,
+                        )
+                        text = filtered or ""
 
                     if not text:
                         continue

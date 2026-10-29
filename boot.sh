@@ -34,7 +34,8 @@ rm -f /tmp/boot_latest.sh 2>/dev/null || true
 sync_repo_file() {
     local file_name="$1"
     local dest_path="$2"
-    local tmp_path="/tmp/${file_name%.*}_latest.${file_name##*.}"
+    local safe_name="${file_name//\//_}"
+    local tmp_path="/tmp/${safe_name%.*}_latest.${safe_name##*.}"
     rm -f "$tmp_path"
 
     # Try primary repository URL first, then fallback
@@ -78,6 +79,12 @@ fi
 echo "[Boot] Syncing latest setup_once.sh and runpod_server.py from repository..."
 sync_repo_file "setup_once.sh" "/workspace/setup_once.sh"
 sync_repo_file "runpod_server.py" "/workspace/app/runpod_server.py"
+
+mkdir -p /workspace/app/core /workspace/app/core/stt
+for core_file in core/__init__.py core/translation.py core/audio.py core/stt/__init__.py core/stt/base.py core/stt/local_engine.py; do
+    sync_repo_file "$core_file" "/workspace/app/$core_file"
+done
+sync_repo_file "core/utils.py" "/workspace/app/core/utils.py"
 
 # Self-Initialization Check: If venv_bundle or models are missing, run automated setup_once.sh
 if { [ ! -s "/workspace/venv_bundle.tar.zst" ] && [ ! -s "/workspace/venv_bundle.tar" ]; } || [ ! -d "/workspace/models/faster-whisper-large-v3" ] || [ ! -d "/workspace/models/ollama" ]; then
@@ -124,6 +131,7 @@ if ! command -v ollama >/dev/null 2>&1; then
 fi
 
 echo "=== [4/8] Creating Volatile Local SSD Directories ==="
+rm -f /workspace/*.tmp
 mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama /root/models
 
 echo "=== [5/8] Extracting Python Virtual Environment to NVMe SSD (/root/venv) ==="
@@ -219,11 +227,25 @@ if [ ! -s "/workspace/venv_bundle.tar.zst" ] || [ ! -s "/workspace/ollama_bundle
         echo "[Migration] Background compressing bundles to zstd for instant future boots..."
         if [ ! -s "/workspace/ollama_bundle.tar.zst" ] && [ -d /usr/local/lib/ollama ]; then
             tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
-            [ -s /tmp/ollama_bundle.tar.zst ] && cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst && rm -f /tmp/ollama_bundle.tar.zst
+            if [ -s /tmp/ollama_bundle.tar.zst ]; then
+                cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst.tmp
+                if zstd -t /workspace/ollama_bundle.tar.zst.tmp >/dev/null 2>&1; then
+                    mv -f /workspace/ollama_bundle.tar.zst.tmp /workspace/ollama_bundle.tar.zst
+                    rm -f /workspace/ollama_bundle.tar
+                fi
+                rm -f /workspace/ollama_bundle.tar.zst.tmp /tmp/ollama_bundle.tar.zst
+            fi
         fi
         if [ ! -s "/workspace/venv_bundle.tar.zst" ] && [ -d /root/venv ]; then
             tar -I "zstd -1 -T0" -cf /tmp/venv_bundle.tar.zst -C /root venv 2>/dev/null || true
-            [ -s /tmp/venv_bundle.tar.zst ] && cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst && rm -f /tmp/venv_bundle.tar.zst
+            if [ -s /tmp/venv_bundle.tar.zst ]; then
+                cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst.tmp
+                if zstd -t /workspace/venv_bundle.tar.zst.tmp >/dev/null 2>&1; then
+                    mv -f /workspace/venv_bundle.tar.zst.tmp /workspace/venv_bundle.tar.zst
+                    rm -f /workspace/venv_bundle.tar
+                fi
+                rm -f /workspace/venv_bundle.tar.zst.tmp /tmp/venv_bundle.tar.zst
+            fi
         fi
         echo "[Migration] Completed zstd bundle migration on /workspace."
     ) >/dev/null 2>&1 &

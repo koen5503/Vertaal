@@ -18,6 +18,40 @@ REPO_BRANCH="${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}"
 REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/${REPO_BRANCH}}"
 FALLBACK_REPO_RAW="https://raw.githubusercontent.com/koen5503/Vertaal/main"
 
+# Helper for guarded script syncing via /tmp to protect FUSE storage & survive GitHub outages
+sync_repo_file() {
+    local file_name="$1"
+    local dest_path="$2"
+    local safe_name="${file_name//\//_}"
+    local tmp_path="/tmp/${safe_name%.*}_latest.${safe_name##*.}"
+    rm -f "$tmp_path"
+
+    # Local filesystem fallback first if running locally in repo
+    if [ -s "./${file_name}" ]; then
+        mkdir -p "$(dirname "$dest_path")"
+        cp -f "./${file_name}" "$dest_path"
+        return 0
+    fi
+
+    # Try primary repository URL first, then fallback
+    if { curl -fsSL "${REPO_RAW}/${file_name}" -o "$tmp_path" 2>/dev/null || { [ "$REPO_BRANCH" != "main" ] && curl -fsSL "${FALLBACK_REPO_RAW}/${file_name}" -o "$tmp_path" 2>/dev/null; }; } && [ -s "$tmp_path" ]; then
+        mkdir -p "$(dirname "$dest_path")"
+        cp -f "$tmp_path" "$dest_path"
+        rm -f "$tmp_path"
+        return 0
+    fi
+    rm -f "$tmp_path"
+
+    # Guard against GitHub outages: reuse existing file if present and non-empty
+    if [ -s "$dest_path" ]; then
+        echo "[Setup] Warning: Could not download latest ${file_name} from GitHub, using existing ${dest_path}."
+        return 0
+    fi
+
+    echo "ERROR: ${dest_path} is missing and could not be downloaded from repository!" >&2
+    exit 1
+}
+
 echo "=== [1/8] Installing OS Packages ==="
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -104,45 +138,19 @@ else
 fi
 
 echo "=== [8/8] Staging Application Code and Boot Scripts into /workspace ==="
-mkdir -p /workspace/app
+mkdir -p /workspace/app /workspace/app/core /workspace/app/core/stt
 
 # Stage runpod_server.py
-if [ -s "./runpod_server.py" ]; then
-    cp -f ./runpod_server.py /workspace/app/
-elif [ -s "/workspace/runpod_server.py" ]; then
-    cp -f /workspace/runpod_server.py /workspace/app/
-fi
-if [ ! -s "/workspace/app/runpod_server.py" ]; then
-    echo "Downloading runpod_server.py from repository via /tmp..."
-    rm -f /tmp/runpod_server_latest.py
-    if { curl -fsSL "${REPO_RAW}/runpod_server.py" -o /tmp/runpod_server_latest.py 2>/dev/null || { [ "$REPO_BRANCH" != "main" ] && curl -fsSL "${FALLBACK_REPO_RAW}/runpod_server.py" -o /tmp/runpod_server_latest.py 2>/dev/null; }; } && [ -s "/tmp/runpod_server_latest.py" ]; then
-        cp -f /tmp/runpod_server_latest.py /workspace/app/runpod_server.py
-        rm -f /tmp/runpod_server_latest.py
-    else
-        rm -f /tmp/runpod_server_latest.py
-        echo "ERROR: Failed to download runpod_server.py to /workspace/app/runpod_server.py!" >&2
-        exit 1
-    fi
-fi
+sync_repo_file "runpod_server.py" "/workspace/app/runpod_server.py"
 
 # Stage boot.sh
-if [ -s "./boot.sh" ]; then
-    cp -f ./boot.sh /workspace/boot.sh
-elif [ -s "/tmp/boot.sh" ]; then
-    cp -f /tmp/boot.sh /workspace/boot.sh
-fi
-if [ ! -s "/workspace/boot.sh" ]; then
-    echo "Downloading boot.sh from repository via /tmp..."
-    rm -f /tmp/boot_latest.sh
-    if { curl -fsSL "${REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null || { [ "$REPO_BRANCH" != "main" ] && curl -fsSL "${FALLBACK_REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null; }; } && [ -s "/tmp/boot_latest.sh" ]; then
-        cp -f /tmp/boot_latest.sh /workspace/boot.sh
-        rm -f /tmp/boot_latest.sh
-    else
-        rm -f /tmp/boot_latest.sh
-        echo "ERROR: Failed to download boot.sh to /workspace/boot.sh!" >&2
-        exit 1
-    fi
-fi
+sync_repo_file "boot.sh" "/workspace/boot.sh"
+
+# Stage core package
+for core_file in core/__init__.py core/translation.py core/audio.py core/stt/__init__.py core/stt/base.py core/stt/local_engine.py; do
+    sync_repo_file "$core_file" "/workspace/app/$core_file"
+done
+sync_repo_file "core/utils.py" "/workspace/app/core/utils.py"
 
 echo "=== One-time setup completed successfully! ==="
 echo "The Global Volume /workspace is now fully prepared."

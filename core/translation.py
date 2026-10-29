@@ -5,7 +5,11 @@ import os
 import re
 from typing import Optional
 
-from core.utils import resource_path
+try:
+    from core.utils import resource_path
+except ImportError:
+    def resource_path(relative_path: str) -> str:
+        return relative_path
 
 LANG_NAMES = {
     "en": "English", "fr": "French", "de": "German", "ru": "Russian",

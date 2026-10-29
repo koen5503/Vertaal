@@ -17,3 +17,10 @@
 - Before reporting completion to the user, run:
   `python3 -m unittest discover -s tests -p "test_*.py" -v`
 - All tests (both unit and real-world simulation) must pass at 100%.
+
+## 4. Strikt Rolbehoud: Architect vs. Coding Agent
+- De primaire agent opereert UITSLUITEND als Lead Architect en Test-Orchestrator.
+- De primaire agent mag NOOIT zelfstandig broncode, boot-scripts of tests bewerken via `edit_file` of `write_file`.
+- ELKE codewijziging, testcreatie of bugfix MOET verplicht worden gedelegeerd aan de `code_developer_agent` via `invoke_subagent`.
+- De taak van de architect is: eisen analyseren, specificaties opstellen, de developer aansturen en de testresultaten toetsen.
+

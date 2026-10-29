@@ -12,30 +12,34 @@ Traditional cloud GPU containers often rebuild environments or pull large AI mod
 The **Mini-Pod + Global Volume** architecture separates persistent state from volatile execution:
 1. **Persistent Global Network Volume (`/workspace`)**:
    - Backed by high-capacity S3 object storage mounted via FUSE.
-   - Houses pre-downloaded AI models (`/workspace/models/`) and a pre-bundled Python virtual environment (`/workspace/venv_bundle.tar`).
+   - Houses pre-downloaded AI models (`/workspace/models/`) and zstd-compressed archives (`/workspace/venv_bundle.tar.zst` and `/workspace/ollama_bundle.tar.zst`, with legacy `.tar` fallback), tracked by `/workspace/.bundle_version`.
    - Persists across pod restarts, terminations, and GPU model switches.
 2. **Volatile Container NVMe SSD (`/root` & `/tmp`)**:
    - The Python virtual environment is extracted to `/root/venv` on the host's high-speed local NVMe disk.
    - All caches and temporary files are strictly bound to `/tmp` (`TMPDIR=/tmp`, `HF_HOME=/tmp/hf_cache`, `TORCH_HOME=/tmp/torch_cache`).
-   - Pod boot-up time is slashed to **< 15 seconds** for daily operations.
+   - Container boot and virtual environment extraction take **< 15 seconds**, while full operational readiness takes **~40–55 seconds** (including loading 8.3 GB of Faster-Whisper large-v3 and Ollama weights into GPU VRAM).
 
 ```
-+-----------------------------------------------------------------------+
-| RunPod Host (Ada Lovelace / Ampere GPU: RTX 4090 / 6000 Ada / 3090)  |
-|                                                                       |
-|  +---------------------------+       +-----------------------------+  |
-|  | Volatile Local NVMe SSD   |       | Persistent Global Volume    |  |
-|  | (/root, /tmp)             |       | (/workspace - FUSE S3)      |  |
-|  +---------------------------+       +-----------------------------+  |
-|  | - /root/venv              | <===  | - venv_bundle.tar           |  |
-|  |   (extracted tarball)     |  tar  | - models/                   |  |
-|  | - /root/app/              | <===  |   * faster-whisper-large-v3 |  |
-|  |   (runpod_server.py)      |  cp   |   * ollama/aya-expanse:8b   |  |
-|  | - /tmp/hf_cache           |       | - app/runpod_server.py      |  |
-|  | - /tmp/torch_cache        |       | - boot.sh                   |  |
-|  |                           |       | - setup_once.sh             |  |
-|  +---------------------------+       +-----------------------------+  |
-+-----------------------------------------------------------------------+
++----------------------------------------------------------------------------------+
+| RunPod Host (Ada Lovelace / Ampere GPU: RTX 4090 / 6000 Ada / 3090 / A5000)      |
+|                                                                                  |
+|  +------------------------------+       +-------------------------------------+  |
+|  | Volatile Local NVMe SSD      |       | Persistent Global Volume            |  |
+|  | (/root, /tmp)                |       | (/workspace - FUSE S3)              |  |
+|  +------------------------------+       +-------------------------------------+  |
+|  | - /root/venv                 | <===  | - venv_bundle.tar.zst               |  |
+|  |   (extracted tarball)        |  tar  |   (fallback: venv_bundle.tar)       |  |
+|  | - /root/app/                 | <===  | - ollama_bundle.tar.zst             |  |
+|  |   * runpod_server.py         |  cp   | - .bundle_version                   |  |
+|  |   * core/                    |       | - models/                           |  |
+|  | - /tmp/hf_cache              |       |   * faster-whisper-large-v3         |  |
+|  | - /tmp/torch_cache           |       |   * ollama/aya-expanse:8b           |  |
+|  |                              |       | - app/runpod_server.py              |  |
+|  |                              |       | - app/core/                         |  |
+|  |                              |       | - boot.sh                           |  |
+|  |                              |       | - setup_once.sh                     |  |
+|  +------------------------------+       +-------------------------------------+  |
++----------------------------------------------------------------------------------+
 ```
 
 ---
@@ -52,7 +56,7 @@ The RunPod Global Volume (`/workspace`) is an S3-backed Object Storage system mo
    - Always invoke scripts explicitly via bash: `bash /workspace/boot.sh` or `bash /workspace/setup_once.sh`.
 3. **NO Millions of Small Files**:
    - Running an active Python virtual environment directly on a FUSE mount introduces extreme filesystem latency and kernel locks.
-   - The virtual environment is archived into a single tar archive (`/workspace/venv_bundle.tar`) and unpacked to local NVMe `/root/venv` on boot.
+   - The virtual environment is archived into `/workspace/venv_bundle.tar.zst` (with uncompressed `.tar` fallback) and unpacked to local NVMe `/root/venv` on boot.
 4. **Strict Isolation of Volatile Caches**:
    - `TMPDIR=/tmp`, `HF_HOME=/tmp/hf_cache`, and `TORCH_HOME=/tmp/torch_cache` must always point to `/tmp`, never `/workspace`.
 
@@ -80,28 +84,29 @@ Configure your RunPod Template once on the RunPod Console:
 1. When `app.py` starts in `runpod` mode, it auto-rents an available GPU pod with your Global Volume mounted.
 2. The pod starts with the self-seeding Docker command.
 3. If `/workspace/boot.sh` is missing, `boot.sh` downloads itself from GitHub into `/workspace/boot.sh`.
-4. `boot.sh` detects that `/workspace` is brand new (missing `venv_bundle.tar` or models).
+4. `boot.sh` detects that `/workspace` is brand new (missing `venv_bundle.tar.zst` / `venv_bundle.tar` or models).
 5. It automatically triggers `setup_once.sh`:
    - Installs OS tools (`ffmpeg`, `libsndfile1`, `curl`, `procps`, `zstd`).
-   - Installs Ollama.
+   - Installs Ollama and creates `/workspace/ollama_bundle.tar.zst` atomically (`.tmp` + `zstd -t` + `mv -f`).
    - Builds `/root/venv` and installs packages (`fastapi`, `uvicorn`, `faster-whisper`, etc.).
    - Downloads Faster-Whisper `large-v3` flat to `/workspace/models/faster-whisper-large-v3`.
    - Pulls `aya-expanse:8b` directly to `/workspace/models/ollama`.
-   - Archives `/root/venv` into `/workspace/venv_bundle.tar`.
-   - Copies `runpod_server.py` to `/workspace/app/runpod_server.py`.
+   - Archives `/root/venv` into `/workspace/venv_bundle.tar.zst` atomically (`.tmp` + `zstd -t` + `mv -f`), retaining legacy `venv_bundle.tar` compatibility.
+   - Writes `/workspace/.bundle_version` manifest for version pinning and upgrade detection.
+   - Stages `runpod_server.py`, `boot.sh`, and `app/core/` packages into `/workspace/app/core/`.
 6. `condense_runpod_logs()` detects this phase and reports:
    `"Automatische eerste initialisatie van Global Volume (duurt ~3-5m)..."` directly in the Telemetry dashboard.
 7. Once finished, the server begins streaming immediately.
 
-### Subsequent Daily Runs (< 15 seconds):
+### Subsequent Daily Runs (< 15s boot, ~40–55s full readiness):
 1. `app.py` discovers or rents a GPU pod.
 2. `boot.sh` executes immediately from `/workspace/boot.sh`.
-3. It detects that `venv_bundle.tar` and models already exist:
-   - Unpacks `/workspace/venv_bundle.tar` to `/root/venv` in ~5 seconds.
-   - Syncs `/workspace/app/*` to `/root/app/`.
-   - Starts Ollama daemon.
+3. It detects that `venv_bundle.tar.zst` (or `venv_bundle.tar`) and models already exist:
+   - Unpacks `/workspace/venv_bundle.tar.zst` (with legacy `/workspace/venv_bundle.tar` fallback) to `/root/venv` in ~5 seconds.
+   - Syncs `/workspace/app/*` (including `app/core/`) to `/root/app/`.
+   - Starts Ollama daemon and pre-warms translation models.
    - Launches `runpod_server.py` on port 8000.
-4. Total ready-to-serve time is **under 15 seconds**.
+4. Container boot and virtual environment extraction complete in **< 15 seconds**, reaching full operational readiness in **~40–55 seconds** (including loading 8.3 GB of Faster-Whisper large-v3 and Ollama weights into GPU VRAM).
 
 ---
 

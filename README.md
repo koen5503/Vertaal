@@ -6,7 +6,7 @@ Real-time speech-to-text subtitling with simultaneous multi-lingual translation 
 ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 ![Docker-Free](https://img.shields.io/badge/Client-100%25%20Docker--Free-success)
 ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-green)
-![Tests](https://img.shields.io/badge/Tests-113%20Passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-165%20Passing-brightgreen)
 ![License](https://img.shields.io/badge/License-Private-red)
 
 ---
@@ -20,7 +20,7 @@ Real-time speech-to-text subtitling with simultaneous multi-lingual translation 
 - **Resilient Anti-Hallucination Filtering** — Dynamic sliding-window context memory cue with automated prefix-overlap trimming, repetition loop suppression, and breath/cough interim suppression without dropping subsequent speech.
 - **Advanced Audio Processing & VAD** — WebRTC Voice Activity Detection (exact 10ms, 20ms, or 30ms frames), gain normalization, automatic audio format resampling (48kHz/44.1kHz downmix to 16kHz mono), and RMS volume metering.
 - **Multiple Audio Input Sources** — CoreAudio / ASIO / WASAPI microphones, VoiceMeeter virtual audio routing (BUS B1), network audio streaming via VBAN (UDP port 6980), or offline WAV file playback.
-- **Ephemeral RunPod Mini-Pod Architecture** — On-demand ephemeral pod provisioning with persistent Global Volume storage (`/workspace`), automated self-seeding, fast boot (<15–20s) using standard RunPod PyTorch base images (zero custom Docker Hub images needed), automatic zombie pod cleanup, and idle auto-stop.
+- **Ephemeral RunPod Mini-Pod Architecture** — On-demand ephemeral pod provisioning with persistent Global Volume storage (`/workspace`), automated self-seeding, fast boot (virtual environment unpack & script bootstrap in < 15s; full model VRAM readiness in ~40–55s) using standard RunPod PyTorch base images (zero custom Docker Hub images needed), automatic zombie pod cleanup, and idle auto-stop.
 - **Live Telemetry & Health Monitoring** — Dedicated real-time dashboard displaying phased container boot stages `[1/8]`–`[8/8]`, GPU hardware stats, STT/translation latencies, and WebSocket connection health.
 - **Dynamic Sliding Session Window** — Automatic activity-based session extensions bounded by a hard safety ceiling to prevent runaway cloud GPU costs.
 
@@ -97,8 +97,8 @@ The application captures audio through PyAudio or UDP network packets, preproces
 
 3. **Remote NVIDIA GPU on RunPod (`PIPELINE_MODE=runpod`)**
    - **Architecture**: **Mini-Pod + Global Volume (`/workspace`)** pattern running on remote NVIDIA GPUs (RTX 3090, RTX 4090, A4000, A5000).
-   - **Zero Custom Docker Hub Images**: Deploys using standard RunPod PyTorch base images (`runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04`). No Docker Hub repository or custom image builds needed.
-   - **Automated Self-Seeding & Fast Boot**: On a fresh volume, `boot.sh` automatically seeds the environment via `setup_once.sh` in <3–5 minutes. Subsequent pod starts unpack the environment from `/workspace` and become operational in **< 15–20 seconds**.
+   - **Zero Custom Docker Hub Images**: Deploys using standard RunPod PyTorch base images (`runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04`). No Docker Hub repository or custom image builds needed.
+   - **Automated Self-Seeding & Fast Boot**: On a fresh volume, `boot.sh` automatically seeds the environment via `setup_once.sh` in <3–5 minutes. Subsequent pod starts unpack the environment from `/workspace` in **< 15 seconds**, reaching full operational readiness in **~40–55 seconds** (including loading 8.3 GB of Faster-Whisper large-v3 and Ollama weights into GPU VRAM).
    - **Lifecycle Management**: On-demand ephemeral pod provisioning with persistent storage on the RunPod Global Volume, automatic zombie pod cleanup, and idle auto-stop.
    - **STT & Translation**: `faster-whisper` (`large-v3`) with local NVMe SSD staging for high I/O throughput + `Ollama` (`aya-expanse:8b`) with GPU VRAM pre-warming.
    - **Communication**: Bidirectional streaming over secure WebSocket (`runpod_server.py`).
@@ -260,7 +260,7 @@ Copy `.env.example` to `.env` to configure the application:
 | `WHISPER_MODEL` | Hugging Face model identifier for MLX-Whisper | Local | `mlx-community/whisper-small-mlx` |
 | `OLLAMA_MODEL` | Ollama model tag for LLM translation | Local / RunPod | `aya-expanse:8b` |
 | `OLLAMA_URL` | Ollama service endpoint | Local / RunPod | `http://localhost:11434` |
-| `RUNPOD_API_KEY` | RunPod GraphQL API key | RunPod | `""` |
+| `RUNPOD_API_KEY` | RunPod API key (REST v2 / GraphQL) | RunPod | `""` |
 | `RUNPOD_WSS_URL` | Manual WebSocket URL override (skips pod discovery) | RunPod | `""` |
 | `RUNPOD_TEMPLATE_ID` | Template ID configured with standard PyTorch base image | RunPod | `""` |
 | `RUNPOD_VOLUME_ID` | Network Global Volume mounted to `/workspace` | RunPod | `""` |
@@ -282,7 +282,7 @@ Copy `.env.example` to `.env` to configure the application:
 
 ## 🧪 Running Tests
 
-The project includes an automated test suite of **113 tests** covering audio framing, VAD chunking, anti-hallucination sliding-window algorithms, configuration loading, deployment contracts, and real-world streaming simulations.
+The project includes an automated test suite of **165 tests** covering audio framing, VAD chunking, anti-hallucination sliding-window algorithms, configuration loading, deployment contracts, and real-world streaming simulations.
 
 Run the entire test suite via Python's standard `unittest` framework:
 
@@ -290,48 +290,72 @@ Run the entire test suite via Python's standard `unittest` framework:
 # Standard test discovery:
 python3 -m unittest discover -s tests -p "test_*.py"
 
-# Verbose output showing all 113 test cases:
+# Verbose output showing all 165 test cases:
 python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 ### Test Suite Organization
 
 - **`tests/test_deployment_contract.py`**:
-  - Automated deployment and FUSE storage isolation contract verification.
+  - Automated deployment, FUSE storage isolation, version manifest, and self-healing contracts.
   - Verifies FUSE object storage restrictions (safe byte-stream copying into local NVMe SSD).
   - Validates model caching and re-use checks to prevent redundant downloads across pod boots.
   - Bash syntax validity for `boot.sh` and `setup_once.sh`.
   - UI column header synchronization across `index.html` and `viewer.html`.
 
 - **`tests/test_realworld_simulation.py`**:
-  - Real-world stress testing with dirty container log streams (1000+ lines of apt-get/curl progress bars).
+  - Real-world stress testing with dirty log streams (500+ lines), error pattern escalation, step tracking [1/8]–[8/8], translation debouncing, and interim hallucination handling.
   - Rapid error pattern escalation into UI error banners without false positives on benign INFO logs.
   - Complete step tracking across phased boot stages `[1/8]` through `[8/8]`.
   - Interim translation debouncing and guaranteed sequential final completion.
   - Non-destructive interim hallucination handling preserving subsequent speech.
 
 - **`tests/test_vad_audio.py`**:
-  - WebRTC VAD 10ms, 20ms, and 30ms strict frame sizing validation (480 samples / 960 bytes at 16kHz 16-bit mono).
+  - WebRTC VAD 10ms/20ms/30ms framing, 48kHz/44.1kHz downmixing, 32-bit/8-bit to 16-bit PCM conversions, gain scaling, and RMS volume calculation.
+  - WebRTC VAD strict frame sizing validation (480 samples / 960 bytes at 16kHz 16-bit mono).
   - Audio conversions: 48kHz and 44.1kHz stereo to 16kHz mono decimation.
   - Bit-depth conversions: 32-bit signed and 8-bit unsigned to 16-bit signed PCM.
   - Gain scaling with clipping bounds `[-32768, 32767]`, and RMS calculation.
 
 - **`tests/test_anti_hallucination.py`**:
+  - Sliding-window prefix overlap trimming, repetition loop suppression, and glossary/credit filtering.
   - Sliding-window prefix overlap trimming (`_transcribe_buffer` tail-head matching).
   - Suppression of 100% prefix leakage and identical repetition loops.
   - Filtering of isolated glossary phrases and low unique word ratio hallucinations.
 
 - **`tests/test_config_modes.py`**:
+  - PIPELINE_MODE resolution, language parsing, and environment configuration fallback logic.
   - PIPELINE_MODE resolution (`local`, `cloud`, `runpod`) and case-insensitivity.
   - Language code parsing and BCP-47 primary extraction.
   - Environment variable overrides and fallback defaults.
 
 - **`tests/test_mock_pipeline.py`**:
-  - Dynamic chunking state machine.
+  - Dynamic chunking state machine, pre-roll silence buffer capping, noise click rejection, and forced buffer flushing.
   - Pre-roll silence buffer capping (1.0s limit).
   - Force-flush on prolonged silence (`MAX_SILENCE_FLUSH_MS`).
   - Noise click rejection (< 90ms / 3 speech frames).
   - Buffer hard-cap transcription trigger (`MAX_LOCAL_CHUNK_S`).
+
+- **`tests/test_core_package.py`**:
+  - Modular architectural boundaries, engine isolation, RunPod REST/GraphQL API interactions, and telemetry condensation.
+  - Headless audio ingestion and silence generator test fixtures.
+  - Pod provisioning retry backoff, exponential delays, and quota policy error handling.
+
+- **`tests/test_golden_contract.py`**:
+  - Golden audio verification ensuring zero transcription degradation against baseline fixtures.
+  - Accurate Dutch and multilingual transcription validation against known audio ground truths.
+
+- **`tests/test_live_cloud_contract.py`**:
+  - Contract verification for Google Cloud STT streaming and Translation client integrations.
+  - Service account credential loading, client streaming mock handshakes, and stability gating.
+
+- **`tests/test_live_cloud_e2e_audio_pipeline.py`**:
+  - End-to-end cloud pipeline simulation over real loopback sockets verifying full-segment revision.
+  - Multi-column translation broadcasts and cursive interim subtitle updates.
+
+- **`tests/test_live_pipeline_integration.py`**:
+  - Live audio capture integration tests verifying device routing and frame dispatch.
+  - CoreAudio / WASAPI stream lifecycle and restart behavior upon stop/start cycles.
 
 ---
 

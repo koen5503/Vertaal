@@ -23,10 +23,11 @@ import os
 import sys
 import time
 import unittest
+from unittest.mock import MagicMock
 import urllib.request
 import urllib.error
 import wave
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 try:
     import websockets
@@ -86,6 +87,35 @@ def get_demo_audio_path() -> str:
     return audio_path
 
 
+def poll_pod_boot_logs(
+    engine: Any,
+    pod_id: str,
+    api_key: Optional[str] = None,
+    last_logged_stage: str = "",
+    poll_start: float = 0.0,
+) -> Tuple[str, List[str]]:
+    """Poll RunPod logs, unpack 3-tuple from fetch_pod_logs, report progress, and fail on container errors."""
+    stage = ""
+    clean_lines: List[str] = []
+    try:
+        derived_status, desired_status, raw_logs = engine.fetch_pod_logs(pod_id, api_key)
+        stage, clean_lines = condense_runpod_logs(raw_logs)
+        if stage != last_logged_stage:
+            elapsed = int(time.time() - poll_start) if poll_start > 0 else 0
+            print(f"[RunPod E2E Boot] ({elapsed}s) {stage}")
+            if clean_lines:
+                print(f"   Latest: {clean_lines[-1]}")
+    except AssertionError:
+        raise
+    except Exception:
+        pass
+
+    if stage.startswith("Fout in container:"):
+        raise AssertionError(f"Fatal error detected during container boot: {stage}")
+
+    return stage, clean_lines
+
+
 class TestLiveCloudAudioPrerequisites(unittest.TestCase):
     """Verifies that authentic domain media is valid and ready for streaming."""
 
@@ -126,6 +156,44 @@ class TestLiveCloudAudioPrerequisites(unittest.TestCase):
             )
             self.assertEqual(len(pcm_16k), 16000 * 2 * 10, "Resampled 10s audio must be 320,000 bytes (16kHz 16-bit mono)")
 
+    def test_log_polling_helper_unpacks_and_raises_container_error(self):
+        """Verify log-polling helper unpacks fetch_pod_logs 3-tuple and raises AssertionError without swallowing it."""
+        mock_engine = MagicMock(spec=RunPodSTTEngine)
+        mock_engine.fetch_pod_logs.return_value = (
+            "ERROR",
+            "RUNNING",
+            "=== [1/8] Installing OS Packages ===\nERROR: setup failed",
+        )
+
+        # 1. Verify module-level helper function unpacks 3-tuple and fails with AssertionError
+        with self.assertRaises(AssertionError) as ctx:
+            poll_pod_boot_logs(mock_engine, "pod-test-123", "test-key-456")
+
+        self.assertIn("Fout in container:", str(ctx.exception))
+        mock_engine.fetch_pod_logs.assert_called_once_with("pod-test-123", "test-key-456")
+
+        # 2. Verify pipeline test class helper method behaves identically
+        pipeline = TestLiveCloudE2EAudioPipeline()
+        pipeline.engine = mock_engine
+        pipeline.api_key = "test-key-456"
+        mock_engine.fetch_pod_logs.reset_mock()
+
+        with self.assertRaises(AssertionError) as ctx_method:
+            pipeline.poll_pod_boot_logs("pod-test-123")
+
+        self.assertIn("Fout in container:", str(ctx_method.exception))
+        mock_engine.fetch_pod_logs.assert_called_once_with("pod-test-123", "test-key-456")
+
+        # 3. Verify normal progress unpacks 3-tuple and returns stage and clean lines without error
+        mock_engine.fetch_pod_logs.return_value = (
+            "RUNNING",
+            "RUNNING",
+            "=== [1/8] Installing OS Packages ===\nExtracting packages...",
+        )
+        stage, clean_lines = poll_pod_boot_logs(mock_engine, "pod-test-123", "test-key-456")
+        self.assertTrue(stage.startswith("Initialisatie [1/8]"))
+        self.assertGreaterEqual(len(clean_lines), 1)
+
 
 @unittest.skipUnless(os.getenv("RUNPOD_API_KEY"), "Live RUNPOD_API_KEY required for cloud E2E test")
 class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
@@ -151,6 +219,33 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
     def setUp(self):
         if websockets is None:
             self.skipTest("websockets library is required for live cloud WebSocket streaming test")
+
+    def poll_pod_boot_logs(
+        self,
+        pod_id: str,
+        last_logged_stage: str = "",
+        poll_start: float = 0.0,
+    ) -> Tuple[str, List[str]]:
+        """Log-polling helper for E2E test: calls fetch_pod_logs, unpacks 3-tuple, and fails on container error."""
+        stage = ""
+        clean_lines: List[str] = []
+        try:
+            derived_status, desired_status, raw_logs = self.engine.fetch_pod_logs(pod_id, self.api_key)
+            stage, clean_lines = condense_runpod_logs(raw_logs)
+            if stage != last_logged_stage:
+                elapsed = int(time.time() - poll_start) if poll_start > 0 else 0
+                print(f"[RunPod E2E Boot] ({elapsed}s) {stage}")
+                if clean_lines:
+                    print(f"   Latest: {clean_lines[-1]}")
+        except AssertionError:
+            raise
+        except Exception:
+            pass
+
+        if stage.startswith("Fout in container:"):
+            self.fail(f"Fatal error detected during container boot: {stage}")
+
+        return stage, clean_lines
 
     def test_live_cloud_e2e_spoken_audio_pipeline(self):
         """End-to-end verification: authentic spoken audio ingestion to speech transcription and LLM translation."""
@@ -224,19 +319,12 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
             now = time.time()
             if now - last_log_poll >= 8.0:
                 last_log_poll = now
-                try:
-                    logs = self.engine.fetch_pod_logs(self.api_key, pod_id)
-                    stage, clean_lines = condense_runpod_logs(logs)
-                    if stage != last_logged_stage:
-                        last_logged_stage = stage
-                        elapsed = int(now - poll_start)
-                        print(f"[RunPod E2E Boot] ({elapsed}s) {stage}")
-                        if clean_lines:
-                            print(f"   Latest: {clean_lines[-1]}")
-                    if stage.startswith("Fout in container:"):
-                        self.fail(f"Fatal error detected during container boot: {stage}")
-                except Exception:
-                    pass
+                stage, clean_lines = self.poll_pod_boot_logs(
+                    pod_id,
+                    last_logged_stage=last_logged_stage,
+                    poll_start=poll_start,
+                )
+                last_logged_stage = stage
 
             try:
                 req = urllib.request.Request(

@@ -24,3 +24,16 @@
 - ELKE codewijziging, testcreatie of bugfix MOET verplicht worden gedelegeerd aan de `code_developer_agent` via `invoke_subagent`.
 - De taak van de architect is: eisen analyseren, specificaties opstellen, de developer aansturen en de testresultaten toetsen.
 
+## 5. Falen van E2E-testen: Verplichte Stop & Failure-Analyse (Geen Zelfstandige Fixes)
+- Als een live end-to-end test FAALT (ongeacht of unit tests slagen), mag de coding agent NOOIT zelfstandig broncode, boot-scripts of tests gaan bewerken om het op te lossen.
+- De coding agent MOET onmiddellijk:
+  1. De cloud pod beëindigen via REST API v2 (geen verweesde kosten).
+  2. Stoppen met uitvoeren.
+  3. Een volledig en ongefilterd storingsrapport uitbrengen aan de architect met de exacte foutmelding, traceback en de laatste 50 regels containerlogs.
+- Pas nadat de architect en de gebruiker de oorzaakanalyse hebben goedgekeurd en een expliciete herstelopdracht hebben gegeven, mag er code worden gewijzigd.
+
+## 6. Verbod op Zelfstandig Pushen bij Tussentijdse Mislukkingen
+- De coding agent mag NOOIT commits pushen naar Git als een tussenstap heeft gefaald of als er nog geen schone 100% lokale pre-flight testrun is behaald over álle testsuites.
+- Elke vorm van verhulling of selectieve rapportage van testresultaten is ten strengste verboden.
+
+

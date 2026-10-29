@@ -68,7 +68,7 @@ Configure your RunPod Template once on the RunPod Console:
 | **Container Disk** | `20 GB` | Local NVMe space for `/root/venv` (~5 GB unpacked) and `/tmp` buffers. |
 | **Volume Disk** | Attach your **Global Volume** | Mounted at `/workspace` (e.g. 50 GB capacity). |
 | **Expose HTTP Ports** | `8000` | Port used by FastAPI & WebSocket server. |
-| **Docker Start Command** | `bash -c "[ -f /workspace/boot.sh ] && bash /workspace/boot.sh \|\| (curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/boot.sh -o /tmp/boot.sh && bash /tmp/boot.sh)"` | Self-seeding bootstrap command. |
+| **Docker Start Command** | `bash -c "[ -f /workspace/boot.sh ] && bash /workspace/boot.sh \|\| (curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/\${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}/boot.sh -o /tmp/boot.sh && bash /tmp/boot.sh \|\| curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/main/boot.sh -o /tmp/boot.sh && bash /tmp/boot.sh)"` | Self-seeding bootstrap command. |
 
 ---
 

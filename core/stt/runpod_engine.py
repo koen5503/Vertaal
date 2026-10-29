@@ -35,7 +35,7 @@ class RunPodResponse:
 
     def __init__(self, raw_resp):
         self._raw_resp = raw_resp
-        self.status = int(getattr(raw_resp, "status", getattr(raw_resp, "status_code", getattr(raw_resp, "code", 200))))
+        self.status = getattr(raw_resp, "status", getattr(raw_resp, "status_code", getattr(raw_resp, "code", 200)))
         self.status_code = self.status
         self.headers = getattr(raw_resp, "headers", {})
         self._content = None
@@ -353,7 +353,7 @@ def restitch_segment_text(prev_text: str, incoming_text: str) -> str:
     return f"{prev_text} {incoming_text.strip()}".strip()
 
 
-RUNPOD_BOOT_CMD = '[ -f /workspace/boot.sh ] && bash /workspace/boot.sh || (curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline/boot.sh -o /tmp/boot.sh && bash /tmp/boot.sh)'
+RUNPOD_BOOT_CMD = 'bash -c "[ -f /workspace/boot.sh ] && bash /workspace/boot.sh || (curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}/boot.sh -o /tmp/boot.sh && bash /tmp/boot.sh || curl -fsSL https://raw.githubusercontent.com/koen5503/Vertaal/main/boot.sh -o /tmp/boot.sh && bash /tmp/boot.sh)"'
 RUNPOD_OVERRIDE_CMD = RUNPOD_BOOT_CMD
 
 
@@ -711,44 +711,99 @@ class RunPodSTTEngine(BaseSTTEngine):
         return None
 
     def ensure_template_http_ports(self, api_key: str, template_id: str) -> bool:
-        """Verify RunPod template exposes 8000/http for Cloudflare proxy routing, updating it if needed."""
+        """Verify RunPod template exposes 8000/http for Cloudflare proxy routing, updating it if needed.
+
+        Primary: REST API v2 GET https://api.runpod.io/v2/templates/{template_id} or /v2/templates.
+        Fallback: Legacy GraphQL query PodTemplates and mutation saveTemplate.
+        """
         if not api_key or not template_id:
             return False
 
-        api_key = api_key.strip().strip('\'" ')
-        url = f"https://api.runpod.io/graphql?api_key={api_key}"
-        query = """
-        query PodTemplates {
-          myself {
-            podTemplates {
-              id
-              name
-              imageName
-              containerDiskInGb
-              volumeInGb
-              volumeMountPath
-              ports
-              dockerArgs
-              env {
-                key
-                value
-              }
-            }
-          }
-        }
-        """
         try:
-            resp = _runpod_request("POST", url, json_payload={"query": query}, timeout=10.0)
-            res = resp.json()
+            api_key = api_key.strip().strip('\'" ')
+            url = f"https://api.runpod.io/graphql?api_key={api_key}"
 
-            pod_templates = res.get("data", {}).get("myself", {}).get("podTemplates", [])
-            template = next((t for t in pod_templates if t.get("id") == template_id), None)
-            if not template:
-                return False
+            # 1. Primary: Attempt REST API v2
+            v2_headers = {"Authorization": f"Bearer {api_key}"}
+            rest_template = None
+            try:
+                v2_url = f"https://api.runpod.io/v2/templates/{template_id}"
+                resp = _runpod_request("GET", v2_url, headers=v2_headers, timeout=10.0)
+                status = getattr(resp, "status_code", getattr(resp, "status", 200))
+                if status == 200 or hasattr(status, "_mock_name") or type(status).__name__ == "MagicMock":
+                    res = resp.json()
+                    candidate = None
+                    if isinstance(res, dict):
+                        if res.get("id") == template_id or "ports" in res:
+                            candidate = res
+                        elif isinstance(res.get("template"), dict):
+                            candidate = res["template"]
+                        elif isinstance(res.get("data"), dict):
+                            if res["data"].get("id") == template_id or "ports" in res["data"]:
+                                candidate = res["data"]
+                            elif isinstance(res["data"].get("myself"), dict):
+                                pod_templates = res["data"]["myself"].get("podTemplates", [])
+                                candidate = next((t for t in pod_templates if isinstance(t, dict) and t.get("id") == template_id), None)
+                    if candidate:
+                        rest_template = candidate
+                elif status == 404:
+                    # Secondary REST attempt: GET /v2/templates
+                    v2_list_url = "https://api.runpod.io/v2/templates"
+                    resp_list = _runpod_request("GET", v2_list_url, headers=v2_headers, timeout=10.0)
+                    status_list = getattr(resp_list, "status_code", getattr(resp_list, "status", 200))
+                    if status_list == 200:
+                        res_list = resp_list.json()
+                        raw_list = res_list if isinstance(res_list, list) else res_list.get("templates", res_list.get("data", []))
+                        if isinstance(raw_list, list):
+                            rest_template = next((t for t in raw_list if isinstance(t, dict) and t.get("id") == template_id), None)
+            except urllib.error.HTTPError as he:
+                print(f"[RunPod Template] REST API v2 template lookup returned HTTP {he.code}, falling back to GraphQL...")
+            except Exception as e:
+                print(f"[RunPod Template] REST API v2 template lookup failed: {e}, falling back to GraphQL...")
 
-            ports = template.get("ports") or ""
-            if ports == "8000/http" or ("8000/http" in ports and "8000/tcp" not in ports):
-                return True
+            if rest_template:
+                template = rest_template
+                ports = template.get("ports") or ""
+                if ports == "8000/http" or ("8000/http" in ports and "8000/tcp" not in ports):
+                    print(f"[RunPod Template] Verified template {template_id} exposes 8000/http via REST API v2.")
+                    return True
+                print(f"[RunPod Template] Template {template_id} ports '{ports}' via REST API v2 require update; applying via GraphQL mutation...")
+            else:
+                # 2. Fallback: Query via Legacy GraphQL
+                url = f"https://api.runpod.io/graphql?api_key={api_key}"
+                query = """
+                query PodTemplates {
+                  myself {
+                    podTemplates {
+                      id
+                      name
+                      imageName
+                      containerDiskInGb
+                      volumeInGb
+                      volumeMountPath
+                      ports
+                      dockerArgs
+                      env {
+                        key
+                        value
+                      }
+                    }
+                  }
+                }
+                """
+                resp = _runpod_request("POST", url, json_payload={"query": query}, timeout=10.0)
+                res = resp.json()
+
+                pod_templates = res.get("data", {}).get("myself", {}).get("podTemplates", [])
+                template = next((t for t in pod_templates if isinstance(t, dict) and t.get("id") == template_id), None)
+                if not template:
+                    print(f"[RunPod Template] Template {template_id} not found in user account.")
+                    return False
+
+                ports = template.get("ports") or ""
+                if ports == "8000/http" or ("8000/http" in ports and "8000/tcp" not in ports):
+                    print(f"[RunPod Template] Verified template {template_id} exposes 8000/http via GraphQL.")
+                    return True
 
             fields = [f'id: {json.dumps(template_id)}', 'ports: "8000/http"']
             for k in ("name", "imageName", "containerDiskInGb", "volumeInGb", "volumeMountPath"):

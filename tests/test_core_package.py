@@ -1496,9 +1496,9 @@ class TestCorePackage(unittest.TestCase):
             self.assertTrue(success)
             self.assertEqual(len(recorded_requests), 2)
 
-            # Check query
-            query_body = json.loads(recorded_requests[0].data.decode("utf-8"))
-            self.assertIn("podTemplates", query_body["query"])
+            # Check primary request was REST API v2 GET
+            self.assertEqual(recorded_requests[0].get_method(), "GET")
+            self.assertIn("/v2/templates/tmpl-q1w7juynsy", recorded_requests[0].full_url)
 
             # Check mutation sends pure 8000/http
             mutation_body = json.loads(recorded_requests[1].data.decode("utf-8"))

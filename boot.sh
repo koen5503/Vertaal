@@ -13,12 +13,14 @@
 set -euo pipefail
 
 # Self-update boot.sh at the very top to always match repository
-REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline}"
+BUNDLE_VERSION="2026.10.1"
+REPO_BRANCH="${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}"
+REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/${REPO_BRANCH}}"
 FALLBACK_REPO_RAW="https://raw.githubusercontent.com/koen5503/Vertaal/main"
 
 # Guarded self-update of boot.sh via /tmp
 rm -f /tmp/boot_latest.sh
-if curl -fsSL "${REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null || curl -fsSL "${FALLBACK_REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null; then
+if curl -fsSL "${REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null || { [ "$REPO_BRANCH" != "main" ] && curl -fsSL "${FALLBACK_REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null; }; then
     if [ -s /tmp/boot_latest.sh ] && [ -f /workspace/boot.sh ] && ! cmp -s /tmp/boot_latest.sh /workspace/boot.sh; then
         echo "[Boot] Updating /workspace/boot.sh to latest version from repository..."
         cp -f /tmp/boot_latest.sh /workspace/boot.sh
@@ -36,7 +38,7 @@ sync_repo_file() {
     rm -f "$tmp_path"
 
     # Try primary repository URL first, then fallback
-    if (curl -fsSL "${REPO_RAW}/${file_name}" -o "$tmp_path" 2>/dev/null || curl -fsSL "${FALLBACK_REPO_RAW}/${file_name}" -o "$tmp_path" 2>/dev/null) && [ -s "$tmp_path" ]; then
+    if { curl -fsSL "${REPO_RAW}/${file_name}" -o "$tmp_path" 2>/dev/null || { [ "$REPO_BRANCH" != "main" ] && curl -fsSL "${FALLBACK_REPO_RAW}/${file_name}" -o "$tmp_path" 2>/dev/null; }; } && [ -s "$tmp_path" ]; then
         mkdir -p "$(dirname "$dest_path")"
         cp -f "$tmp_path" "$dest_path"
         rm -f "$tmp_path"
@@ -83,6 +85,15 @@ if { [ ! -s "/workspace/venv_bundle.tar.zst" ] && [ ! -s "/workspace/venv_bundle
     bash /workspace/setup_once.sh
 fi
 
+# Bundle Version Manifest Check: Verify venv matches expected BUNDLE_VERSION
+FOUND_BUNDLE_VER=$(cat /workspace/.bundle_version 2>/dev/null || echo "none")
+[ -z "$FOUND_BUNDLE_VER" ] && FOUND_BUNDLE_VER="none"
+if [ ! -f /workspace/.bundle_version ] || [ "$FOUND_BUNDLE_VER" != "$BUNDLE_VERSION" ]; then
+    echo "[Boot] Bundle version mismatch (found: '${FOUND_BUNDLE_VER}', expected: '${BUNDLE_VERSION}'). Triggering automated upgrade..."
+    rm -f /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar
+    bash /workspace/setup_once.sh
+fi
+
 echo "=== [3/8] Verifying Ollama Installation in Container OS ==="
 OLLAMA_EXTRACT_PID=""
 if ! command -v ollama >/dev/null 2>&1; then
@@ -122,6 +133,17 @@ fi
 if [ "$extract_failed" = true ] || [ ! -f "/root/venv/bin/python3" ]; then
     echo "[Boot] Warning: Corrupted or missing /workspace/venv_bundle.tar detected. Self-healing via setup_once.sh..."
     rm -f /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar
+    bash /workspace/setup_once.sh
+fi
+
+SYS_PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")
+VENV_PY_VER=""
+if [ -x /root/venv/bin/python3 ]; then
+    VENV_PY_VER=$(/root/venv/bin/python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")
+fi
+if [ -n "$SYS_PY_VER" ] && [ -n "$VENV_PY_VER" ] && [ "$SYS_PY_VER" != "$VENV_PY_VER" ]; then
+    echo "[Boot] Incompatible Python minor version detected: container=$SYS_PY_VER vs venv=$VENV_PY_VER. Rebuilding venv via setup_once.sh..."
+    rm -rf /root/venv /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar /workspace/.bundle_version
     bash /workspace/setup_once.sh
 fi
 

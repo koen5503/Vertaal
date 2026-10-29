@@ -361,7 +361,8 @@ class TestDeploymentContract(unittest.TestCase):
         3. Instant symlinks on /root for both Ollama and Faster-Whisper (ln -sfn directly to /workspace/models)
         """
         # Risk 1: GitHub Raw CDN Dependency & Staging via /tmp
-        self.assertIn('REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline}"', self.boot_src)
+        self.assertIn('REPO_BRANCH="${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}"', self.boot_src)
+        self.assertIn('REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/${REPO_BRANCH}}"', self.boot_src)
         self.assertIn('FALLBACK_REPO_RAW="https://raw.githubusercontent.com/koen5503/Vertaal/main"', self.boot_src)
         self.assertIn("sync_repo_file", self.boot_src)
         self.assertIn("/tmp/", self.boot_src)
@@ -409,8 +410,152 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("export OLLAMA_MODELS=/root/.ollama/models", self.boot_src)
         self.assertIn("export WHISPER_MODEL=/root/models/faster-whisper-large-v3", self.boot_src)
 
+    def test_bundle_version_manifest_and_python_coupling_guard(self):
+        """
+        Verify Bundle Version Manifest and Python Version Coupling Guard:
+        1. BUNDLE_VERSION='2026.10.1' defined in both boot.sh and setup_once.sh
+        2. setup_once.sh writes /workspace/.bundle_version upon successful archiving
+        3. boot.sh checks /workspace/.bundle_version and triggers upgrade on mismatch
+        4. boot.sh checks container OS vs venv python minor version and rebuilds venv if mismatched
+        """
+        # 1. BUNDLE_VERSION constant
+        self.assertIn('BUNDLE_VERSION="2026.10.1"', self.boot_src)
+        self.assertIn('BUNDLE_VERSION="2026.10.1"', self.setup_src)
+
+        # 2. setup_once.sh manifest write
+        self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', self.setup_src)
+
+        # 3. boot.sh bundle version check & upgrade trigger
+        self.assertIn("/workspace/.bundle_version", self.boot_src)
+        self.assertIn("Bundle version mismatch", self.boot_src)
+        self.assertIn("Triggering automated upgrade", self.boot_src)
+        self.assertIn("rm -f /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar", self.boot_src)
+
+        # 4. boot.sh python minor version guard
+        self.assertIn("SYS_PY_VER=$(python3 -c", self.boot_src)
+        self.assertIn("sys.version_info.major", self.boot_src)
+        self.assertIn("sys.version_info.minor", self.boot_src)
+        self.assertIn("VENV_PY_VER=", self.boot_src)
+        self.assertIn('if [ -n "$SYS_PY_VER" ] && [ -n "$VENV_PY_VER" ] && [ "$SYS_PY_VER" != "$VENV_PY_VER" ]; then', self.boot_src)
+        self.assertIn("Incompatible Python minor version detected", self.boot_src)
+        self.assertIn("rm -rf /root/venv /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar /workspace/.bundle_version", self.boot_src)
+
+    def test_dynamic_repository_branch_and_boot_cmd(self):
+        """
+        Verify dynamic branch configuration and RUNPOD_BOOT_CMD:
+        1. RUNPOD_REPO_BRANCH in boot.sh and setup_once.sh defaulting to feature branch
+        2. Fallback to main branch, skipping duplicate curl if REPO_BRANCH == 'main'
+        3. RUNPOD_BOOT_CMD in runpod_engine.py supports RUNPOD_REPO_BRANCH and main fallback
+        """
+        from core.stt.runpod_engine import RUNPOD_BOOT_CMD, RUNPOD_OVERRIDE_CMD
+
+        self.assertIn('REPO_BRANCH="${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}"', self.boot_src)
+        self.assertIn('REPO_BRANCH="${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}"', self.setup_src)
+        self.assertIn('[ "$REPO_BRANCH" != "main" ]', self.boot_src)
+        self.assertIn('[ "$REPO_BRANCH" != "main" ]', self.setup_src)
+
+        self.assertIn("bash -c", RUNPOD_BOOT_CMD)
+        self.assertIn("${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}", RUNPOD_BOOT_CMD)
+        self.assertIn("koen5503/Vertaal/main/boot.sh", RUNPOD_BOOT_CMD)
+        self.assertEqual(RUNPOD_OVERRIDE_CMD, RUNPOD_BOOT_CMD)
+
+    def test_ensure_template_http_ports_rest_v2_and_graphql_paths(self):
+        """
+        Verify ensure_template_http_ports handles REST API v2 primary and GraphQL fallback:
+        - REST API v2 primary success with 8000/http (no GraphQL calls)
+        - REST API v2 404 falling back gracefully to GraphQL query + mutation
+        - Exception safety: network/parsing failure never raises unhandled exception
+        """
+        import json
+        import urllib.error
+        from unittest.mock import MagicMock, patch
+        from core.stt.runpod_engine import RunPodSTTEngine
+
+        mock_engine = MagicMock()
+        stt = RunPodSTTEngine(engine=mock_engine)
+
+        # 1. REST API v2 primary success path (returns 8000/http directly)
+        mock_v2_resp = MagicMock()
+        mock_v2_resp.status = 200
+        mock_v2_resp.headers = {}
+        mock_v2_resp.read.return_value = json.dumps({
+            "template": {
+                "id": "tmpl-v2-ok",
+                "ports": "8000/http",
+                "name": "ondertitels-v2"
+            }
+        }).encode("utf-8")
+        mock_v2_resp.__enter__.return_value = mock_v2_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_v2_resp) as mock_urlopen:
+            success = stt.ensure_template_http_ports("test-key", "tmpl-v2-ok")
+            self.assertTrue(success)
+            self.assertEqual(mock_urlopen.call_count, 1)
+
+        # 2. REST API v2 404 fallback to GraphQL query + mutation
+        gql_query_resp = {
+            "data": {
+                "myself": {
+                    "podTemplates": [{
+                        "id": "tmpl-fallback-gql",
+                        "ports": "8000/tcp",
+                        "name": "ondertitels-gql",
+                        "imageName": "runpod/pytorch:2.1.0",
+                        "containerDiskInGb": 20,
+                        "volumeInGb": 20,
+                        "volumeMountPath": "/workspace",
+                        "dockerArgs": "",
+                        "env": []
+                    }]
+                }
+            }
+        }
+        gql_mut_resp = {
+            "data": {
+                "saveTemplate": {
+                    "id": "tmpl-fallback-gql",
+                    "ports": "8000/http"
+                }
+            }
+        }
+
+        routed_urls = []
+        def router(req, timeout=10.0):
+            routed_urls.append(req.full_url)
+            if "/v2/templates" in req.full_url:
+                raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+            if "graphql" in req.full_url:
+                body = json.loads(req.data.decode("utf-8"))
+                mock_r = MagicMock()
+                mock_r.status = 200
+                mock_r.headers = {}
+                if "podTemplates" in body["query"]:
+                    mock_r.read.return_value = json.dumps(gql_query_resp).encode("utf-8")
+                else:
+                    mock_r.read.return_value = json.dumps(gql_mut_resp).encode("utf-8")
+                mock_r.__enter__.return_value = mock_r
+                return mock_r
+            raise RuntimeError(f"Unexpected URL: {req.full_url}")
+
+        with patch("urllib.request.urlopen", side_effect=router):
+            success = stt.ensure_template_http_ports("test-key", "tmpl-fallback-gql")
+            self.assertTrue(success)
+            # Must have attempted REST v2 first, then GraphQL query and mutation
+            self.assertTrue(any("/v2/templates" in u for u in routed_urls))
+            self.assertTrue(any("graphql" in u for u in routed_urls))
+
+        # 3. Exception guard: unexpected error never throws
+        def crashing_urlopen(req, timeout=10.0):
+            raise OSError("Network connection lost")
+
+        with patch("urllib.request.urlopen", side_effect=crashing_urlopen):
+            # Must return False gracefully without raising
+            success = stt.ensure_template_http_ports("test-key", "tmpl-crash")
+            self.assertFalse(success)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

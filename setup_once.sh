@@ -13,7 +13,9 @@
 
 set -euo pipefail
 
-REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/feature/local-mac-ai-pipeline}"
+BUNDLE_VERSION="2026.10.1"
+REPO_BRANCH="${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}"
+REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/${REPO_BRANCH}}"
 FALLBACK_REPO_RAW="https://raw.githubusercontent.com/koen5503/Vertaal/main"
 
 echo "=== [1/8] Installing OS Packages ==="
@@ -94,6 +96,7 @@ tar -I "zstd -1 -T0" -cf /tmp/venv_bundle.tar.zst -C /root venv
 if [ -s "/tmp/venv_bundle.tar.zst" ]; then
     cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst
     rm -f /tmp/venv_bundle.tar.zst
+    echo "$BUNDLE_VERSION" > /workspace/.bundle_version
 else
     echo "ERROR: Failed to create non-empty /tmp/venv_bundle.tar.zst!" >&2
     exit 1
@@ -111,7 +114,7 @@ fi
 if [ ! -s "/workspace/app/runpod_server.py" ]; then
     echo "Downloading runpod_server.py from repository via /tmp..."
     rm -f /tmp/runpod_server_latest.py
-    if (curl -fsSL "${REPO_RAW}/runpod_server.py" -o /tmp/runpod_server_latest.py 2>/dev/null || curl -fsSL "${FALLBACK_REPO_RAW}/runpod_server.py" -o /tmp/runpod_server_latest.py 2>/dev/null) && [ -s "/tmp/runpod_server_latest.py" ]; then
+    if { curl -fsSL "${REPO_RAW}/runpod_server.py" -o /tmp/runpod_server_latest.py 2>/dev/null || { [ "$REPO_BRANCH" != "main" ] && curl -fsSL "${FALLBACK_REPO_RAW}/runpod_server.py" -o /tmp/runpod_server_latest.py 2>/dev/null; }; } && [ -s "/tmp/runpod_server_latest.py" ]; then
         cp -f /tmp/runpod_server_latest.py /workspace/app/runpod_server.py
         rm -f /tmp/runpod_server_latest.py
     else
@@ -130,7 +133,7 @@ fi
 if [ ! -s "/workspace/boot.sh" ]; then
     echo "Downloading boot.sh from repository via /tmp..."
     rm -f /tmp/boot_latest.sh
-    if (curl -fsSL "${REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null || curl -fsSL "${FALLBACK_REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null) && [ -s "/tmp/boot_latest.sh" ]; then
+    if { curl -fsSL "${REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null || { [ "$REPO_BRANCH" != "main" ] && curl -fsSL "${FALLBACK_REPO_RAW}/boot.sh" -o /tmp/boot_latest.sh 2>/dev/null; }; } && [ -s "/tmp/boot_latest.sh" ]; then
         cp -f /tmp/boot_latest.sh /workspace/boot.sh
         rm -f /tmp/boot_latest.sh
     else

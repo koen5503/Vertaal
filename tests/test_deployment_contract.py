@@ -152,6 +152,10 @@ class TestDeploymentContract(unittest.TestCase):
             "setup_once.sh must cache Ollama binaries to /workspace/ollama_bundle.tar.zst or .tar",
         )
         self.assertTrue(
+            "Restoring Ollama engine from cached /workspace/ollama_bundle" in self.setup_src,
+            "setup_once.sh must restore Ollama engine if bundle is cached on /workspace",
+        )
+        self.assertTrue(
             "/workspace/ollama_bundle.tar.zst" in self.boot_src or "/workspace/ollama_bundle.tar" in self.boot_src,
             "boot.sh must restore Ollama binaries from /workspace/ollama_bundle.tar.zst or .tar",
         )
@@ -425,7 +429,9 @@ class TestDeploymentContract(unittest.TestCase):
         # 2. setup_once.sh manifest write
         self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', self.setup_src)
 
-        # 3. boot.sh bundle version check & upgrade trigger
+        # 3. boot.sh bundle adoption & version check & upgrade trigger
+        self.assertIn("Existing venv_bundle found without manifest; adopting BUNDLE_VERSION", self.boot_src)
+        self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', self.boot_src)
         self.assertIn("/workspace/.bundle_version", self.boot_src)
         self.assertIn("Bundle version mismatch", self.boot_src)
         self.assertIn("Triggering automated upgrade", self.boot_src)

@@ -24,16 +24,17 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     zstd curl procps ffmpeg libsndfile1
 
 echo "=== [2/8] Installing Ollama ==="
-if ! command -v ollama >/dev/null 2>&1; then
+if [ -s "/workspace/ollama_bundle.tar.zst" ]; then
+    echo "Restoring Ollama engine from cached /workspace/ollama_bundle.tar.zst..."
+    tar -I zstd -xf /workspace/ollama_bundle.tar.zst -C /usr/local/
+elif [ -s "/workspace/ollama_bundle.tar" ]; then
+    echo "Restoring Ollama engine from cached /workspace/ollama_bundle.tar..."
+    tar -xf /workspace/ollama_bundle.tar -C /usr/local/
+else
+    echo "Installing Ollama engine into container (first-time install)..."
     curl -fsSL https://ollama.com/install.sh | sh
-fi
-if { [ ! -s "/workspace/ollama_bundle.tar.zst" ] && [ ! -s "/workspace/ollama_bundle.tar" ]; } && [ -f "/usr/local/bin/ollama" ]; then
-    echo "Caching Ollama binaries to /workspace/ollama_bundle.tar.zst via /tmp..."
     tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
-    if [ -s "/tmp/ollama_bundle.tar.zst" ]; then
-        cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst
-        rm -f /tmp/ollama_bundle.tar.zst
-    fi
+    [ -s /tmp/ollama_bundle.tar.zst ] && cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst && rm -f /tmp/ollama_bundle.tar.zst
 fi
 
 echo "=== [3/8] Creating Python Virtual Environment in /root/venv ==="

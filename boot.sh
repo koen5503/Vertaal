@@ -86,6 +86,12 @@ if { [ ! -s "/workspace/venv_bundle.tar.zst" ] && [ ! -s "/workspace/venv_bundle
 fi
 
 # Bundle Version Manifest Check: Verify venv matches expected BUNDLE_VERSION
+# If a healthy venv bundle already exists on volume but .bundle_version was never created, adopt current BUNDLE_VERSION
+if { [ -s "/workspace/venv_bundle.tar.zst" ] || [ -s "/workspace/venv_bundle.tar" ]; } && [ ! -f /workspace/.bundle_version ]; then
+    echo "[Boot] Existing venv_bundle found without manifest; adopting BUNDLE_VERSION=${BUNDLE_VERSION} on /workspace..."
+    echo "$BUNDLE_VERSION" > /workspace/.bundle_version
+fi
+
 FOUND_BUNDLE_VER=$(cat /workspace/.bundle_version 2>/dev/null || echo "none")
 [ -z "$FOUND_BUNDLE_VER" ] && FOUND_BUNDLE_VER="none"
 if [ ! -f /workspace/.bundle_version ] || [ "$FOUND_BUNDLE_VER" != "$BUNDLE_VERSION" ]; then

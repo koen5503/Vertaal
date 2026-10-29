@@ -92,12 +92,18 @@ if { [ ! -s "/workspace/venv_bundle.tar.zst" ] && [ ! -s "/workspace/venv_bundle
     bash /workspace/setup_once.sh
 fi
 
-# Bundle Version Manifest Check: Non-destructively adopt BUNDLE_VERSION for existing bundles
-if [ -s "/workspace/venv_bundle.tar.zst" ] || [ -s "/workspace/venv_bundle.tar" ]; then
-    if [ ! -f /workspace/.bundle_version ] || [ "$(cat /workspace/.bundle_version 2>/dev/null)" != "$BUNDLE_VERSION" ]; then
-        echo "[Boot] Adopting BUNDLE_VERSION=${BUNDLE_VERSION} for existing venv_bundle on /workspace..."
-        echo "$BUNDLE_VERSION" > /workspace/.bundle_version
-    fi
+# Bundle Version Manifest Check:
+# Case A: Legacy volume adoption - bundle exists but .bundle_version is missing
+if [ ! -f /workspace/.bundle_version ] && { [ -s "/workspace/venv_bundle.tar.zst" ] || [ -s "/workspace/venv_bundle.tar" ]; }; then
+    echo "[Boot] Adopting BUNDLE_VERSION=${BUNDLE_VERSION} for legacy venv_bundle on /workspace..."
+    echo "$BUNDLE_VERSION" > /workspace/.bundle_version
+fi
+
+# Case B: Intentional version upgrade - manifest exists and differs from BUNDLE_VERSION
+FOUND_BUNDLE_VER=$(cat /workspace/.bundle_version 2>/dev/null || echo "")
+if [ -n "$FOUND_BUNDLE_VER" ] && [ "$FOUND_BUNDLE_VER" != "$BUNDLE_VERSION" ]; then
+    echo "[Boot] Intentional bundle upgrade detected (volume version '${FOUND_BUNDLE_VER}' vs required version '${BUNDLE_VERSION}'). Running setup_once.sh..."
+    bash /workspace/setup_once.sh
 fi
 
 echo "=== [3/8] Verifying Ollama Installation in Container OS ==="

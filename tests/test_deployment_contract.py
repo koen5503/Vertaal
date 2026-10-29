@@ -411,11 +411,14 @@ class TestDeploymentContract(unittest.TestCase):
 
     def test_bundle_version_manifest_and_python_coupling_guard(self):
         """
-        Verify Bundle Version Manifest and Non-Destructive Adoption Guard:
+        Verify Bundle Version Manifest, Legacy Adoption, and Intentional Upgrade Guard:
         1. BUNDLE_VERSION='2026.10.1' defined in both boot.sh and setup_once.sh
         2. setup_once.sh writes /workspace/.bundle_version upon successful archiving
-        3. boot.sh non-destructively adopts BUNDLE_VERSION for existing bundles without wiping
-        4. boot.sh checks container OS vs venv python minor version and warns instead of destructive wipe
+        3. Case A: boot.sh adopts BUNDLE_VERSION for legacy bundles when .bundle_version is missing
+        4. Case B: boot.sh detects intentional upgrade and runs setup_once.sh when FOUND_BUNDLE_VER != BUNDLE_VERSION
+        5. boot.sh does NOT wipe existing venv_bundle with rm -f before setup_once.sh
+        6. boot.sh checks container OS vs venv python minor version and warns instead of destructive wipe
+        7. bash -n boot.sh syntax validity
         """
         # 1. BUNDLE_VERSION constant
         self.assertIn('BUNDLE_VERSION="2026.10.1"', self.boot_src)
@@ -424,31 +427,30 @@ class TestDeploymentContract(unittest.TestCase):
         # 2. setup_once.sh manifest write
         self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', self.setup_src)
 
-        # 3. boot.sh non-destructive bundle adoption
-        self.assertIn("Adopting BUNDLE_VERSION", self.boot_src)
-        self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', self.boot_src)
-        self.assertIn("/workspace/.bundle_version", self.boot_src)
-
-        # Verify bundle version check block does NOT destructively wipe bundles or run setup_once
+        # 3. Case A: Legacy volume adoption
         version_check_match = re.search(
-            r"# Bundle Version Manifest Check.*?(?=\necho \"=== \[3/8\])",
+            r"# Bundle Version Manifest Check:.*?(?=\necho \"=== \[3/8\])",
             self.boot_src,
             re.DOTALL,
         )
         self.assertIsNotNone(version_check_match, "Bundle version manifest check block must exist")
         version_check_block = version_check_match.group(0)
+
+        self.assertIn("[ ! -f /workspace/.bundle_version ]", version_check_block)
+        self.assertIn("Adopting BUNDLE_VERSION", version_check_block)
+        self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', version_check_block)
+
+        # 4. Case B: Intentional version upgrade runs setup_once.sh without pre-emptive rm
+        self.assertIn('[ -n "$FOUND_BUNDLE_VER" ] && [ "$FOUND_BUNDLE_VER" != "$BUNDLE_VERSION" ]', version_check_block)
+        self.assertIn("Intentional bundle upgrade detected", version_check_block)
+        self.assertIn("bash /workspace/setup_once.sh", version_check_block)
         self.assertNotIn(
             "rm -f /workspace/venv_bundle",
             version_check_block,
-            "boot.sh must never wipe existing venv_bundle on version mismatch",
-        )
-        self.assertNotIn(
-            "setup_once.sh",
-            version_check_block,
-            "boot.sh must not trigger setup_once.sh in bundle version check block",
+            "boot.sh must never wipe existing venv_bundle on version mismatch before setup_once.sh",
         )
 
-        # 4. boot.sh python minor version guard
+        # 5. boot.sh python minor version guard
         self.assertIn("SYS_PY_VER=$(python3 -c", self.boot_src)
         self.assertIn("sys.version_info.major", self.boot_src)
         self.assertIn("sys.version_info.minor", self.boot_src)
@@ -459,6 +461,11 @@ class TestDeploymentContract(unittest.TestCase):
             "rm -rf /root/venv /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar /workspace/.bundle_version",
             self.boot_src,
         )
+
+        # 6. Syntax check boot.sh
+        boot_path = os.path.join(self.project_root, "boot.sh")
+        res = subprocess.run(["bash", "-n", boot_path], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"bash -n boot.sh failed: {res.stderr}")
 
     def test_dynamic_repository_branch_and_boot_cmd(self):
         """

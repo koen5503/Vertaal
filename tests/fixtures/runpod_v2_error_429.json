@@ -1,0 +1,12 @@
+{
+  "status": 429,
+  "headers": {
+    "Retry-After": "0.01",
+    "Content-Type": "application/json; charset=utf-8",
+    "X-RateLimit-Limit": "100",
+    "X-RateLimit-Remaining": "0",
+    "X-RateLimit-Reset": "1"
+  },
+  "error": "Too Many Requests",
+  "message": "Rate limit exceeded for endpoint /v2/pods. Please retry after backoff."
+}

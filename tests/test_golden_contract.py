@@ -263,6 +263,112 @@ class TestGoldenContract(unittest.TestCase):
             self.assertEqual(resp.json(), {"success": True})
             self.assertEqual(attempts, 2)
 
+    def test_golden_contract_runpod_request_backoff_on_429_fixture(self):
+        """Ingest authentic runpod_v2_error_429.json fixture and verify _runpod_request backoff and retry."""
+        import io
+        import urllib.error
+        from core.stt.runpod_engine import _runpod_request
+
+        fixture = _load_fixture("runpod_v2_error_429.json")
+        attempts = 0
+
+        def urlopen_with_429_fixture(req, timeout=15.0):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                fp = io.BytesIO(json.dumps(fixture).encode("utf-8"))
+                raise urllib.error.HTTPError(
+                    req.full_url,
+                    fixture.get("status", 429),
+                    fixture.get("error", "Too Many Requests"),
+                    fixture.get("headers", {}),
+                    fp,
+                )
+            mock_ok = MagicMock()
+            mock_ok.status = 200
+            mock_ok.headers = {}
+            mock_ok.read.return_value = b'{"status": "recovered"}'
+            return mock_ok
+
+        with patch("urllib.request.urlopen", side_effect=urlopen_with_429_fixture):
+            resp = _runpod_request("GET", "https://api.runpod.io/v2/pods", timeout=5.0, base_delay=0.01)
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.json(), {"status": "recovered"})
+            self.assertEqual(attempts, 2)
+
+    def test_golden_contract_runpod_request_backoff_on_503_fixture(self):
+        """Ingest authentic runpod_v2_error_503.json fixture and verify _runpod_request exponential backoff with jitter."""
+        import io
+        import urllib.error
+        from core.stt.runpod_engine import _runpod_request
+
+        fixture = _load_fixture("runpod_v2_error_503.json")
+        attempts = 0
+
+        def urlopen_with_503_fixture(req, timeout=15.0):
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 2:
+                fp = io.BytesIO(json.dumps(fixture).encode("utf-8"))
+                raise urllib.error.HTTPError(
+                    req.full_url,
+                    fixture.get("status", 503),
+                    fixture.get("error", "Service Unavailable"),
+                    fixture.get("headers", {}),
+                    fp,
+                )
+            mock_ok = MagicMock()
+            mock_ok.status = 200
+            mock_ok.headers = {}
+            mock_ok.read.return_value = b'{"status": "ok", "retry_count": 2}'
+            return mock_ok
+
+        with patch("urllib.request.urlopen", side_effect=urlopen_with_503_fixture):
+            resp = _runpod_request("GET", "https://api.runpod.io/v2/pods", timeout=5.0, base_delay=0.01)
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.json()["status"], "ok")
+            self.assertEqual(attempts, 3)
+
+    def test_golden_contract_condense_runpod_dirty_logs_and_step_phases(self):
+        """Ingest 500+ line authentic runpod_sse_dirty_logs.txt fixture, verify ANSI filter and step phase tracking."""
+        from core.stt.runpod_engine import condense_runpod_logs
+
+        fixture_path = FIXTURES_DIR / "runpod_sse_dirty_logs.txt"
+        with open(fixture_path, "r", encoding="utf-8") as f:
+            log_lines = f.readlines()
+
+        # 1. Assert fixture scale (500+ lines of authentic container output)
+        self.assertGreaterEqual(len(log_lines), 500)
+
+        # 2. Verify tracking across each boot step phase [1/8] through [8/8]
+        for step in range(1, 9):
+            target_idx = None
+            for idx, line in enumerate(log_lines):
+                if f"[{step}/8]" in line:
+                    target_idx = idx + 2
+                    break
+            self.assertIsNotNone(target_idx, f"Step header [{step}/8] missing from fixture")
+            sliced_text = "".join(log_lines[:target_idx])
+            stage, recent = condense_runpod_logs(sliced_text)
+            self.assertIn(f"[{step}/8]", stage, f"Expected step [{step}/8] in stage, got: {stage}")
+            # Ensure no raw ANSI escape sequences leak into derived stage
+            self.assertNotIn("\x1b[", stage)
+            self.assertNotIn("\u001b[", stage)
+
+        # 3. Test complete log condensation to final operational readiness
+        full_logs = "".join(log_lines)
+        final_stage, recent_lines = condense_runpod_logs(full_logs)
+        self.assertEqual(final_stage, "Server operationeel op poort 8000")
+        self.assertGreater(len(recent_lines), 0)
+        self.assertLessEqual(len(recent_lines), 6)
+
+        # 4. Verify ANSI noise and progress bar lines are stripped
+        for line in recent_lines:
+            self.assertNotIn("\x1b[", line)
+            self.assertNotIn("\u001b[", line)
+            self.assertNotIn("\r", line)
+            self.assertFalse(line.startswith("###"))
+
     def test_ensure_template_http_ports(self):
         """ensure_template_http_ports verifies template exposure and mutates template if needed."""
         stt = RunPodSTTEngine(engine=self.mock_engine)

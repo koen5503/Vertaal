@@ -532,6 +532,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                             r_dict = {"ports": normalized_ports}
                         norm["runtime"] = r_dict
                         norm["ports"] = normalized_ports
+                        norm["proxy_url"] = f"wss://{norm['id']}-8000.proxy.runpod.net/stream" if norm["id"] else ""
 
                         normalized.append(norm)
                     return normalized
@@ -596,6 +597,7 @@ class RunPodSTTEngine(BaseSTTEngine):
                     r_dict = {"ports": normalized_ports}
                 norm["runtime"] = r_dict
                 norm["ports"] = normalized_ports
+                norm["proxy_url"] = f"wss://{norm['id']}-8000.proxy.runpod.net/stream" if norm["id"] else ""
                 normalized.append(norm)
             return normalized
         except Exception as gql_err:

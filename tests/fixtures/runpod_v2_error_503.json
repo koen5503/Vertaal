@@ -1,0 +1,9 @@
+{
+  "status": 503,
+  "headers": {
+    "Retry-After": "0.01",
+    "Content-Type": "application/json; charset=utf-8"
+  },
+  "error": "Service Unavailable",
+  "message": "RunPod API Gateway is temporarily overloaded or undergoing maintenance. Please retry."
+}

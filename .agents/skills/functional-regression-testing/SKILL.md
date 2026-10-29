@@ -10,7 +10,15 @@ description: >-
 
 # Multi-Tiered Functional Regression Testing & Coverage Skill
 
-This skill guides the design, implementation, and maintenance of **comprehensive, production-grade functional regression test suites**. It addresses the common failure modes of software testing—especially **Mock Drift**, **Silent Upstream API Breaks**, and **Untested Asynchronous Pipelines**—by establishing four complementary testing tiers and enforcing measurable branch coverage.
+> [!IMPORTANT]
+> **DEFINITION: A FUNCTIONAL TEST IS A REAL FUNCTIONAL END-TO-END TEST**  
+> In all current and future projects, a "functional test" is **strictly defined as a genuine, real-world end-to-end pipeline test**. It must never be reduced to local loopback dummies or synthetic stubs when real compute, cloud infrastructure, or external APIs are involved.  
+> 
+> A True Functional End-to-End Test MUST:
+> 1. **Engage Real Target Infrastructure**: Connect to or provision the authentic production/staging backend (e.g., actual cloud GPU pod, live database, real server).
+> 2. **Ingest Real Domain Media / Payloads**: Use genuine input files (e.g., an authentic `.wav` speech recording specified in `.env`, validating its existence and format first), never empty dummy bytes or pure zero-streams.
+> 3. **Verify Actual End-to-End Computation**: Assert observable business outcomes (e.g., actual words transcribed by the speech model, actual translations produced by the language model).
+> 4. **Guarantee Autonomous Teardown**: Automatically terminate or stop any provisioned cloud resources upon completion to leave zero orphaned costs.
 
 ---
 
@@ -93,38 +101,28 @@ class TestLiveAPIContract(unittest.TestCase):
 
 ---
 
-## Pillar 3: Ephemeral End-to-End Pipeline Smoke Tests (Real Loopback Sockets)
+## Pillar 3: Real Functional End-to-End Pipeline Testing (Genuine Cloud & Domain Media)
 
 ### Purpose
-Verifies full client-server workflows without synthetic function stubs by executing actual network I/O over the local OS loopback interface (`127.0.0.1`).
+Executes the **complete, live end-to-end pipeline** against actual target infrastructure (e.g., real cloud GPU instance) using authentic domain media (e.g., a real `.wav` speech recording specified in `.env`), verifying that actual business computation (STT transcription and LLM translation) occurs and that cloud resources are autonomously cleaned up.
 
-### General Implementation Pattern
-1. **Dynamic Ephemeral Port**: Bind the server to port `0` or an ephemeral OS port (e.g. `8800-8999`) to prevent port collisions in concurrent test runners.
-2. **Real Protocol Communication**: Connect the real client using real HTTP, WebSocket, gRPC, or TCP sockets.
-3. **Realistic Ingestion Stream**: Stream authentic domain chunks (e.g., PCM audio, binary event packets, streaming NDJSON) through the pipeline.
-4. **Observable State Verification**: Assert:
-   - Chunk reception and downstream event emissions.
-   - Incremental state transitions (e.g., `in_progress` -> `finalized`).
-   - Clean shutdown without unclosed resource warnings, socket leaks, or hanging event loops.
+### Requirements for a Real Functional Pipeline Test:
+1. **Target Infrastructure Engagement**:
+   - Resolve or rent an authentic cloud instance (e.g. via RunPod REST API v2).
+   - Follow boot logs until the server is confirmed listening and models are loaded (`/health` returns HTTP 200).
+2. **Authentic Domain Media Verification**:
+   - Inspect `.env` for the configured audio/input file (e.g., `DEMO_FILE_PATH=Preek260412.wav`).
+   - Verify file existence, non-zero file size, and correct format (`.wav`, 16kHz PCM audio) before starting the stream.
+3. **Live Streaming over Authentic Network Route**:
+   - Connect the real client over the real public endpoint (e.g., `wss://<pod_id>-8000.proxy.runpod.net/stream`).
+   - Stream actual PCM audio chunks sliced from the `.wav` file into the WebSocket.
+4. **Observable Business Output Verification**:
+   - Assert that **real Speech-to-Text (STT)** transcription events (`col1_text`) are returned with recognized words matching the spoken audio.
+   - Assert that **real downstream translation** events (`col2_text` / `trans1`) are produced by the translation engine.
+5. **Guaranteed Autonomous Teardown**:
+   - The test must automatically terminate or stop the provisioned cloud pod in `tearDown` / `finally` blocks to guarantee zero lingering cloud costs.
 
-```python
-class TestPipelineIntegration(unittest.TestCase):
-    def setUp(self):
-        # Start in-process or daemon server on ephemeral loopback port
-        self.server_port = 8899
-        self.server = start_local_server(port=self.server_port)
-
-    def tearDown(self):
-        self.server.stop()
-
-    def test_end_to_end_stream_processing(self):
-        client = PipelineClient(url=f"ws://127.0.0.1:{self.server_port}/stream")
-        client.connect()
-        client.stream_chunk(b"sample_data")
-        response = client.receive_event(timeout=5.0)
-        self.assertEqual(response.status, "processed")
-        client.close()
-```
+*(Note: When live cloud credentials are absent, an in-process loopback daemon on `127.0.0.1:<port>` is used solely as an offline fallback tier, but does NOT substitute for the genuine functional test).*
 
 ---
 

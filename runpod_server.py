@@ -411,6 +411,7 @@ async def websocket_endpoint(websocket: WebSocket):
     last_transcript = ""
     current_seg_id = None
     current_status = "final"
+    current_sample_width = 4
     last_processed_seg_id = None
     active_chain_tasks: Dict[str, asyncio.Task] = {}
     chain_busy: Dict[str, bool] = {"trans1": False, "trans2": False}
@@ -440,6 +441,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     elif data.get("action") == "audio_meta":
                         current_seg_id = data.get("seg_id")
                         current_status = data.get("status", "final")
+                    elif data.get("action") == "audio":
+                        current_seg_id = data.get("id") or data.get("seg_id")
+                        current_status = data.get("status", "final")
+                        if "sample_width" in data:
+                            current_sample_width = int(data["sample_width"])
                     elif data.get("action") == "reset_timer":
                         reset_session_timer("Client heartbeat/timer reset")
                     elif data.get("action") == "probe":
@@ -463,7 +469,17 @@ async def websocket_endpoint(websocket: WebSocket):
                             last_logged_activity = time.time()
                             logging.info(f"SHUTDOWN TIMER: Active audio streaming. Auto-shutdown postponed by {MAX_RUN_TIME/60:.1f} minutes.")
                             
-                        audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
+                        if current_sample_width == 2:
+                            audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                        else:
+                            try:
+                                parsed = np.frombuffer(audio_bytes, dtype=np.float32)
+                                if np.all(np.isfinite(parsed)) and np.max(np.abs(parsed)) <= 5.0:
+                                    audio_np = parsed
+                                else:
+                                    audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                            except Exception:
+                                audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
                     
                     seg_id = current_seg_id or f"seg_{int(time.time()*1000)}"
                     status = current_status or "final"

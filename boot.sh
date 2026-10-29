@@ -160,8 +160,8 @@ if [ -x /root/venv/bin/python3 ]; then
 fi
 if [ -n "$SYS_PY_VER" ] && [ -n "$VENV_PY_VER" ] && [ "$SYS_PY_VER" != "$VENV_PY_VER" ]; then
     echo "[Boot] Warning: Python minor version difference detected: container=$SYS_PY_VER vs venv=$VENV_PY_VER."
-    if ! /root/venv/bin/python3 -c 'import sys' >/dev/null 2>&1; then
-        echo "[Boot] Virtual environment Python binary is not functional. Rebuilding venv via setup_once.sh..."
+    if ! /root/venv/bin/python3 -c 'import fastapi, uvicorn, faster_whisper, ollama' >/dev/null 2>&1; then
+        echo "[Boot] Required packages not importable in venv (minor version mismatch). Rebuilding venv via setup_once.sh..."
         rm -rf /root/venv
         bash /workspace/setup_once.sh
     fi

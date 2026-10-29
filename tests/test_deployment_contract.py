@@ -457,6 +457,7 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("VENV_PY_VER=", self.boot_src)
         self.assertIn('if [ -n "$SYS_PY_VER" ] && [ -n "$VENV_PY_VER" ] && [ "$SYS_PY_VER" != "$VENV_PY_VER" ]; then', self.boot_src)
         self.assertIn("Python minor version difference detected", self.boot_src)
+        self.assertIn("import fastapi, uvicorn, faster_whisper, ollama", self.boot_src)
         self.assertNotIn(
             "rm -rf /root/venv /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar /workspace/.bundle_version",
             self.boot_src,

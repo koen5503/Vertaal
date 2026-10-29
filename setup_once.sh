@@ -68,7 +68,14 @@ else
     echo "Installing Ollama engine into container (first-time install)..."
     curl -fsSL https://ollama.com/install.sh | sh
     tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
-    [ -s /tmp/ollama_bundle.tar.zst ] && cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst && rm -f /tmp/ollama_bundle.tar.zst
+    if [ -s "/tmp/ollama_bundle.tar.zst" ]; then
+        cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst.tmp
+        if zstd -t /workspace/ollama_bundle.tar.zst.tmp >/dev/null 2>&1; then
+            mv -f /workspace/ollama_bundle.tar.zst.tmp /workspace/ollama_bundle.tar.zst
+            rm -f /workspace/ollama_bundle.tar
+        fi
+        rm -f /workspace/ollama_bundle.tar.zst.tmp /tmp/ollama_bundle.tar.zst
+    fi
 fi
 
 echo "=== [3/8] Creating Python Virtual Environment in /root/venv ==="
@@ -129,9 +136,17 @@ echo "=== [7/8] Archiving /root/venv into /workspace/venv_bundle.tar.zst (via /t
 # Creates /workspace/venv_bundle.tar.zst (compatible with /workspace/venv_bundle.tar)
 tar -I "zstd -1 -T0" -cf /tmp/venv_bundle.tar.zst -C /root venv
 if [ -s "/tmp/venv_bundle.tar.zst" ]; then
-    cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst
-    rm -f /tmp/venv_bundle.tar.zst
-    echo "$BUNDLE_VERSION" > /workspace/.bundle_version
+    cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst.tmp
+    if zstd -t /workspace/venv_bundle.tar.zst.tmp >/dev/null 2>&1; then
+        mv -f /workspace/venv_bundle.tar.zst.tmp /workspace/venv_bundle.tar.zst
+        rm -f /workspace/venv_bundle.tar
+        echo "$BUNDLE_VERSION" > /workspace/.bundle_version
+    else
+        echo "ERROR: Corrupted archive detected during zstd integrity verification!" >&2
+        rm -f /workspace/venv_bundle.tar.zst.tmp
+        exit 1
+    fi
+    rm -f /workspace/venv_bundle.tar.zst.tmp /tmp/venv_bundle.tar.zst
 else
     echo "ERROR: Failed to create non-empty /tmp/venv_bundle.tar.zst!" >&2
     exit 1

@@ -117,8 +117,12 @@ if ! command -v ollama >/dev/null 2>&1; then
         echo "Caching Ollama engine to /workspace/ollama_bundle.tar.zst via /tmp..."
         tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
         if [ -s "/tmp/ollama_bundle.tar.zst" ]; then
-            cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst
-            rm -f /tmp/ollama_bundle.tar.zst
+            cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst.tmp
+            if zstd -t /workspace/ollama_bundle.tar.zst.tmp >/dev/null 2>&1; then
+                mv -f /workspace/ollama_bundle.tar.zst.tmp /workspace/ollama_bundle.tar.zst
+                rm -f /workspace/ollama_bundle.tar
+            fi
+            rm -f /workspace/ollama_bundle.tar.zst.tmp /tmp/ollama_bundle.tar.zst
         fi
     fi
 fi

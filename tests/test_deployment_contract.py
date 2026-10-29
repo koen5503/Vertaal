@@ -586,7 +586,7 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn('sync_repo_file "$core_file" "/workspace/app/$core_file"', self.setup_src)
 
     def test_atomic_bundle_migration_pattern(self):
-        """Verify atomic preemption-safe migration pattern in boot.sh using .tar.zst.tmp, zstd -t, and mv -f."""
+        """Verify atomic preemption-safe migration and staging patterns in boot.sh and setup_once.sh using .tar.zst.tmp, zstd -t, and mv -f."""
         # 1. Orphaned tmp cleanup in step [4/8]
         step4_boot = re.search(r"=== \[4/8\].*?(?==== \[5/8\])", self.boot_src, re.DOTALL)
         self.assertIsNotNone(step4_boot)
@@ -610,6 +610,31 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("if zstd -t /workspace/ollama_bundle.tar.zst.tmp >/dev/null 2>&1; then", mig_code)
         self.assertIn("mv -f /workspace/ollama_bundle.tar.zst.tmp /workspace/ollama_bundle.tar.zst", mig_code)
         self.assertIn("rm -f /workspace/ollama_bundle.tar", mig_code)
+
+        # 3. boot.sh Step [3/8] Ollama caching fallback atomic staging
+        step3_boot = re.search(r"=== \[3/8\].*?(?==== \[4/8\])", self.boot_src, re.DOTALL)
+        self.assertIsNotNone(step3_boot)
+        step3_boot_code = step3_boot.group(0)
+        self.assertIn("cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst.tmp", step3_boot_code)
+        self.assertIn("if zstd -t /workspace/ollama_bundle.tar.zst.tmp >/dev/null 2>&1; then", step3_boot_code)
+        self.assertIn("mv -f /workspace/ollama_bundle.tar.zst.tmp /workspace/ollama_bundle.tar.zst", step3_boot_code)
+
+        # 4. setup_once.sh Step [2/8] Ollama bundle atomic staging
+        step2_setup = re.search(r"=== \[2/8\].*?(?==== \[3/8\])", self.setup_src, re.DOTALL)
+        self.assertIsNotNone(step2_setup)
+        step2_setup_code = step2_setup.group(0)
+        self.assertIn("cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst.tmp", step2_setup_code)
+        self.assertIn("if zstd -t /workspace/ollama_bundle.tar.zst.tmp >/dev/null 2>&1; then", step2_setup_code)
+        self.assertIn("mv -f /workspace/ollama_bundle.tar.zst.tmp /workspace/ollama_bundle.tar.zst", step2_setup_code)
+
+        # 5. setup_once.sh Step [7/8] venv bundle atomic staging with integrity check
+        step7_setup = re.search(r"=== \[7/8\].*?(?==== \[8/8\])", self.setup_src, re.DOTALL)
+        self.assertIsNotNone(step7_setup)
+        step7_setup_code = step7_setup.group(0)
+        self.assertIn("cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst.tmp", step7_setup_code)
+        self.assertIn("if zstd -t /workspace/venv_bundle.tar.zst.tmp >/dev/null 2>&1; then", step7_setup_code)
+        self.assertIn("mv -f /workspace/venv_bundle.tar.zst.tmp /workspace/venv_bundle.tar.zst", step7_setup_code)
+        self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', step7_setup_code)
 
     def test_runpod_server_logic_deduplication_imports_core(self):
         """Verify runpod_server.py imports filtering and translation logic from core package."""

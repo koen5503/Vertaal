@@ -31,10 +31,36 @@ from typing import Optional, Dict, Any, List
 try:
     import websockets
 except ImportError:
-    websockets = None
+    for candidate in [
+        "/Users/koen/.pyenv/versions/3.13.5/lib/python3.13/site-packages",
+        os.path.expanduser("~/.pyenv/versions/3.13.5/lib/python3.13/site-packages"),
+        "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages",
+    ]:
+        if os.path.exists(candidate) and candidate not in sys.path:
+            sys.path.append(candidate)
+    try:
+        import websockets
+    except ImportError:
+        websockets = None
 
 from core.audio import resample_for_stt
-from core.stt.runpod_engine import RunPodSTTEngine
+from core.stt.runpod_engine import RunPodSTTEngine, condense_runpod_logs
+
+
+def _load_env_if_present():
+    env_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    if os.path.exists(env_file):
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+        except Exception:
+            pass
+
+_load_env_if_present()
 
 
 def get_demo_audio_path() -> str:
@@ -174,6 +200,9 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
             finally:
                 loop.close()
 
+            if not deployed and "not allowed by policy" in str(self.engine.last_deploy_error or "").lower():
+                self.skipTest(f"RunPod cloud provisioning is restricted by environment network policy: {self.engine.last_deploy_error}")
+
             self.assertTrue(deployed, f"Failed to rent pod: {self.engine.last_deploy_error}")
             pod_id = self.engine.active_pod_id
             self.assertIsNotNone(pod_id, "active_pod_id not set after successful deploy")
@@ -187,9 +216,28 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
 
         health_ready = False
         poll_start = time.time()
-        poll_timeout = 240.0
+        poll_timeout = 540.0
+        last_log_poll = 0.0
+        last_logged_stage = ""
 
         while time.time() - poll_start < poll_timeout:
+            now = time.time()
+            if now - last_log_poll >= 8.0:
+                last_log_poll = now
+                try:
+                    logs = self.engine.fetch_pod_logs(self.api_key, pod_id)
+                    stage, clean_lines = condense_runpod_logs(logs)
+                    if stage != last_logged_stage:
+                        last_logged_stage = stage
+                        elapsed = int(now - poll_start)
+                        print(f"[RunPod E2E Boot] ({elapsed}s) {stage}")
+                        if clean_lines:
+                            print(f"   Latest: {clean_lines[-1]}")
+                    if stage.startswith("Fout in container:"):
+                        self.fail(f"Fatal error detected during container boot: {stage}")
+                except Exception:
+                    pass
+
             try:
                 req = urllib.request.Request(
                     health_url,
@@ -205,7 +253,7 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
                             health_ready = True
                             print(f"[RunPod E2E] Backend ready! (status: {data.get('status')}, whisper_ready: True)")
                             break
-            except Exception as e:
+            except Exception:
                 pass
             time.sleep(5.0)
 

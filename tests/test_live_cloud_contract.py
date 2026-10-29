@@ -14,6 +14,22 @@ from typing import List, Dict, Any
 from core.stt.runpod_engine import RunPodSTTEngine
 
 
+def _load_env_if_present():
+    env_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    if os.path.exists(env_file):
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+        except Exception:
+            pass
+
+_load_env_if_present()
+
+
 @unittest.skipUnless(os.getenv("RUNPOD_API_KEY"), "Skipping live cloud contract: RUNPOD_API_KEY not set")
 class TestLiveCloudContract(unittest.TestCase):
     """Verifies live external cloud contract conformance and network routability against RunPod API v2."""

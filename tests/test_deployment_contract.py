@@ -416,11 +416,11 @@ class TestDeploymentContract(unittest.TestCase):
 
     def test_bundle_version_manifest_and_python_coupling_guard(self):
         """
-        Verify Bundle Version Manifest and Python Version Coupling Guard:
+        Verify Bundle Version Manifest and Non-Destructive Adoption Guard:
         1. BUNDLE_VERSION='2026.10.1' defined in both boot.sh and setup_once.sh
         2. setup_once.sh writes /workspace/.bundle_version upon successful archiving
-        3. boot.sh checks /workspace/.bundle_version and triggers upgrade on mismatch
-        4. boot.sh checks container OS vs venv python minor version and rebuilds venv if mismatched
+        3. boot.sh non-destructively adopts BUNDLE_VERSION for existing bundles without wiping
+        4. boot.sh checks container OS vs venv python minor version and warns instead of destructive wipe
         """
         # 1. BUNDLE_VERSION constant
         self.assertIn('BUNDLE_VERSION="2026.10.1"', self.boot_src)
@@ -429,13 +429,29 @@ class TestDeploymentContract(unittest.TestCase):
         # 2. setup_once.sh manifest write
         self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', self.setup_src)
 
-        # 3. boot.sh bundle adoption & version check & upgrade trigger
-        self.assertIn("Existing venv_bundle found without manifest; adopting BUNDLE_VERSION", self.boot_src)
+        # 3. boot.sh non-destructive bundle adoption
+        self.assertIn("Adopting BUNDLE_VERSION", self.boot_src)
         self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', self.boot_src)
         self.assertIn("/workspace/.bundle_version", self.boot_src)
-        self.assertIn("Bundle version mismatch", self.boot_src)
-        self.assertIn("Triggering automated upgrade", self.boot_src)
-        self.assertIn("rm -f /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar", self.boot_src)
+
+        # Verify bundle version check block does NOT destructively wipe bundles or run setup_once
+        version_check_match = re.search(
+            r"# Bundle Version Manifest Check.*?(?=\necho \"=== \[3/8\])",
+            self.boot_src,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(version_check_match, "Bundle version manifest check block must exist")
+        version_check_block = version_check_match.group(0)
+        self.assertNotIn(
+            "rm -f /workspace/venv_bundle",
+            version_check_block,
+            "boot.sh must never wipe existing venv_bundle on version mismatch",
+        )
+        self.assertNotIn(
+            "setup_once.sh",
+            version_check_block,
+            "boot.sh must not trigger setup_once.sh in bundle version check block",
+        )
 
         # 4. boot.sh python minor version guard
         self.assertIn("SYS_PY_VER=$(python3 -c", self.boot_src)
@@ -443,8 +459,11 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("sys.version_info.minor", self.boot_src)
         self.assertIn("VENV_PY_VER=", self.boot_src)
         self.assertIn('if [ -n "$SYS_PY_VER" ] && [ -n "$VENV_PY_VER" ] && [ "$SYS_PY_VER" != "$VENV_PY_VER" ]; then', self.boot_src)
-        self.assertIn("Incompatible Python minor version detected", self.boot_src)
-        self.assertIn("rm -rf /root/venv /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar /workspace/.bundle_version", self.boot_src)
+        self.assertIn("Python minor version difference detected", self.boot_src)
+        self.assertNotIn(
+            "rm -rf /root/venv /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar /workspace/.bundle_version",
+            self.boot_src,
+        )
 
     def test_dynamic_repository_branch_and_boot_cmd(self):
         """

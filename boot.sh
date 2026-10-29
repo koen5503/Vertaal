@@ -92,19 +92,12 @@ if { [ ! -s "/workspace/venv_bundle.tar.zst" ] && [ ! -s "/workspace/venv_bundle
     bash /workspace/setup_once.sh
 fi
 
-# Bundle Version Manifest Check: Verify venv matches expected BUNDLE_VERSION
-# If a healthy venv bundle already exists on volume but .bundle_version was never created, adopt current BUNDLE_VERSION
-if { [ -s "/workspace/venv_bundle.tar.zst" ] || [ -s "/workspace/venv_bundle.tar" ]; } && [ ! -f /workspace/.bundle_version ]; then
-    echo "[Boot] Existing venv_bundle found without manifest; adopting BUNDLE_VERSION=${BUNDLE_VERSION} on /workspace..."
-    echo "$BUNDLE_VERSION" > /workspace/.bundle_version
-fi
-
-FOUND_BUNDLE_VER=$(cat /workspace/.bundle_version 2>/dev/null || echo "none")
-[ -z "$FOUND_BUNDLE_VER" ] && FOUND_BUNDLE_VER="none"
-if [ ! -f /workspace/.bundle_version ] || [ "$FOUND_BUNDLE_VER" != "$BUNDLE_VERSION" ]; then
-    echo "[Boot] Bundle version mismatch (found: '${FOUND_BUNDLE_VER}', expected: '${BUNDLE_VERSION}'). Triggering automated upgrade..."
-    rm -f /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar
-    bash /workspace/setup_once.sh
+# Bundle Version Manifest Check: Non-destructively adopt BUNDLE_VERSION for existing bundles
+if [ -s "/workspace/venv_bundle.tar.zst" ] || [ -s "/workspace/venv_bundle.tar" ]; then
+    if [ ! -f /workspace/.bundle_version ] || [ "$(cat /workspace/.bundle_version 2>/dev/null)" != "$BUNDLE_VERSION" ]; then
+        echo "[Boot] Adopting BUNDLE_VERSION=${BUNDLE_VERSION} for existing venv_bundle on /workspace..."
+        echo "$BUNDLE_VERSION" > /workspace/.bundle_version
+    fi
 fi
 
 echo "=== [3/8] Verifying Ollama Installation in Container OS ==="
@@ -156,9 +149,12 @@ if [ -x /root/venv/bin/python3 ]; then
     VENV_PY_VER=$(/root/venv/bin/python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")
 fi
 if [ -n "$SYS_PY_VER" ] && [ -n "$VENV_PY_VER" ] && [ "$SYS_PY_VER" != "$VENV_PY_VER" ]; then
-    echo "[Boot] Incompatible Python minor version detected: container=$SYS_PY_VER vs venv=$VENV_PY_VER. Rebuilding venv via setup_once.sh..."
-    rm -rf /root/venv /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar /workspace/.bundle_version
-    bash /workspace/setup_once.sh
+    echo "[Boot] Warning: Python minor version difference detected: container=$SYS_PY_VER vs venv=$VENV_PY_VER."
+    if ! /root/venv/bin/python3 -c 'import sys' >/dev/null 2>&1; then
+        echo "[Boot] Virtual environment Python binary is not functional. Rebuilding venv via setup_once.sh..."
+        rm -rf /root/venv
+        bash /workspace/setup_once.sh
+    fi
 fi
 
 if [ ! -f "/root/venv/bin/python3" ]; then

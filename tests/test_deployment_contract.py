@@ -289,13 +289,8 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("chain_busy", server_src)
         self.assertIn('segment_status == "final"', server_src)
         self.assertIn("export OLLAMA_NUM_PARALLEL=2", self.boot_src)
-        self.assertIn("Pre-warming Ollama aya-expanse:8b in GPU VRAM", self.boot_src)
-        self.assertIn('ollama run aya-expanse:8b "hi"', self.boot_src)
-        self.assertRegex(
-            self.boot_src,
-            r'\(ollama run aya-expanse:8b "hi".*?\)\s*&',
-            "boot.sh must pre-warm Ollama aya-expanse:8b non-blocking in background (&) for concurrent VRAM loading",
-        )
+        self.assertIn("def warmup_ollama", server_src)
+        self.assertIn("warmup_ollama(OLLAMA_MODEL", server_src)
 
     def test_whisper_nvme_staging_and_path_resolution(self):
         """Verify Faster-Whisper is linked to /root/models in boot.sh via ln -sfn and resolved with local_files_only."""

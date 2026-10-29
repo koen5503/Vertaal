@@ -214,8 +214,7 @@ for i in $(seq 1 25); do
     sleep 0.2
 done
 
-echo "Pre-warming Ollama aya-expanse:8b in GPU VRAM..."
-(ollama run aya-expanse:8b "hi" >/dev/null 2>&1 || true) &
+echo "[Boot] Ollama daemon running. Models will be initialized and pre-warmed by server."
 
 # Background Auto-Migration: If volume only had uncompressed .tar files, migrate to .tar.zst
 if [ ! -s "/workspace/venv_bundle.tar.zst" ] || [ ! -s "/workspace/ollama_bundle.tar.zst" ]; then

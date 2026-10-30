@@ -817,7 +817,7 @@ class TestCorePackage(unittest.TestCase):
 
         self.assertIn('elif data.get("action") == "audio_meta":', server_src)
         self.assertIn('is_same_segment = bool(last_processed_seg_id and last_processed_seg_id == seg_id)', server_src)
-        self.assertIn('elif last_transcript and not is_same_segment:', server_src)
+        self.assertIn('is_same_segment=is_same_segment', server_src)
         self.assertIn('"is_delta": False', server_src)
 
     def test_runpod_translation_delta_tail_stitching(self):
@@ -1225,6 +1225,8 @@ class TestCorePackage(unittest.TestCase):
                 self.assertNotIn("cmd", payload)
                 self.assertEqual(payload["templateId"], "tmpl-1")
                 self.assertEqual(payload["mounts"]["global"][0]["volumeId"], "cmu-vol-1")
+                self.assertEqual(payload["env"]["RUNPOD_API_KEY"], "fake_key")
+                self.assertEqual(payload["env"]["WHISPER_MODEL"], "large-v3")
 
     def test_runpod_deploy_v2_datacenter_preference_and_fallback(self):
         """deploy_runpod_pod attempts preferred dataCenterIds first, falling back to any region on stock failure."""

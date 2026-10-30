@@ -344,6 +344,9 @@ if [ ! -s "/workspace/venv_bundle.tar.zst" ] || [ ! -s "/workspace/ollama_bundle
     ) >/dev/null 2>&1 &
 fi
 
+# Clear any setup failure counter so running server starts with a clean slate
+rm -f /workspace/.setup_failures
+
 echo "Launching Live Translation Server on port 8000..."
 cd /root/app
 exec /root/venv/bin/python3 runpod_server.py

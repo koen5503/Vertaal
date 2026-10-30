@@ -1082,10 +1082,10 @@ print("ISOLATED_POD_IMPORT_SUCCESS")
             )
             self.assertIn("ISOLATED_POD_IMPORT_SUCCESS", proc.stdout)
 
-        # 3. Verify that when core IS absent, runpod_server.py fallback behaves identically
-        with tempfile.TemporaryDirectory() as fallback_tmp_dir:
-            shutil.copy(runpod_server_file, os.path.join(fallback_tmp_dir, "runpod_server.py"))
-            fallback_script = """
+        # 3. Verify that when core IS absent, runpod_server.py fails fast with ImportError / ModuleNotFoundError
+        with tempfile.TemporaryDirectory() as missing_core_tmp_dir:
+            shutil.copy(runpod_server_file, os.path.join(missing_core_tmp_dir, "runpod_server.py"))
+            fail_fast_script = """
 import sys
 from unittest.mock import MagicMock
 sys.modules['fastapi'] = MagicMock()
@@ -1094,37 +1094,23 @@ sys.modules['faster_whisper'] = MagicMock()
 sys.modules['ollama'] = MagicMock()
 
 import runpod_server
-
-fb_filter = runpod_server.filter_anti_hallucination
-
-# Fallback assertions match core 100%:
-assert fb_filter("TV Gelderland 2021") is None
-assert fb_filter("Ondertitels") is None
-assert fb_filter("Subtitles by OpenSubtitles") is None
-assert fb_filter("Dank u wel.") is None
-assert fb_filter("Bedankt voor het kijken.") is None
-assert fb_filter("dit is een heel heel heel heel mooi moment") is None
-assert fb_filter("Schootsekerk", glossary_phrases=["Schootsekerk"]) is None
-assert fb_filter("Halleluja!", glossary_phrases=["halleluja"]) is None
-assert fb_filter("woord een woord een woord een woord een woord een") is None
-assert fb_filter("Dit is een normale zin over de gemeenschap.") == "Dit is een normale zin over de gemeenschap."
-assert fb_filter("heel heel mooi") == "heel heel mooi"
-
-print("FALLBACK_ALIGNMENT_SUCCESS")
 """
-            fallback_proc = subprocess.run(
-                [sys.executable, "-c", fallback_script],
-                cwd=fallback_tmp_dir,
-                env={"PYTHONPATH": fallback_tmp_dir, "PATH": os.environ.get("PATH", "")},
+            fail_fast_proc = subprocess.run(
+                [sys.executable, "-c", fail_fast_script],
+                cwd=missing_core_tmp_dir,
+                env={"PYTHONPATH": missing_core_tmp_dir, "PATH": os.environ.get("PATH", "")},
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(
-                fallback_proc.returncode,
+            self.assertNotEqual(
+                fail_fast_proc.returncode,
                 0,
-                f"Fallback alignment test failed:\nSTDOUT:\n{fallback_proc.stdout}\nSTDERR:\n{fallback_proc.stderr}",
+                f"Expected fail-fast when core is missing, but succeeded:\nSTDOUT:\n{fail_fast_proc.stdout}",
             )
-            self.assertIn("FALLBACK_ALIGNMENT_SUCCESS", fallback_proc.stdout)
+            self.assertTrue(
+                "ModuleNotFoundError" in fail_fast_proc.stderr or "ImportError" in fail_fast_proc.stderr,
+                f"Expected ModuleNotFoundError or ImportError in stderr, got:\n{fail_fast_proc.stderr}",
+            )
 
 
 if __name__ == "__main__":

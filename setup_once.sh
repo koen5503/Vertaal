@@ -27,13 +27,6 @@ sync_repo_file() {
     local tmp_path="/tmp/${safe_name%.*}_latest.${safe_name##*.}"
     rm -f "$tmp_path"
 
-    # Local filesystem fallback first if running locally in repo
-    if [ -s "./${file_name}" ]; then
-        mkdir -p "$(dirname "$dest_path")"
-        cp -f "./${file_name}" "$dest_path"
-        return 0
-    fi
-
     # Try primary repository URL first, then fallback
     if { curl -fsSL "${REPO_RAW}/${file_name}" -o "$tmp_path" 2>/dev/null || { [ "$REPO_BRANCH" != "main" ] && curl -fsSL "${FALLBACK_REPO_RAW}/${file_name}" -o "$tmp_path" 2>/dev/null; }; } && [ -s "$tmp_path" ]; then
         mkdir -p "$(dirname "$dest_path")"
@@ -224,7 +217,6 @@ if [ -s "/tmp/venv_bundle.tar.zst" ]; then
     if zstd -t /workspace/venv_bundle.tar.zst.tmp >/dev/null 2>&1; then
         mv -f /workspace/venv_bundle.tar.zst.tmp /workspace/venv_bundle.tar.zst
         rm -f /workspace/venv_bundle.tar
-        echo "$BUNDLE_VERSION" > /workspace/.bundle_version
     else
         echo "ERROR: Corrupted archive detected during zstd integrity verification!" >&2
         rm -f /workspace/venv_bundle.tar.zst.tmp
@@ -252,6 +244,9 @@ sync_repo_file "boot.sh" "/workspace/boot.sh"
 for core_file in core/__init__.py core/engine.py core/translation.py core/audio.py core/utils.py core/stt/__init__.py core/stt/base.py core/stt/cloud_engine.py core/stt/local_engine.py core/stt/runpod_engine.py; do
     sync_repo_file "$core_file" "/workspace/app/$core_file"
 done
+
+# Write bundle version manifest only after all components and staged files succeed
+echo "$BUNDLE_VERSION" > /workspace/.bundle_version
 
 echo "=== One-time setup completed successfully! ==="
 echo "The Global Volume /workspace is now fully prepared."

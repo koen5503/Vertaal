@@ -887,6 +887,10 @@ class RunPodSTTEngine(BaseSTTEngine):
                         "gpu": {"id": gpu_id, "count": 1},
                         "mounts": {
                             "global": [{"volumeId": volume_id, "path": "/workspace"}]
+                        },
+                        "env": {
+                            "RUNPOD_API_KEY": api_key,
+                            "WHISPER_MODEL": whisper_model,
                         }
                     }
                     if attempt_dc:
@@ -928,7 +932,8 @@ class RunPodSTTEngine(BaseSTTEngine):
                     {dc_clause}
                     gpuCount: 1,
                     env: [
-                        {{ key: "WHISPER_MODEL", value: "{whisper_model}" }}
+                        {{ key: "WHISPER_MODEL", value: "{whisper_model}" }},
+                        {{ key: "RUNPOD_API_KEY", value: "{api_key}" }}
                     ]
                   }}) {{
                     id

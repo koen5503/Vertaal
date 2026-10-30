@@ -746,7 +746,13 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("cp -f /tmp/venv_bundle.tar.zst /workspace/venv_bundle.tar.zst.tmp", step7_setup_code)
         self.assertIn("if zstd -t /workspace/venv_bundle.tar.zst.tmp >/dev/null 2>&1; then", step7_setup_code)
         self.assertIn("mv -f /workspace/venv_bundle.tar.zst.tmp /workspace/venv_bundle.tar.zst", step7_setup_code)
-        self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', step7_setup_code)
+        self.assertNotIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', step7_setup_code)
+
+        # 6. setup_once.sh Step [8/8] writes .bundle_version manifest after staging succeeds
+        step8_setup = re.search(r"=== \[8/8\].*", self.setup_src, re.DOTALL)
+        self.assertIsNotNone(step8_setup)
+        step8_setup_code = step8_setup.group(0)
+        self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', step8_setup_code)
 
     def test_runpod_server_logic_deduplication_imports_core(self):
         """Verify runpod_server.py imports filtering and translation logic from core package."""

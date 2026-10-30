@@ -343,6 +343,11 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
         stt_engine = RunPodSTTEngine(engine=mock_engine)
         stt_engine.active_pod_id = "pod-refuse-test"
 
+        # Strictly hermetic stt_engine mocks
+        stt_engine.discover_runpod_url = MagicMock(return_value="ws://127.0.0.1:8888/stream")
+        stt_engine.manage_runpod_deployment = AsyncMock()
+        stt_engine._probe_endpoint = MagicMock(return_value=False)
+
         # Mock fetch_pod_logs returning progress lines
         stt_engine.fetch_pod_logs = MagicMock(return_value=(
             "RUNNING", "RUNNING",
@@ -372,7 +377,12 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
             async def mock_sleep(duration):
                 pass
 
-            with patch("core.stt.runpod_engine.websockets", mock_ws_module), \
+            network_tripwire = MagicMock(side_effect=AssertionError("network call in hermetic test"))
+
+            with patch.dict(os.environ, {"AUTO_DEPLOY_RUNPOD": "false", "RUNPOD_API_KEY": "", "RUNPOD_WSS_URL": ""}), \
+                 patch("core.stt.runpod_engine.websockets", mock_ws_module), \
+                 patch("urllib.request.urlopen", network_tripwire), \
+                 patch("core.stt.runpod_engine.urllib.request.urlopen", network_tripwire), \
                  patch("asyncio.sleep", side_effect=mock_sleep):
                 try:
                     await stt_engine.run()
@@ -380,6 +390,9 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
                     pass
 
         asyncio.run(run_test())
+
+        # Assert manage_runpod_deployment was not called
+        stt_engine.manage_runpod_deployment.assert_not_called()
 
         # Verify broadcast was called during connection retries
         self.assertGreaterEqual(mock_engine.broadcast.call_count, 2)

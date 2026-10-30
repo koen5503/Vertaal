@@ -14,7 +14,7 @@ set -euo pipefail
 
 # Self-update boot.sh at the very top to always match repository
 OLLAMA_VERSION="0.5.7"
-BUNDLE_VERSION="2026.10.2+327a6f4a"
+BUNDLE_VERSION="2026.10.2+bc79cf0b"
 REPO_BRANCH="${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}"
 REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/${REPO_BRANCH}}"
 FALLBACK_REPO_RAW="https://raw.githubusercontent.com/koen5503/Vertaal/main"

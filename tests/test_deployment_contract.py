@@ -500,7 +500,7 @@ class TestDeploymentContract(unittest.TestCase):
             "uvicorn": "0.32.1",
             "websockets": "13.1",
             "faster-whisper": "1.1.1",
-            "ctranslate2": "4.5.0",
+            "ctranslate2": "4.8.4",
             "ollama": "0.4.7",
             "numpy": "1.26.4",
             "huggingface_hub": "0.27.1",

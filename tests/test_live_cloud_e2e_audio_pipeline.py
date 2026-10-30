@@ -305,109 +305,109 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
 
         self.__class__.pod_id_to_cleanup = pod_id
 
-        # 3. Poll Health Endpoint until whisper_ready: true (up to 240s)
-        health_url = f"https://{pod_id}-8000.proxy.runpod.net/health"
-        print(f"[RunPod E2E] Polling health endpoint: {health_url}")
-
-        health_ready = False
-        poll_start = time.time()
-        poll_timeout = 540.0
-        last_log_poll = 0.0
-        last_logged_stage = ""
-
-        while time.time() - poll_start < poll_timeout:
-            now = time.time()
-            if now - last_log_poll >= 8.0:
-                last_log_poll = now
-                stage, clean_lines = self.poll_pod_boot_logs(
-                    pod_id,
-                    last_logged_stage=last_logged_stage,
-                    poll_start=poll_start,
-                )
-                last_logged_stage = stage
-
-            try:
-                req = urllib.request.Request(
-                    health_url,
-                    headers={
-                        "User-Agent": "Ondertitels-E2E/1.0",
-                        "Accept": "application/json"
-                    }
-                )
-                with urllib.request.urlopen(req, timeout=4.0) as resp:
-                    if resp.status == 200:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        if data.get("whisper_ready") is True:
-                            health_ready = True
-                            print(f"[RunPod E2E] Backend ready! (status: {data.get('status')}, whisper_ready: True)")
-                            break
-            except Exception:
-                pass
-            time.sleep(5.0)
-
-        self.assertTrue(
-            health_ready,
-            f"Timed out after {poll_timeout}s waiting for {health_url} to report whisper_ready: true"
-        )
-
-        # 4. Authentic Audio Ingestion & WebSocket Streaming
-        wss_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
-        print(f"[RunPod E2E] Connecting to WebSocket stream: {wss_url}")
-
-        transcribed_text = ""
-        translated_text = ""
-
-        async def run_pipeline_stream():
-            nonlocal transcribed_text, translated_text
-            async with websockets.connect(wss_url, open_timeout=15.0) as ws:
-                # Send config
-                config_payload = {
-                    "action": "config",
-                    "source_lang": "nl",
-                    "target_lang_1": "en",
-                    "enable_trans_3": False,
-                    "enable_trans_4": False
-                }
-                await ws.send(json.dumps(config_payload))
-                print(f"[RunPod E2E] Sent config: {config_payload}")
-
-                # Send audio segment metadata
-                audio_meta = {
-                    "action": "audio",
-                    "id": "seg_live_1",
-                    "status": "final",
-                    "sample_rate": 16000,
-                    "sample_width": 2
-                }
-                await ws.send(json.dumps(audio_meta))
-
-                # Send authentic 16kHz mono 16-bit PCM audio chunk
-                await ws.send(pcm_16k_mono)
-                print(f"[RunPod E2E] Streamed {len(pcm_16k_mono)} bytes of authentic sermon speech audio.")
-
-                # Await business outcomes: STT transcription (col1_text) & Translation (col2_text)
-                deadline = time.time() + 90.0
-                while time.time() < deadline:
-                    try:
-                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=15.0)
-                        msg = json.loads(raw_msg)
-                        print(f"[RunPod E2E WebSocket Inbound] {msg}")
-
-                        if "col1_text" in msg and msg["col1_text"].strip():
-                            transcribed_text = msg["col1_text"].strip()
-                            print(f"\n>>> [STT DUTCH TRANSCRIPTION] <<<\n{transcribed_text}\n")
-
-                        if "col2_text" in msg and msg["col2_text"].strip():
-                            translated_text = msg["col2_text"].strip()
-                            print(f"\n>>> [OLLAMA ENGLISH TRANSLATION] <<<\n{translated_text}\n")
-
-                        if transcribed_text and translated_text:
-                            break
-                    except asyncio.TimeoutError:
-                        if transcribed_text and translated_text:
-                            break
-
         try:
+            # 3. Poll Health Endpoint until whisper_ready: true (up to 240s)
+            health_url = f"https://{pod_id}-8000.proxy.runpod.net/health"
+            print(f"[RunPod E2E] Polling health endpoint: {health_url}")
+
+            health_ready = False
+            poll_start = time.time()
+            poll_timeout = 540.0
+            last_log_poll = 0.0
+            last_logged_stage = ""
+
+            while time.time() - poll_start < poll_timeout:
+                now = time.time()
+                if now - last_log_poll >= 8.0:
+                    last_log_poll = now
+                    stage, clean_lines = self.poll_pod_boot_logs(
+                        pod_id,
+                        last_logged_stage=last_logged_stage,
+                        poll_start=poll_start,
+                    )
+                    last_logged_stage = stage
+
+                try:
+                    req = urllib.request.Request(
+                        health_url,
+                        headers={
+                            "User-Agent": "Ondertitels-E2E/1.0",
+                            "Accept": "application/json"
+                        }
+                    )
+                    with urllib.request.urlopen(req, timeout=4.0) as resp:
+                        if resp.status == 200:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            if data.get("whisper_ready") is True:
+                                health_ready = True
+                                print(f"[RunPod E2E] Backend ready! (status: {data.get('status')}, whisper_ready: True)")
+                                break
+                except Exception:
+                    pass
+                time.sleep(5.0)
+
+            self.assertTrue(
+                health_ready,
+                f"Timed out after {poll_timeout}s waiting for {health_url} to report whisper_ready: true"
+            )
+
+            # 4. Authentic Audio Ingestion & WebSocket Streaming
+            wss_url = f"wss://{pod_id}-8000.proxy.runpod.net/stream"
+            print(f"[RunPod E2E] Connecting to WebSocket stream: {wss_url}")
+
+            transcribed_text = ""
+            translated_text = ""
+
+            async def run_pipeline_stream():
+                nonlocal transcribed_text, translated_text
+                async with websockets.connect(wss_url, open_timeout=15.0) as ws:
+                    # Send config
+                    config_payload = {
+                        "action": "config",
+                        "source_lang": "nl",
+                        "target_lang_1": "en",
+                        "enable_trans_3": False,
+                        "enable_trans_4": False
+                    }
+                    await ws.send(json.dumps(config_payload))
+                    print(f"[RunPod E2E] Sent config: {config_payload}")
+
+                    # Send audio segment metadata
+                    audio_meta = {
+                        "action": "audio",
+                        "id": "seg_live_1",
+                        "status": "final",
+                        "sample_rate": 16000,
+                        "sample_width": 2
+                    }
+                    await ws.send(json.dumps(audio_meta))
+
+                    # Send authentic 16kHz mono 16-bit PCM audio chunk
+                    await ws.send(pcm_16k_mono)
+                    print(f"[RunPod E2E] Streamed {len(pcm_16k_mono)} bytes of authentic sermon speech audio.")
+
+                    # Await business outcomes: STT transcription (col1_text) & Translation (col2_text)
+                    deadline = time.time() + 90.0
+                    while time.time() < deadline:
+                        try:
+                            raw_msg = await asyncio.wait_for(ws.recv(), timeout=15.0)
+                            msg = json.loads(raw_msg)
+                            print(f"[RunPod E2E WebSocket Inbound] {msg}")
+
+                            if "col1_text" in msg and msg["col1_text"].strip():
+                                transcribed_text = msg["col1_text"].strip()
+                                print(f"\n>>> [STT DUTCH TRANSCRIPTION] <<<\n{transcribed_text}\n")
+
+                            if "col2_text" in msg and msg["col2_text"].strip():
+                                translated_text = msg["col2_text"].strip()
+                                print(f"\n>>> [OLLAMA ENGLISH TRANSLATION] <<<\n{translated_text}\n")
+
+                            if transcribed_text and translated_text:
+                                break
+                        except asyncio.TimeoutError:
+                            if transcribed_text and translated_text:
+                                break
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
@@ -425,6 +425,17 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
                 "Failed to receive non-empty col2_text (English translation) from Ollama backend"
             )
 
+        except Exception as e:
+            print(f"\n[Post-Mortem] Failure encountered ({e}). Fetching final container logs for pod {pod_id} before teardown...")
+            try:
+                status, desired, raw_logs = self.engine.fetch_pod_logs(pod_id, self.api_key)
+                print("==================== POD POST-MORTEM LOGS ====================")
+                for line in (raw_logs or "").splitlines()[-60:]:
+                    print(line)
+                print("==============================================================")
+            except Exception as log_err:
+                print(f"[Post-Mortem] Could not fetch pod logs: {log_err}")
+            raise
         finally:
             # 6. Guaranteed Autonomous Teardown
             print(f"\n[RunPod E2E Teardown] Terminating pod {pod_id} to ensure zero orphaned costs...")

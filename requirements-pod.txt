@@ -1,0 +1,21 @@
+# ==============================================================================
+# requirements-pod.txt - Pinned Runtime Dependencies for RunPod Remote Pod
+# ==============================================================================
+# Target Base Image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+# Target Environment: Python 3.11, CUDA 12.4.1, cuDNN 9, x86_64 Linux
+#
+# Pinned versions guarantee byte-level reproducibility across initial provisioning
+# and subsequent boots on Global Volumes.
+# ==============================================================================
+
+fastapi==0.115.6
+uvicorn==0.32.1
+websockets==13.1
+faster-whisper==1.1.1
+ctranslate2==4.5.0
+ollama==0.4.7
+numpy==1.26.4
+huggingface_hub==0.27.1
+av==14.0.1
+tokenizers==0.21.0
+onnxruntime==1.20.1

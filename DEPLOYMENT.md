@@ -119,3 +119,37 @@ When making changes to `runpod_server.py`:
   cp runpod_server.py /workspace/app/runpod_server.py
   ```
 - Or commit to GitHub: upon container restart or deployment, `boot.sh` automatically ensures the latest code is synced to `/root/app/`.
+
+---
+
+## 6. Upgrading Pod Dependencies & Rebuilding Environment
+
+When updating Python dependencies or the Ollama runtime version:
+
+1. **Edit dependency pins**:
+   - Update package versions in `requirements-pod.txt` using exact `==` pins.
+   - If upgrading Ollama, update `OLLAMA_VERSION` (e.g. `"0.5.7"`).
+
+2. **Compute new bundle version hash**:
+   ```bash
+   python3 -c 'import hashlib; c=open("requirements-pod.txt","rb").read()+b"\nOLLAMA_VERSION=0.5.7"; print("2026.10.2+" + hashlib.sha256(c).hexdigest()[:8])'
+   ```
+
+3. **Update `BUNDLE_VERSION` in boot scripts**:
+   - Set `BUNDLE_VERSION="2026.10.2+<sha8>"` identically in both `boot.sh` and `setup_once.sh`.
+   - Update `OLLAMA_VERSION="<version>"` identically in both scripts.
+
+4. **Run Pre-Flight Verification Gate**:
+   ```bash
+   python3 -m unittest discover -s tests -p "test_*.py" -v
+   ```
+   All 170+ unit and simulation tests must pass 100% before committing or deploying.
+
+5. **Deploy & Live E2E Verification**:
+   - On the next pod start, `boot.sh` compares the volume manifest `/workspace/.bundle_version` with `BUNDLE_VERSION`.
+   - On mismatch, `boot.sh` automatically runs `setup_once.sh`:
+     - Synchronizes `requirements-pod.txt` to `/workspace/app/requirements-pod.txt`.
+     - Rebuilds `/root/venv` with `/root/venv/bin/pip install --no-cache-dir -r /workspace/app/requirements-pod.txt`.
+     - Verifies `ollama --version` matches `OLLAMA_VERSION`, reinstalling if necessary.
+     - Atomically rewrites `/workspace/venv_bundle.tar.zst` and writes the new `BUNDLE_VERSION` to `/workspace/.bundle_version`.
+   - Verify live audio transcription and translation connectivity over the WebSocket.

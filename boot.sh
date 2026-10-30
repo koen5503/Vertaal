@@ -13,7 +13,8 @@
 set -euo pipefail
 
 # Self-update boot.sh at the very top to always match repository
-BUNDLE_VERSION="2026.10.1"
+OLLAMA_VERSION="0.5.7"
+BUNDLE_VERSION="2026.10.2+327a6f4a"
 REPO_BRANCH="${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}"
 REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/${REPO_BRANCH}}"
 FALLBACK_REPO_RAW="https://raw.githubusercontent.com/koen5503/Vertaal/main"
@@ -75,10 +76,11 @@ if [ ! -s "/workspace/boot.sh" ]; then
     fi
 fi
 
-# Always sync latest setup_once.sh and runpod_server.py from repository via /tmp
-echo "[Boot] Syncing latest setup_once.sh and runpod_server.py from repository..."
+# Always sync latest setup_once.sh, runpod_server.py, and requirements-pod.txt from repository via /tmp
+echo "[Boot] Syncing latest setup_once.sh, runpod_server.py, and requirements-pod.txt from repository..."
 sync_repo_file "setup_once.sh" "/workspace/setup_once.sh"
 sync_repo_file "runpod_server.py" "/workspace/app/runpod_server.py"
+sync_repo_file "requirements-pod.txt" "/workspace/app/requirements-pod.txt"
 
 mkdir -p /workspace/app/core /workspace/app/core/stt
 for core_file in core/__init__.py core/engine.py core/translation.py core/audio.py core/utils.py core/stt/__init__.py core/stt/base.py core/stt/cloud_engine.py core/stt/local_engine.py core/stt/runpod_engine.py; do
@@ -178,8 +180,8 @@ if ! command -v ollama >/dev/null 2>&1; then
         tar -xf /workspace/ollama_bundle.tar -C /usr/local/ &
         OLLAMA_EXTRACT_PID=$!
     else
-        echo "Installing Ollama engine into container (first-time install)..."
-        curl -fsSL https://ollama.com/install.sh | sh
+        echo "Installing Ollama engine into container (pinned version ${OLLAMA_VERSION})..."
+        curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
         echo "Caching Ollama engine to /workspace/ollama_bundle.tar.zst via /tmp..."
         tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
         if [ -s "/tmp/ollama_bundle.tar.zst" ]; then
@@ -192,6 +194,32 @@ if ! command -v ollama >/dev/null 2>&1; then
         fi
     fi
 fi
+
+# Wait for extraction if backgrounded before version verification
+wait "${OLLAMA_EXTRACT_PID:-}" 2>/dev/null || true
+
+# Verify restored version matches OLLAMA_VERSION; on mismatch or missing, reinstall and rewrite cache
+INSTALLED_OLLAMA_VER=""
+if command -v ollama >/dev/null 2>&1; then
+    INSTALLED_OLLAMA_VER=$(ollama --version 2>&1 || echo "")
+fi
+
+if [ -z "$INSTALLED_OLLAMA_VER" ] || [[ "$INSTALLED_OLLAMA_VER" != *"$OLLAMA_VERSION"* ]]; then
+    echo "[Boot] Warning: Ollama version mismatch or missing ('${INSTALLED_OLLAMA_VER}' vs required '${OLLAMA_VERSION}'). Reinstalling pinned version..."
+    curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
+    echo "Updating cached Ollama engine to /workspace/ollama_bundle.tar.zst via /tmp..."
+    tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
+    if [ -s "/tmp/ollama_bundle.tar.zst" ]; then
+        cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst.tmp
+        if zstd -t /workspace/ollama_bundle.tar.zst.tmp >/dev/null 2>&1; then
+            mv -f /workspace/ollama_bundle.tar.zst.tmp /workspace/ollama_bundle.tar.zst
+            rm -f /workspace/ollama_bundle.tar
+        fi
+        rm -f /workspace/ollama_bundle.tar.zst.tmp /tmp/ollama_bundle.tar.zst
+    fi
+fi
+
+echo "[Boot] Verified Ollama version: $(ollama --version 2>&1 || echo 'unknown')"
 
 echo "=== [4/8] Creating Volatile Local SSD Directories ==="
 find /workspace -maxdepth 1 -name "*.tmp" -mmin +30 -delete 2>/dev/null || true

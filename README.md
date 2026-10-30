@@ -282,7 +282,7 @@ Copy `.env.example` to `.env` to configure the application:
 
 ## 🧪 Running Tests
 
-The project includes an automated test suite of **165 tests** covering audio framing, VAD chunking, anti-hallucination sliding-window algorithms, configuration loading, deployment contracts, and real-world streaming simulations.
+The project includes an automated test suite of **170 tests** covering audio framing, VAD chunking, anti-hallucination sliding-window algorithms, configuration loading, deployment contracts, hermetic isolation guards, and real-world streaming simulations.
 
 Run the entire test suite via Python's standard `unittest` framework:
 
@@ -290,14 +290,17 @@ Run the entire test suite via Python's standard `unittest` framework:
 # Standard test discovery:
 python3 -m unittest discover -s tests -p "test_*.py"
 
-# Verbose output showing all 165 test cases:
+# Verbose output showing all 170 test cases:
 python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 ### Test Suite Organization
 
+- **`tests/test_hermetic_guard.py`**:
+  - Enforces 100% hermetic isolation across unit/simulation tests with a socket interception guard preventing unauthorized outbound non-loopback connections.
+
 - **`tests/test_deployment_contract.py`**:
-  - Automated deployment, FUSE storage isolation, version manifest, and self-healing contracts.
+  - Automated deployment, FUSE storage isolation, version manifest, pinned pod dependencies (`requirements-pod.txt`), Ollama pinning, and self-healing contracts.
   - Verifies FUSE object storage restrictions (safe byte-stream copying into local NVMe SSD).
   - Validates model caching and re-use checks to prevent redundant downloads across pod boots.
   - Bash syntax validity for `boot.sh` and `setup_once.sh`.
@@ -356,6 +359,25 @@ python3 -m unittest discover -s tests -p "test_*.py" -v
 - **`tests/test_live_pipeline_integration.py`**:
   - Live audio capture integration tests verifying device routing and frame dispatch.
   - CoreAudio / WASAPI stream lifecycle and restart behavior upon stop/start cycles.
+
+### Upgrading Pod Dependencies
+
+Remote RunPod container dependencies are pinned in `requirements-pod.txt` and bound to the volume bundle version via a deterministic SHA256 suffix (`BUNDLE_VERSION="2026.10.2+<sha8>"`):
+
+1. **Update package pin or Ollama**:
+   - Edit package versions in `requirements-pod.txt` or change `OLLAMA_VERSION` in `boot.sh` and `setup_once.sh`.
+2. **Compute new bundle version**:
+   ```bash
+   python3 -c 'import hashlib; c=open("requirements-pod.txt","rb").read()+b"\nOLLAMA_VERSION=0.5.7"; print("2026.10.2+" + hashlib.sha256(c).hexdigest()[:8])'
+   ```
+3. **Update `BUNDLE_VERSION` in `boot.sh` and `setup_once.sh`**:
+   - Both scripts must declare identical `BUNDLE_VERSION` and `OLLAMA_VERSION`.
+4. **Run Pre-Flight Verification Gate**:
+   ```bash
+   python3 -m unittest discover -s tests -p "test_*.py" -v
+   ```
+5. **Deploy**:
+   - On the next pod start, `boot.sh` detects the intentional version upgrade against `/workspace/.bundle_version`, runs `setup_once.sh` to reinstall dependencies and Ollama, and rebuilds the bundle cache automatically.
 
 ---
 

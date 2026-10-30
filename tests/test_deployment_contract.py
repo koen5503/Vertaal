@@ -10,6 +10,7 @@ Validates:
 5. UI dynamic column header mapping in index.html and viewer.html
 """
 
+import hashlib
 import os
 import re
 import subprocess
@@ -24,6 +25,7 @@ class TestDeploymentContract(unittest.TestCase):
         cls.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         cls.boot_sh_path = os.path.join(cls.project_root, "boot.sh")
         cls.setup_once_path = os.path.join(cls.project_root, "setup_once.sh")
+        cls.req_pod_path = os.path.join(cls.project_root, "requirements-pod.txt")
         cls.index_html_path = os.path.join(cls.project_root, "templates", "index.html")
         cls.viewer_html_path = os.path.join(cls.project_root, "templates", "viewer.html")
 
@@ -412,17 +414,29 @@ class TestDeploymentContract(unittest.TestCase):
     def test_bundle_version_manifest_and_python_coupling_guard(self):
         """
         Verify Bundle Version Manifest, Legacy Adoption, and Intentional Upgrade Guard:
-        1. BUNDLE_VERSION='2026.10.1' defined in both boot.sh and setup_once.sh
+        1. BUNDLE_VERSION='2026.10.2+${sha8}' defined dynamically in both boot.sh and setup_once.sh
         2. setup_once.sh writes /workspace/.bundle_version upon successful archiving
         3. Case A: boot.sh adopts BUNDLE_VERSION for legacy bundles when .bundle_version is missing
         4. Case B: boot.sh detects intentional upgrade and runs setup_once.sh when FOUND_BUNDLE_VER != BUNDLE_VERSION
         5. boot.sh does NOT wipe existing venv_bundle with rm -f before setup_once.sh
         6. boot.sh checks container OS vs venv python minor version and warns instead of destructive wipe
-        7. bash -n boot.sh syntax validity
+        7. bash -n boot.sh & setup_once.sh syntax validity
         """
-        # 1. BUNDLE_VERSION constant
-        self.assertIn('BUNDLE_VERSION="2026.10.1"', self.boot_src)
-        self.assertIn('BUNDLE_VERSION="2026.10.1"', self.setup_src)
+        # 1. BUNDLE_VERSION constant & dynamic sha8 binding
+        boot_ollama_match = re.search(r'OLLAMA_VERSION="([^"]+)"', self.boot_src)
+        setup_ollama_match = re.search(r'OLLAMA_VERSION="([^"]+)"', self.setup_src)
+        self.assertIsNotNone(boot_ollama_match, "OLLAMA_VERSION must be defined in boot.sh")
+        self.assertIsNotNone(setup_ollama_match, "OLLAMA_VERSION must be defined in setup_once.sh")
+        self.assertEqual(boot_ollama_match.group(1), setup_ollama_match.group(1), "OLLAMA_VERSION must match between boot.sh and setup_once.sh")
+        ollama_ver = boot_ollama_match.group(1)
+
+        with open(self.req_pod_path, "rb") as f:
+            req_bytes = f.read()
+        expected_sha8 = hashlib.sha256(req_bytes + b"\nOLLAMA_VERSION=" + ollama_ver.encode()).hexdigest()[:8]
+        expected_bundle_ver = f"2026.10.2+{expected_sha8}"
+
+        self.assertIn(f'BUNDLE_VERSION="{expected_bundle_ver}"', self.boot_src)
+        self.assertIn(f'BUNDLE_VERSION="{expected_bundle_ver}"', self.setup_src)
 
         # 2. setup_once.sh manifest write
         self.assertIn('echo "$BUNDLE_VERSION" > /workspace/.bundle_version', self.setup_src)
@@ -465,10 +479,83 @@ class TestDeploymentContract(unittest.TestCase):
             self.boot_src,
         )
 
-        # 6. Syntax check boot.sh
-        boot_path = os.path.join(self.project_root, "boot.sh")
-        res = subprocess.run(["bash", "-n", boot_path], capture_output=True, text=True)
-        self.assertEqual(res.returncode, 0, f"bash -n boot.sh failed: {res.stderr}")
+        # 6. Syntax check boot.sh & setup_once.sh
+        for script_name in ["boot.sh", "setup_once.sh"]:
+            script_path = os.path.join(self.project_root, script_name)
+            res = subprocess.run(["bash", "-n", script_path], capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, f"bash -n {script_name} failed: {res.stderr}")
+
+    def test_pinned_pod_dependencies_and_ollama_guard(self):
+        """
+        Verify pinned, reproducible pod environment (Part B - U1):
+        1. requirements-pod.txt exists and contains all 11 required packages with exact == pins.
+        2. setup_once.sh contains no bare unpinned pip install <pkg> and installs via -r /workspace/app/requirements-pod.txt.
+        3. OLLAMA_VERSION is defined identically in boot.sh and setup_once.sh and passed to install.sh.
+        4. No bare 'install.sh | sh' remains in either script.
+        5. requirements-pod.txt sync is called in setup_once.sh and boot.sh.
+        6. bash -n boot.sh and bash -n setup_once.sh pass cleanly.
+        """
+        required_packages = {
+            "fastapi": "0.115.6",
+            "uvicorn": "0.32.1",
+            "websockets": "13.1",
+            "faster-whisper": "1.1.1",
+            "ctranslate2": "4.5.0",
+            "ollama": "0.4.7",
+            "numpy": "1.26.4",
+            "huggingface_hub": "0.27.1",
+            "av": "14.0.1",
+            "tokenizers": "0.21.0",
+            "onnxruntime": "1.20.1",
+        }
+
+        # 1. requirements-pod.txt verification
+        self.assertTrue(os.path.exists(self.req_pod_path), "requirements-pod.txt must exist")
+        with open(self.req_pod_path, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+
+        found_packages = {}
+        for line in lines:
+            self.assertIn("==", line, f"Package pin in requirements-pod.txt must use exact ==: '{line}'")
+            pkg_name, pkg_ver = line.split("==", 1)
+            found_packages[pkg_name.strip()] = pkg_ver.strip()
+
+        self.assertEqual(
+            set(found_packages.keys()),
+            set(required_packages.keys()),
+            "requirements-pod.txt must contain all 11 required packages",
+        )
+        for pkg, expected_ver in required_packages.items():
+            self.assertEqual(
+                found_packages[pkg],
+                expected_ver,
+                f"Version mismatch for {pkg} in requirements-pod.txt",
+            )
+
+        # 2. setup_once.sh pip install contract
+        self.assertIn(
+            "/root/venv/bin/pip install --no-cache-dir -r /workspace/app/requirements-pod.txt",
+            self.setup_src,
+            "setup_once.sh must install dependencies from requirements-pod.txt",
+        )
+        non_comment_lines = [l.strip() for l in self.setup_src.splitlines() if not l.strip().startswith("#")]
+        pip_lines = [l for l in non_comment_lines if "pip install" in l]
+        self.assertTrue(len(pip_lines) > 0, "setup_once.sh must contain at least one pip install invocation")
+        for pl in pip_lines:
+            self.assertIn("-r", pl, f"setup_once.sh must not contain bare unpinned pip install <pkg>: {pl}")
+        self.assertIn("/root/venv/bin/pip freeze", self.setup_src)
+
+        # 3. OLLAMA_VERSION and install.sh pin
+        self.assertIn('OLLAMA_VERSION="0.5.7"', self.boot_src)
+        self.assertIn('OLLAMA_VERSION="0.5.7"', self.setup_src)
+        self.assertIn('curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh', self.boot_src)
+        self.assertIn('curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh', self.setup_src)
+        self.assertNotIn("https://ollama.com/install.sh | sh", self.boot_src)
+        self.assertNotIn("https://ollama.com/install.sh | sh", self.setup_src)
+
+        # 4. requirements-pod.txt sync
+        self.assertIn('sync_repo_file "requirements-pod.txt" "/workspace/app/requirements-pod.txt"', self.boot_src)
+        self.assertIn('sync_repo_file "requirements-pod.txt" "/workspace/app/requirements-pod.txt"', self.setup_src)
 
     def test_dynamic_repository_branch_and_boot_cmd(self):
         """

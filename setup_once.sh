@@ -102,6 +102,11 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     zstd curl procps ffmpeg libsndfile1
 
+mkdir -p /workspace/bin
+if command -v zstd >/dev/null 2>&1 && [ ! -x "/workspace/bin/zstd" ]; then
+    cp -f "$(command -v zstd)" /workspace/bin/zstd
+fi
+
 echo "=== [2/8] Installing Ollama ==="
 if [ -s "/workspace/ollama_bundle.tar.zst" ]; then
     echo "Restoring Ollama engine from cached /workspace/ollama_bundle.tar.zst..."

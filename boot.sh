@@ -58,10 +58,20 @@ sync_repo_file() {
     exit 1
 }
 
+BOOT_START_TIME=$(date +%s)
+LAST_PHASE_TIME=$BOOT_START_TIME
+
 echo "=== [1/8] Checking Essential Utilities ==="
+if [ -x "/workspace/bin/zstd" ] && ! command -v zstd >/dev/null 2>&1; then
+    mkdir -p /usr/local/bin
+    ln -sf /workspace/bin/zstd /usr/local/bin/zstd
+fi
 if ! command -v curl >/dev/null 2>&1 || ! command -v ps >/dev/null 2>&1 || ! command -v zstd >/dev/null 2>&1 || ! command -v ffmpeg >/dev/null 2>&1; then
     apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl procps zstd ffmpeg libsndfile1
 fi
+now=$(date +%s)
+echo "[Boot] Phase [1/8] completed in $(( now - LAST_PHASE_TIME ))s (Total: $(( now - BOOT_START_TIME ))s)"
+LAST_PHASE_TIME=$now
 
 echo "=== [2/8] Self-Healing: Syncing Global Volume Files on /workspace ==="
 # Ensure /workspace/boot.sh exists
@@ -77,14 +87,18 @@ if [ ! -s "/workspace/boot.sh" ]; then
 fi
 
 # Always sync latest setup_once.sh, runpod_server.py, and requirements-pod.txt from repository via /tmp
-echo "[Boot] Syncing latest setup_once.sh, runpod_server.py, and requirements-pod.txt from repository..."
-sync_repo_file "setup_once.sh" "/workspace/setup_once.sh"
-sync_repo_file "runpod_server.py" "/workspace/app/runpod_server.py"
-sync_repo_file "requirements-pod.txt" "/workspace/app/requirements-pod.txt"
+echo "[Boot] Syncing latest setup_once.sh, runpod_server.py, and requirements-pod.txt from repository in parallel..."
+sync_pids=()
+sync_repo_file "setup_once.sh" "/workspace/setup_once.sh" & sync_pids+=($!)
+sync_repo_file "runpod_server.py" "/workspace/app/runpod_server.py" & sync_pids+=($!)
+sync_repo_file "requirements-pod.txt" "/workspace/app/requirements-pod.txt" & sync_pids+=($!)
 
 mkdir -p /workspace/app/core /workspace/app/core/stt
 for core_file in core/__init__.py core/engine.py core/translation.py core/audio.py core/utils.py core/stt/__init__.py core/stt/base.py core/stt/cloud_engine.py core/stt/local_engine.py core/stt/runpod_engine.py; do
-    sync_repo_file "$core_file" "/workspace/app/$core_file"
+    sync_repo_file "$core_file" "/workspace/app/$core_file" & sync_pids+=($!)
+done
+for spid in "${sync_pids[@]}"; do
+    wait "$spid"
 done
 
 # Circuit Breaker: prevent runaway cloud billing on consecutive setup failures
@@ -195,35 +209,17 @@ if ! command -v ollama >/dev/null 2>&1; then
     fi
 fi
 
-# Wait for extraction if backgrounded before version verification
-wait "${OLLAMA_EXTRACT_PID:-}" 2>/dev/null || true
-
-# Verify restored version matches OLLAMA_VERSION; on mismatch or missing, reinstall and rewrite cache
-INSTALLED_OLLAMA_VER=""
-if command -v ollama >/dev/null 2>&1; then
-    INSTALLED_OLLAMA_VER=$(ollama --version 2>&1 || echo "")
-fi
-
-if [ -z "$INSTALLED_OLLAMA_VER" ] || [[ "$INSTALLED_OLLAMA_VER" != *"$OLLAMA_VERSION"* ]]; then
-    echo "[Boot] Warning: Ollama version mismatch or missing ('${INSTALLED_OLLAMA_VER}' vs required '${OLLAMA_VERSION}'). Reinstalling pinned version..."
-    curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
-    echo "Updating cached Ollama engine to /workspace/ollama_bundle.tar.zst via /tmp..."
-    tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
-    if [ -s "/tmp/ollama_bundle.tar.zst" ]; then
-        cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst.tmp
-        if zstd -t /workspace/ollama_bundle.tar.zst.tmp >/dev/null 2>&1; then
-            mv -f /workspace/ollama_bundle.tar.zst.tmp /workspace/ollama_bundle.tar.zst
-            rm -f /workspace/ollama_bundle.tar
-        fi
-        rm -f /workspace/ollama_bundle.tar.zst.tmp /tmp/ollama_bundle.tar.zst
-    fi
-fi
-
-echo "[Boot] Verified Ollama version: $(ollama --version 2>&1 || echo 'unknown')"
+now=$(date +%s)
+echo "[Boot] Phase [3/8] completed in $(( now - LAST_PHASE_TIME ))s (Total: $(( now - BOOT_START_TIME ))s)"
+LAST_PHASE_TIME=$now
 
 echo "=== [4/8] Creating Volatile Local SSD Directories ==="
 find /workspace -maxdepth 1 -name "*.tmp" -mmin +30 -delete 2>/dev/null || true
 mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama /root/models
+
+now=$(date +%s)
+echo "[Boot] Phase [4/8] completed in $(( now - LAST_PHASE_TIME ))s (Total: $(( now - BOOT_START_TIME ))s)"
+LAST_PHASE_TIME=$now
 
 echo "=== [5/8] Extracting Python Virtual Environment to NVMe SSD (/root/venv) ==="
 extract_failed=false
@@ -262,10 +258,41 @@ fi
 
 wait "${OLLAMA_EXTRACT_PID:-}" 2>/dev/null || true
 
+# Verify restored version matches OLLAMA_VERSION; on mismatch or missing, reinstall and rewrite cache
+INSTALLED_OLLAMA_VER=""
+if command -v ollama >/dev/null 2>&1; then
+    INSTALLED_OLLAMA_VER=$(ollama --version 2>&1 || echo "")
+fi
+
+if [ -z "$INSTALLED_OLLAMA_VER" ] || [[ "$INSTALLED_OLLAMA_VER" != *"$OLLAMA_VERSION"* ]]; then
+    echo "[Boot] Warning: Ollama version mismatch or missing ('${INSTALLED_OLLAMA_VER}' vs required '${OLLAMA_VERSION}'). Reinstalling pinned version..."
+    curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
+    echo "Updating cached Ollama engine to /workspace/ollama_bundle.tar.zst via /tmp..."
+    tar -I "zstd -1 -T0" -cf /tmp/ollama_bundle.tar.zst -C /usr/local bin/ollama lib/ollama 2>/dev/null || true
+    if [ -s "/tmp/ollama_bundle.tar.zst" ]; then
+        cp -f /tmp/ollama_bundle.tar.zst /workspace/ollama_bundle.tar.zst.tmp
+        if zstd -t /workspace/ollama_bundle.tar.zst.tmp >/dev/null 2>&1; then
+            mv -f /workspace/ollama_bundle.tar.zst.tmp /workspace/ollama_bundle.tar.zst
+            rm -f /workspace/ollama_bundle.tar
+        fi
+        rm -f /workspace/ollama_bundle.tar.zst.tmp /tmp/ollama_bundle.tar.zst
+    fi
+fi
+
+echo "[Boot] Verified Ollama version: $(ollama --version 2>&1 || echo 'unknown')"
+
+now=$(date +%s)
+echo "[Boot] Phase [5/8] completed in $(( now - LAST_PHASE_TIME ))s (Total: $(( now - BOOT_START_TIME ))s)"
+LAST_PHASE_TIME=$now
+
 echo "=== [6/8] Syncing Application Code to /root/app ==="
 if [ -d "/workspace/app" ]; then
     cp -r /workspace/app/* /root/app/
 fi
+
+now=$(date +%s)
+echo "[Boot] Phase [6/8] completed in $(( now - LAST_PHASE_TIME ))s (Total: $(( now - BOOT_START_TIME ))s)"
+LAST_PHASE_TIME=$now
 
 echo "=== [7/8] Staging Models & Exporting Environment ==="
 if [ -d "/workspace/models/ollama" ]; then
@@ -299,6 +326,10 @@ done
 if [ -d "/usr/local/cuda/lib64" ]; then
     export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 fi
+
+now=$(date +%s)
+echo "[Boot] Phase [7/8] completed in $(( now - LAST_PHASE_TIME ))s (Total: $(( now - BOOT_START_TIME ))s)"
+LAST_PHASE_TIME=$now
 
 echo "=== [8/8] Starting Services ==="
 pkill -9 -f "ollama serve" 2>/dev/null || true
@@ -346,6 +377,10 @@ fi
 
 # Clear any setup failure counter so running server starts with a clean slate
 rm -f /workspace/.setup_failures
+
+now=$(date +%s)
+echo "[Boot] Phase [8/8] completed in $(( now - LAST_PHASE_TIME ))s (Total: $(( now - BOOT_START_TIME ))s)"
+LAST_PHASE_TIME=$now
 
 echo "Launching Live Translation Server on port 8000..."
 cd /root/app

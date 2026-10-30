@@ -1218,75 +1218,101 @@ class RunPodSTTEngine(BaseSTTEngine):
         """Stop streaming and terminate remote RunPod pod."""
         await self.stop_runpod_pod()
 
-    async def run(self) -> None:
-        """Stream VAD-segmented audio to remote NVIDIA RunPod engine."""
+    async def _deploy_and_wait_for_pod(self, deploy_retry_sec: int) -> Optional[str]:
+        """Deploy RunPod pod with retry loop, wait for initialization, and return websocket URL."""
         loop = asyncio.get_event_loop()
-        wss_url = self.discover_runpod_url()
-        auto_deploy_val = os.getenv("AUTO_DEPLOY_RUNPOD", "false").lower()
-        if not wss_url and auto_deploy_val == "true":
+        deploy_success = False
+        while not self.intentional_shutdown and not bool(getattr(self.engine, "is_paused", False) is True):
             print("[RunPod] No active pod found. Attempting Auto-Deployment/Resume...")
-            start_wait = time.time()
             await self.broadcast_boot_telemetry(self.active_pod_id, "Pod provisioning via REST/GraphQL API...", "STARTING", ["Auto-deployment geactiveerd. Pod aanmaken of opzoeken..."])
             deploy_success = await self.manage_runpod_deployment()
             if deploy_success:
-                print("[RunPod] Deployment successful. Waiting for pod to initialize (this can take 1-3 minutes)...")
-                start_wait = time.time()
-                await self.broadcast_boot_telemetry(self.active_pod_id, "Pod initialiseren... (0s verlopen)", "INITIALIZING", ["Pod actief/aangemaakt. Wachten op netwerk en containers..."])
-                for i in range(96):
-                    await asyncio.sleep(5)
-                    elapsed_sec = int(time.time() - start_wait)
-                    clean_lines = []
-                    raw_logs = ""
-                    last_status, desired_status = None, None
-                    stage = "Pod initialiseren..."
+                break
 
-                    if self.active_pod_id:
-                        last_status, desired_status, raw_logs = await loop.run_in_executor(None, self.fetch_pod_logs, self.active_pod_id)
-                        stage, clean_lines = self.condense_runpod_logs(raw_logs)
-                        detailed_stage = f"{stage} ({elapsed_sec}s verlopen)" if "verlopen" not in stage else stage
-                        await self.broadcast_boot_telemetry(self.active_pod_id, detailed_stage, last_status or desired_status, clean_lines)
-                        print(f"[RunPod Boot] {detailed_stage}")
+            preferred_gpu = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
+            err_detail = getattr(self, "last_deploy_error", None) or f"Kon pod niet provisioneren op RunPod (GPU: {self.active_gpu_name or preferred_gpu})."
+            print(f"[RunPod] Auto-Deployment failed: {err_detail}. Retrying in {deploy_retry_sec}s...")
+            await self.broadcast_boot_telemetry(
+                None,
+                f"Geen GPU beschikbaar op RunPod. Opnieuw proberen over {deploy_retry_sec}s...",
+                "RETRYING",
+                [f"Foutdetails: {err_detail}"]
+            )
+            await asyncio.sleep(deploy_retry_sec)
 
-                    if not wss_url:
-                        wss_url = self.discover_runpod_url()
+        if not deploy_success:
+            return None
 
-                    # Verify if server is confirmed listening/ready before breaking early
-                    raw_text = raw_logs if isinstance(raw_logs, str) else ""
-                    logs_text = " ".join(clean_lines) if isinstance(clean_lines, list) else ""
-                    full_text = (raw_text + " " + logs_text).lower()
+        print("[RunPod] Deployment successful. Waiting for pod to initialize (this can take 1-3 minutes)...")
+        start_wait = time.time()
+        await self.broadcast_boot_telemetry(self.active_pod_id, "Pod initialiseren... (0s verlopen)", "INITIALIZING", ["Pod actief/aangemaakt. Wachten op netwerk en containers..."])
+        wss_url = None
+        for i in range(96):
+            if self.intentional_shutdown or bool(getattr(self.engine, "is_paused", False) is True):
+                break
+            await asyncio.sleep(5)
+            elapsed_sec = int(time.time() - start_wait)
+            clean_lines = []
+            raw_logs = ""
+            last_status, desired_status = None, None
+            stage = "Pod initialiseren..."
 
-                    is_server_listening = any(k in full_text for k in [
-                        "application startup complete",
-                        "uvicorn running on",
-                    ]) or stage == "Server operationeel op poort 8000"
+            if self.active_pod_id:
+                last_status, desired_status, raw_logs = await loop.run_in_executor(None, self.fetch_pod_logs, self.active_pod_id)
+                stage, clean_lines = self.condense_runpod_logs(raw_logs)
+                detailed_stage = f"{stage} ({elapsed_sec}s verlopen)" if "verlopen" not in stage else stage
+                await self.broadcast_boot_telemetry(self.active_pod_id, detailed_stage, last_status or desired_status, clean_lines)
+                print(f"[RunPod Boot] {detailed_stage}")
 
-                    if not is_server_listening and wss_url:
-                        is_server_listening = await loop.run_in_executor(None, self._probe_endpoint, wss_url)
+            if not wss_url:
+                wss_url = self.discover_runpod_url()
 
-                    if wss_url and is_server_listening:
-                        elapsed_sec = int(time.time() - start_wait)
-                        print(f"[RunPod] Server confirmed listening and ready ({elapsed_sec}s). Transitioning to live connection...")
-                        break
+            # Verify if server is confirmed listening/ready before breaking early
+            raw_text = raw_logs if isinstance(raw_logs, str) else ""
+            logs_text = " ".join(clean_lines) if isinstance(clean_lines, list) else ""
+            full_text = (raw_text + " " + logs_text).lower()
 
-                    if not wss_url:
-                        print(f"  ...still waiting for network ({elapsed_sec}s)...")
-                    else:
-                        print(f"  ...pod network assigned ({wss_url}), waiting for server startup / Whisper load ({elapsed_sec}s)...")
+            is_server_listening = any(k in full_text for k in [
+                "application startup complete",
+                "uvicorn running on",
+            ]) or stage == "Server operationeel op poort 8000"
 
-                if not wss_url:
-                    elapsed_sec = int(time.time() - start_wait)
-                    print(f"[RunPod] Timeout: Pod did not become ready in time ({elapsed_sec}s).")
-                    await self.broadcast_boot_telemetry(self.active_pod_id, f"Time-out: Pod niet tijdig gereed ({elapsed_sec}s)", "TIMEOUT", [f"Time-out bereikt na {elapsed_sec}s."])
+            if not is_server_listening and wss_url:
+                is_server_listening = await loop.run_in_executor(None, self._probe_endpoint, wss_url)
+
+            if wss_url and is_server_listening:
+                elapsed_sec = int(time.time() - start_wait)
+                print(f"[RunPod] Server confirmed listening and ready ({elapsed_sec}s). Transitioning to live connection...")
+                break
+
+            if not wss_url:
+                print(f"  ...still waiting for network ({elapsed_sec}s)...")
             else:
-                preferred_gpu = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
-                err_detail = getattr(self, "last_deploy_error", None) or f"Kon pod niet provisioneren op RunPod (GPU: {self.active_gpu_name or preferred_gpu})."
-                print(f"[RunPod] Auto-Deployment failed: {err_detail}")
-                await self.broadcast_boot_telemetry(
-                    self.active_pod_id,
-                    f"Auto-Deployment mislukt: {self.active_gpu_name or preferred_gpu}",
-                    "FAILED",
-                    [f"Foutdetails: {err_detail}"]
-                )
+                print(f"  ...pod network assigned ({wss_url}), waiting for server startup / Whisper load ({elapsed_sec}s)...")
+
+        if not wss_url:
+            elapsed_sec = int(time.time() - start_wait)
+            print(f"[RunPod] Timeout: Pod did not become ready in time ({elapsed_sec}s).")
+            await self.broadcast_boot_telemetry(self.active_pod_id, f"Time-out: Pod niet tijdig gereed ({elapsed_sec}s)", "TIMEOUT", [f"Time-out bereikt na {elapsed_sec}s."])
+
+        return wss_url
+
+    async def run(self) -> None:
+        """Stream VAD-segmented audio to remote NVIDIA RunPod engine."""
+        loop = asyncio.get_event_loop()
+        try:
+            deploy_retry_sec = max(1, int(os.getenv("RUNPOD_DEPLOY_RETRY_SEC", "15")))
+        except (ValueError, TypeError):
+            deploy_retry_sec = 15
+        self.deploy_retry_sec = deploy_retry_sec
+
+        auto_deploy_val = os.getenv("AUTO_DEPLOY_RUNPOD", "false").lower()
+        has_api_key = bool(os.getenv("RUNPOD_API_KEY", "").strip())
+        auto_deploy_enabled = (auto_deploy_val == "true" and has_api_key)
+
+        wss_url = self.discover_runpod_url()
+        if not wss_url and auto_deploy_enabled:
+            wss_url = await self._deploy_and_wait_for_pod(deploy_retry_sec)
 
         if not wss_url:
             wss_url = os.getenv("RUNPOD_WSS_URL")
@@ -1299,11 +1325,32 @@ class RunPodSTTEngine(BaseSTTEngine):
             self.engine.audio_stream.is_connected = False
 
         connect_start_time = time.time()
+        first_connect_attempt = True
         while True:
+            if auto_deploy_enabled and not first_connect_attempt:
+                running_url = self.discover_runpod_url()
+                if not running_url:
+                    print(f"[RunPod] Connection dropped and no pod running on RunPod. Waiting {deploy_retry_sec}s before re-deploying...")
+                    self.active_pod_id = None
+                    wss_url = None
+                    preferred_gpu = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
+                    err_detail = getattr(self, "last_deploy_error", None) or "Geen actieve pod gevonden op RunPod."
+                    await self.broadcast_boot_telemetry(
+                        None,
+                        f"Geen GPU beschikbaar op RunPod. Opnieuw proberen over {deploy_retry_sec}s...",
+                        "RETRYING",
+                        [f"Foutdetails: {err_detail}"]
+                    )
+                    await asyncio.sleep(deploy_retry_sec)
+                    wss_url = await self._deploy_and_wait_for_pod(deploy_retry_sec)
+                elif not wss_url or wss_url == "ws://127.0.0.1:8888/stream":
+                    wss_url = running_url
+            first_connect_attempt = False
+
             if not wss_url:
                 connect_start_time = time.time()
                 wss_url = self.discover_runpod_url()
-                if not wss_url and os.getenv("RUNPOD_API_KEY"):
+                if not wss_url and os.getenv("RUNPOD_API_KEY") and not auto_deploy_enabled:
                     await self.manage_runpod_deployment()
                     wss_url = self.discover_runpod_url()
                 if not wss_url:
@@ -1813,6 +1860,9 @@ class RunPodSTTEngine(BaseSTTEngine):
                     if discovered and discovered != wss_url:
                         print(f"[RunPod] Discovered direct accessible endpoint: {discovered}")
                         wss_url = discovered
+                    elif not discovered and auto_deploy_enabled:
+                        wss_url = None
+                        self.active_pod_id = None
 
                 # Continuously stream live boot telemetry and container logs during connection retries
                 if self.active_pod_id:

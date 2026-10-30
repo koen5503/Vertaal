@@ -73,10 +73,17 @@ def get_runpod_gpu_fallbacks(preferred_gpu_or_env: Any = None) -> List[str]:
     candidate_gpus = [
         preferred_gpu,
         "NVIDIA RTX A5000",
+        "NVIDIA RTX A4000",
         "NVIDIA RTX 4000 Ada Generation",
+        "NVIDIA RTX 4000 SFF Ada Generation",
         "NVIDIA RTX A4500",
         "NVIDIA GeForce RTX 3090",
+        "NVIDIA GeForce RTX 3090 Ti",
         "NVIDIA GeForce RTX 4080",
+        "NVIDIA GeForce RTX 4080 SUPER",
         "NVIDIA GeForce RTX 4090",
+        "NVIDIA RTX A6000",
+        "NVIDIA A40",
+        "NVIDIA L4",
     ]
     return list(dict.fromkeys(candidate_gpus))

@@ -1112,6 +1112,189 @@ import runpod_server
                 f"Expected ModuleNotFoundError or ImportError in stderr, got:\n{fail_fast_proc.stderr}",
             )
 
+    def test_runpod_auto_deploy_retry_loop_on_stock_exhaustion(self):
+        """Verify RUNPOD_DEPLOY_RETRY_SEC retry loop emits RETRYING telemetry on supply constraint and retries until success."""
+        broadcast_messages = []
+        sleep_durations = []
+
+        mock_engine = MagicMock()
+        mock_engine.is_paused = False
+        mock_engine.source_lang = "nl-NL"
+        mock_engine.target_lang_1 = "en"
+        mock_engine.target_lang_2 = "ru"
+        mock_engine.target_lang_3 = "de"
+        mock_engine.target_lang_4 = "nl-NL"
+        mock_engine.initial_session_window_minutes = 15
+        mock_engine.broadcast = AsyncMock(side_effect=lambda msg: broadcast_messages.append(msg))
+        mock_engine.audio_stream = MagicMock()
+        mock_engine.audio_stream.is_connected = False
+        mock_engine.audio_stream.running = True
+
+        stt_engine = RunPodSTTEngine(engine=mock_engine)
+
+        deploy_attempts = 0
+        async def mock_manage_deployment():
+            nonlocal deploy_attempts
+            deploy_attempts += 1
+            if deploy_attempts < 3:
+                stt_engine.last_deploy_error = f"Alle candidate GPUs bezet (poging {deploy_attempts})"
+                return False
+            stt_engine.active_pod_id = "pod-auto-retry-success"
+            return True
+
+        stt_engine.manage_runpod_deployment = mock_manage_deployment
+
+        def mock_discover():
+            if deploy_attempts >= 3:
+                return "wss://pod-auto-retry-success-8000.proxy.runpod.net/stream"
+            return None
+
+        stt_engine.discover_runpod_url = mock_discover
+        stt_engine.fetch_pod_logs = MagicMock(return_value=("RUNNING", "RUNNING", "Uvicorn running on http://0.0.0.0:8000"))
+        stt_engine._probe_endpoint = MagicMock(return_value=True)
+
+        async def mock_sleep(seconds):
+            sleep_durations.append(seconds)
+            if deploy_attempts >= 3:
+                raise asyncio.CancelledError()
+
+        class MockWs:
+            async def send(self, data):
+                pass
+            def __aiter__(self):
+                return self
+            async def __anext__(self):
+                raise asyncio.CancelledError()
+
+        class MockConnectCM:
+            def __init__(self, uri, *args, **kwargs):
+                self.uri = uri
+            async def __aenter__(self):
+                return MockWs()
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        mock_ws_mod = MagicMock()
+        mock_ws_mod.connect = MockConnectCM
+
+        test_env = {
+            "AUTO_DEPLOY_RUNPOD": "true",
+            "RUNPOD_API_KEY": "mock_api_key_12345",
+            "RUNPOD_DEPLOY_RETRY_SEC": "7",
+        }
+
+        async def run_sim():
+            with patch.dict(os.environ, test_env), \
+                 patch("core.stt.runpod_engine.websockets", mock_ws_mod), \
+                 patch("asyncio.sleep", side_effect=mock_sleep):
+                try:
+                    await stt_engine.run()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(run_sim())
+
+        # Verify deployment was retried 3 times
+        self.assertEqual(deploy_attempts, 3)
+        # Verify sleep duration matched RUNPOD_DEPLOY_RETRY_SEC (7s)
+        self.assertIn(7, sleep_durations)
+        # Verify RETRYING telemetry was broadcast with retry message and error details
+        retrying_telemetry = [b for b in broadcast_messages if b.get("status") == "RETRYING"]
+        self.assertGreaterEqual(len(retrying_telemetry), 2)
+        self.assertIn("Opnieuw proberen over 7s...", retrying_telemetry[0]["stage"])
+        self.assertIn("Foutdetails:", retrying_telemetry[0]["logs"][0])
+
+    def test_runpod_reconnect_loop_redeploys_when_pod_disappears(self):
+        """When connection drops and no pod is running on RunPod, reconnect loop waits RUNPOD_DEPLOY_RETRY_SEC and re-deploys."""
+        redeploy_calls = []
+        sleep_durations = []
+
+        mock_engine = MagicMock()
+        mock_engine.is_paused = False
+        mock_engine.source_lang = "nl-NL"
+        mock_engine.target_lang_1 = "en"
+        mock_engine.target_lang_2 = "ru"
+        mock_engine.target_lang_3 = "de"
+        mock_engine.target_lang_4 = "nl-NL"
+        mock_engine.initial_session_window_minutes = 15
+        mock_engine.broadcast = AsyncMock()
+        mock_engine.audio_stream = MagicMock()
+        mock_engine.audio_stream.is_connected = False
+        mock_engine.audio_stream.running = True
+
+        stt_engine = RunPodSTTEngine(engine=mock_engine)
+
+        connection_attempts = 0
+        pod_running = True
+
+        def mock_discover():
+            nonlocal connection_attempts, pod_running
+            if pod_running:
+                return "wss://initial-pod-8000.proxy.runpod.net/stream"
+            return None
+
+        stt_engine.discover_runpod_url = mock_discover
+
+        async def mock_deploy_and_wait(retry_sec):
+            redeploy_calls.append(retry_sec)
+            return "wss://re-deployed-pod-8000.proxy.runpod.net/stream"
+
+        stt_engine._deploy_and_wait_for_pod = mock_deploy_and_wait
+
+        async def mock_sleep(seconds):
+            sleep_durations.append(seconds)
+
+        class MockWs:
+            async def send(self, data):
+                pass
+            def __aiter__(self):
+                return self
+            async def __anext__(self):
+                raise asyncio.CancelledError()
+
+        class MockConnectCM:
+            def __init__(self, uri, *args, **kwargs):
+                self.uri = uri
+            async def __aenter__(self):
+                nonlocal connection_attempts, pod_running
+                connection_attempts += 1
+                if connection_attempts == 1:
+                    # Pod crashes/terminates after first disconnect
+                    pod_running = False
+                    raise ConnectionResetError("Connection lost to remote pod")
+                # Second connection to newly deployed pod
+                raise asyncio.CancelledError()
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        mock_ws_mod = MagicMock()
+        mock_ws_mod.connect = MockConnectCM
+
+        test_env = {
+            "AUTO_DEPLOY_RUNPOD": "true",
+            "RUNPOD_API_KEY": "mock_api_key_12345",
+            "RUNPOD_DEPLOY_RETRY_SEC": "5",
+        }
+
+        async def run_sim():
+            with patch.dict(os.environ, test_env), \
+                 patch("core.stt.runpod_engine.websockets", mock_ws_mod), \
+                 patch("asyncio.sleep", side_effect=mock_sleep):
+                try:
+                    await stt_engine.run()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(run_sim())
+
+        # Verify initial connection attempted
+        self.assertGreaterEqual(connection_attempts, 2)
+        # Verify re-deployment was triggered when pod disappeared
+        self.assertEqual(len(redeploy_calls), 1)
+        self.assertEqual(redeploy_calls[0], 5)
+        # Verify deploy_retry_sec was slept before re-deploying
+        self.assertIn(5, sleep_durations)
+
 
 if __name__ == "__main__":
     unittest.main()

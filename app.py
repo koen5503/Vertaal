@@ -10,6 +10,7 @@ import multiprocessing
 import os
 import signal
 import socket
+import sys
 import threading
 import time
 import urllib.request
@@ -147,7 +148,7 @@ async def startup_event():
 
 
 @app.on_event("shutdown")
-def shutdown_event():
+async def shutdown_event():
     try:
         if hasattr(app.state, 'zeroconf'):
             app.state.zeroconf.unregister_service(app.state.zeroconf_info)
@@ -156,17 +157,18 @@ def shutdown_event():
     except Exception:
         pass
 
-    if hasattr(engine.stt_engine, "stop_runpod_pod") and getattr(engine.stt_engine, "active_pod_id", None):
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(engine.stt_engine.stop_runpod_pod())
-            else:
-                loop.run_until_complete(engine.stt_engine.stop_runpod_pod())
-        except Exception as e:
-            print(f"[Shutdown] Notice: could not stop pod synchronously: {e}")
+    try:
+        if hasattr(engine, "stop"):
+            await engine.stop()
+        elif hasattr(engine.stt_engine, "stop_runpod_pod"):
+            await engine.stt_engine.stop_runpod_pod()
+    except Exception as e:
+        print(f"[Shutdown] Notice: could not stop engine/pod: {e}")
 
-    engine.audio_stream.stop(terminate_pyaudio=True)
+    try:
+        engine.audio_stream.stop(terminate_pyaudio=True)
+    except Exception:
+        pass
 
 
 # ============================================================================
@@ -245,15 +247,27 @@ async def websocket_endpoint(websocket: WebSocket):
                     print("Shutdown requested from UI")
                     engine.is_paused = True
                     engine.restart_required = True
-                    engine.audio_stream.stop(terminate_pyaudio=True)
+                    try:
+                        if hasattr(engine, "stop"):
+                            await engine.stop()
+                        elif hasattr(engine.stt_engine, "stop_runpod_pod"):
+                            await engine.stt_engine.stop_runpod_pod()
+                    except Exception as e:
+                        print(f"[Shutdown] Notice: could not stop engine/pod: {e}")
+
+                    try:
+                        await websocket.send_json({"action": "server_stopped"})
+                    except Exception:
+                        pass
 
                     def force_exit():
-                        time.sleep(1)
+                        time.sleep(1.5)
                         print("Forcing exit...")
                         os._exit(0)
 
                     threading.Thread(target=force_exit, daemon=True).start()
-                    os.kill(os.getpid(), signal.SIGINT)
+                    if sys.platform != "win32":
+                        os.kill(os.getpid(), signal.SIGINT)
             except Exception as e:
                 print(f"WS Handling Error: {e}")
     except WebSocketDisconnect:

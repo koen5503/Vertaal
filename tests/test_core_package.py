@@ -2640,6 +2640,74 @@ class TestCorePackage(unittest.TestCase):
                     self.assertEqual(sent_requests[1], ("DELETE", "https://api.runpod.io/v2/pods/pod-server-test"))
                     self.assertEqual(slept_intervals, [1.0])
 
+    def test_app_shutdown_stops_engine_and_cloud_pod_cross_platform(self):
+        """Verify UI stop and shutdown_event properly await engine.stop() and guard SIGINT on Windows."""
+        import inspect
+        import sys
+        from unittest.mock import AsyncMock, MagicMock
+
+        # 1. Source code inspection of app.py
+        with open("app.py", "r", encoding="utf-8") as f:
+            app_src = f.read()
+
+        # Verify async def shutdown_event() exists and awaits engine.stop()
+        self.assertIn("async def shutdown_event():", app_src)
+        self.assertIn("await engine.stop()", app_src)
+
+        # Verify action == "shutdown" branch awaits engine.stop()
+        self.assertIn('msg.get("action") == "shutdown"', app_src)
+        # Verify sys.platform != "win32" guards os.kill
+        self.assertIn('if sys.platform != "win32":', app_src)
+        self.assertIn('os.kill(os.getpid(), signal.SIGINT)', app_src)
+        self.assertIn('"server_stopped"', app_src)
+
+        # 2. Functional execution of shutdown_event() with mocked engine.stop
+        mock_fastapi = MagicMock()
+        mock_fastapi_app = MagicMock()
+        mock_fastapi_app.on_event.return_value = lambda f: f
+        mock_fastapi_app.websocket.return_value = lambda f: f
+        mock_fastapi.FastAPI.return_value = mock_fastapi_app
+        mock_fastapi.WebSocket = MagicMock()
+
+        class DummyWSDisconnect(Exception):
+            pass
+
+        mock_fastapi.WebSocketDisconnect = DummyWSDisconnect
+        mock_responses = MagicMock()
+        mock_responses.HTMLResponse = MagicMock()
+
+        with patch.dict(sys.modules, {
+            "fastapi": mock_fastapi,
+            "fastapi.responses": mock_responses,
+        }):
+            import app
+
+            # Verify shutdown_event is an asynchronous coroutine function
+            self.assertTrue(inspect.iscoroutinefunction(app.shutdown_event))
+
+            # Simulate calling shutdown_event
+            mock_stop = AsyncMock()
+            with patch.object(app.engine, "stop", mock_stop), \
+                 patch.object(app.engine.audio_stream, "stop"):
+                asyncio.run(app.shutdown_event())
+
+            mock_stop.assert_awaited_once()
+
+            # Simulate WebSocket action == "shutdown"
+            mock_stop_ws = AsyncMock()
+            mock_ws = AsyncMock()
+            mock_ws.receive_text.side_effect = [
+                json.dumps({"action": "shutdown"}),
+                DummyWSDisconnect(),
+            ]
+            with patch.object(app.engine, "stop", mock_stop_ws), \
+                 patch("threading.Thread"), \
+                 patch("os.kill"):
+                asyncio.run(app.websocket_endpoint(mock_ws))
+
+            mock_stop_ws.assert_awaited_once()
+            mock_ws.send_json.assert_any_await({"action": "server_stopped"})
+
 
 if __name__ == "__main__":
     unittest.main()

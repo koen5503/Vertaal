@@ -1,7 +1,12 @@
 """Speech-to-Text (STT) engine package."""
 
 from core.stt.base import BaseSTTEngine
-from core.stt.cloud_engine import CloudSTTEngine
+
+try:
+    from core.stt.cloud_engine import CloudSTTEngine
+except ImportError:
+    CloudSTTEngine = None
+
 from core.stt.local_engine import (
     BROADCAST_CREDIT_PATTERN,
     NOISE_HALLUCINATION_PHRASES,
@@ -9,7 +14,12 @@ from core.stt.local_engine import (
     LocalSTTEngine,
     filter_anti_hallucination,
 )
-from core.stt.runpod_engine import RunPodSTTEngine, condense_runpod_logs
+
+try:
+    from core.stt.runpod_engine import RunPodSTTEngine, condense_runpod_logs
+except ImportError:
+    RunPodSTTEngine = None
+    condense_runpod_logs = None
 
 __all__ = [
     "BaseSTTEngine",

@@ -986,6 +986,133 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
         self.assertIn('"status": "ok"', server_src)
         self.assertIn('"whisper_ready": True', server_src)
 
+    def test_isolated_pod_file_layout_imports_core_without_drift(self):
+        """Verify pod layout simulating /root/app with only runpod_server.py and core/ imports properly without fallback or drift."""
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        core_dir = os.path.join(repo_root, "core")
+        runpod_server_file = os.path.join(repo_root, "runpod_server.py")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # 1. Simulate the pod filesystem:
+            # Stage only runpod_server.py and core/ as staged by boot.sh
+            shutil.copy(runpod_server_file, os.path.join(tmp_dir, "runpod_server.py"))
+            shutil.copytree(core_dir, os.path.join(tmp_dir, "core"))
+
+            # 2. Run a clean subprocess with PYTHONPATH=<tmp_dir> to verify:
+            # - core.stt.local_engine imports without ModuleNotFoundError
+            # - runpod_server.py does NOT fall back to embedded definitions when core is present
+            # - anti-hallucination filtering passes identical assertions
+            verify_script = """
+import sys
+from unittest.mock import MagicMock
+sys.modules['fastapi'] = MagicMock()
+sys.modules['uvicorn'] = MagicMock()
+sys.modules['faster_whisper'] = MagicMock()
+sys.modules['ollama'] = MagicMock()
+
+# 1. Assert that core.stt.local_engine imports directly without drift
+from core.stt.local_engine import filter_anti_hallucination as core_filter
+
+# 2. Assert that runpod_server successfully imported from core.stt.local_engine
+import runpod_server
+assert runpod_server.filter_anti_hallucination is core_filter, (
+    "runpod_server did not import filter_anti_hallucination from core.stt.local_engine!"
+)
+
+# 3. Assert all critical filters pass identically:
+# a) Broadcaster credit pattern
+assert core_filter("TV Gelderland 2021") is None
+assert core_filter("Ondertitels") is None
+assert core_filter("Subtitles by OpenSubtitles") is None
+
+# b) Noise phrase
+assert core_filter("Dank u wel.") is None
+assert core_filter("Bedankt voor het kijken.") is None
+
+# c) Consecutive repeating word loops (>= 4x)
+assert core_filter("dit is een heel heel heel heel mooi moment") is None
+
+# d) Isolated glossary phrase (<= 2 words)
+assert core_filter("Schootsekerk", glossary_phrases=["Schootsekerk"]) is None
+assert core_filter("Halleluja!", glossary_phrases=["halleluja"]) is None
+
+# e) Low unique word ratio (< 30%)
+assert core_filter("woord een woord een woord een woord een woord een") is None
+
+# f) Legitimate speech passes intact
+assert core_filter("Dit is een normale zin over de gemeenschap.") == "Dit is een normale zin over de gemeenschap."
+
+# g) Legitimate repeated words (< 4x) passes intact
+assert core_filter("heel heel mooi") == "heel heel mooi"
+
+print("ISOLATED_POD_IMPORT_SUCCESS")
+"""
+            env = os.environ.copy()
+            env["PYTHONPATH"] = tmp_dir
+            proc = subprocess.run(
+                [sys.executable, "-c", verify_script],
+                cwd=tmp_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"Subprocess in isolated pod layout failed with code {proc.returncode}:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}",
+            )
+            self.assertIn("ISOLATED_POD_IMPORT_SUCCESS", proc.stdout)
+
+        # 3. Verify that when core IS absent, runpod_server.py fallback behaves identically
+        with tempfile.TemporaryDirectory() as fallback_tmp_dir:
+            shutil.copy(runpod_server_file, os.path.join(fallback_tmp_dir, "runpod_server.py"))
+            fallback_script = """
+import sys
+from unittest.mock import MagicMock
+sys.modules['fastapi'] = MagicMock()
+sys.modules['uvicorn'] = MagicMock()
+sys.modules['faster_whisper'] = MagicMock()
+sys.modules['ollama'] = MagicMock()
+
+import runpod_server
+
+fb_filter = runpod_server.filter_anti_hallucination
+
+# Fallback assertions match core 100%:
+assert fb_filter("TV Gelderland 2021") is None
+assert fb_filter("Ondertitels") is None
+assert fb_filter("Subtitles by OpenSubtitles") is None
+assert fb_filter("Dank u wel.") is None
+assert fb_filter("Bedankt voor het kijken.") is None
+assert fb_filter("dit is een heel heel heel heel mooi moment") is None
+assert fb_filter("Schootsekerk", glossary_phrases=["Schootsekerk"]) is None
+assert fb_filter("Halleluja!", glossary_phrases=["halleluja"]) is None
+assert fb_filter("woord een woord een woord een woord een woord een") is None
+assert fb_filter("Dit is een normale zin over de gemeenschap.") == "Dit is een normale zin over de gemeenschap."
+assert fb_filter("heel heel mooi") == "heel heel mooi"
+
+print("FALLBACK_ALIGNMENT_SUCCESS")
+"""
+            fallback_proc = subprocess.run(
+                [sys.executable, "-c", fallback_script],
+                cwd=fallback_tmp_dir,
+                env={"PYTHONPATH": fallback_tmp_dir, "PATH": os.environ.get("PATH", "")},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                fallback_proc.returncode,
+                0,
+                f"Fallback alignment test failed:\nSTDOUT:\n{fallback_proc.stdout}\nSTDERR:\n{fallback_proc.stderr}",
+            )
+            self.assertIn("FALLBACK_ALIGNMENT_SUCCESS", fallback_proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

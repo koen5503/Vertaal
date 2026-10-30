@@ -11,7 +11,10 @@ from core.audio import (
     resample_for_stt,
     validate_webrtc_frame,
 )
-from core.engine import TranscriptionEngine
+try:
+    from core.engine import TranscriptionEngine
+except ImportError:
+    TranscriptionEngine = None
 from core.stt import (
     BROADCAST_CREDIT_PATTERN,
     NOISE_HALLUCINATION_PHRASES,

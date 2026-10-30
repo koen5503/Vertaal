@@ -52,6 +52,57 @@ sync_repo_file() {
     exit 1
 }
 
+# Concurrency lock on /workspace to prevent multi-pod collisions on global volumes
+LOCK_DIR="/workspace/.setup.lock"
+
+acquire_setup_lock() {
+    local max_wait=600
+    local wait_time=0
+    local poll_interval=5
+
+    while true; do
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            echo "$$ $(date +%s) ${RUNPOD_POD_ID:-${HOSTNAME:-unknown}}" > "$LOCK_DIR/owner"
+            trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+            return 0
+        fi
+
+        # Lock directory exists: inspect timestamp inside owner file
+        local lock_ts
+        lock_ts=$(awk '{print $2}' "$LOCK_DIR/owner" 2>/dev/null || echo "0")
+        if ! [[ "$lock_ts" =~ ^[0-9]+$ ]]; then
+            lock_ts=0
+        fi
+
+        local now
+        now=$(date +%s)
+        local age=$(( now - lock_ts ))
+
+        if [ "$lock_ts" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -lt 900 ]; then
+            echo "[Setup] Setup lock held by another process (age: ${age}s). Waiting for completion... (${wait_time}/${max_wait}s)"
+            sleep "$poll_interval"
+            wait_time=$(( wait_time + poll_interval ))
+            if [ "$wait_time" -ge "$max_wait" ]; then
+                echo "ERROR: Timed out waiting for setup lock after ${wait_time}s!" >&2
+                exit 1
+            fi
+
+            # Check if setup completed while we were waiting
+            if [ ! -d "$LOCK_DIR" ]; then
+                if [ -s "/workspace/venv_bundle.tar.zst" ] || [ -s "/workspace/venv_bundle.tar" ] || [ -f "/workspace/.bundle_version" ]; then
+                    echo "[Setup] Setup was completed by concurrent process. Skipping duplicate setup."
+                    exit 0
+                fi
+            fi
+        else
+            echo "[Setup] Stale setup lock detected (>900s old or unreadable). Removing stale lock..."
+            rm -rf "$LOCK_DIR"
+        fi
+    done
+}
+
+acquire_setup_lock
+
 echo "=== [1/8] Installing OS Packages ==="
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -162,10 +213,9 @@ sync_repo_file "runpod_server.py" "/workspace/app/runpod_server.py"
 sync_repo_file "boot.sh" "/workspace/boot.sh"
 
 # Stage core package
-for core_file in core/__init__.py core/translation.py core/audio.py core/stt/__init__.py core/stt/base.py core/stt/local_engine.py; do
+for core_file in core/__init__.py core/engine.py core/translation.py core/audio.py core/utils.py core/stt/__init__.py core/stt/base.py core/stt/cloud_engine.py core/stt/local_engine.py core/stt/runpod_engine.py; do
     sync_repo_file "$core_file" "/workspace/app/$core_file"
 done
-sync_repo_file "core/utils.py" "/workspace/app/core/utils.py"
 
 echo "=== One-time setup completed successfully! ==="
 echo "The Global Volume /workspace is now fully prepared."

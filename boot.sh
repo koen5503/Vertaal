@@ -81,15 +81,75 @@ sync_repo_file "setup_once.sh" "/workspace/setup_once.sh"
 sync_repo_file "runpod_server.py" "/workspace/app/runpod_server.py"
 
 mkdir -p /workspace/app/core /workspace/app/core/stt
-for core_file in core/__init__.py core/translation.py core/audio.py core/stt/__init__.py core/stt/base.py core/stt/local_engine.py; do
+for core_file in core/__init__.py core/engine.py core/translation.py core/audio.py core/utils.py core/stt/__init__.py core/stt/base.py core/stt/cloud_engine.py core/stt/local_engine.py core/stt/runpod_engine.py; do
     sync_repo_file "$core_file" "/workspace/app/$core_file"
 done
-sync_repo_file "core/utils.py" "/workspace/app/core/utils.py"
+
+# Circuit Breaker: prevent runaway cloud billing on consecutive setup failures
+run_setup_once() {
+    local fail_count
+    fail_count=$(cat /workspace/.setup_failures 2>/dev/null || echo "0")
+    if ! [[ "$fail_count" =~ ^[0-9]+$ ]]; then
+        fail_count=0
+    fi
+
+    if [ "$fail_count" -ge 3 ]; then
+        echo "[Boot] FATAL: setup_once.sh has failed $fail_count consecutive times. Halting pod to prevent infinite restart billing loop!" >&2
+        cat <<EOF > /workspace/setup_fatal.log
+FATAL: setup_once.sh failed $fail_count consecutive times on $(date -u 2>/dev/null || date)
+Pod ID: ${RUNPOD_POD_ID:-unknown}
+Bundle version: ${BUNDLE_VERSION}
+Halting container execution to prevent infinite restart loop and runaway billing.
+Inspect this volume or clear /workspace/.setup_failures after resolving root cause.
+EOF
+        if [ -n "${RUNPOD_API_KEY:-}" ] && [ -n "${RUNPOD_POD_ID:-}" ]; then
+            echo "[Boot] Attempting self-termination of pod ${RUNPOD_POD_ID} via RunPod REST API..." >&2
+            curl -fsSL -X DELETE \
+                -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+                "https://api.runpod.io/v2/pods/${RUNPOD_POD_ID}" >/dev/null 2>&1 || true
+        fi
+        echo "[Boot] Entering idle hold loop to stop restart cycles (sleep 86400)..." >&2
+        while true; do
+            sleep 86400 || true
+        done
+    fi
+
+    if bash /workspace/setup_once.sh; then
+        rm -f /workspace/.setup_failures
+    else
+        fail_count=$(( fail_count + 1 ))
+        echo "$fail_count" > /workspace/.setup_failures
+        echo "ERROR: setup_once.sh failed (failure count: $fail_count)." >&2
+        exit 1
+    fi
+}
+
+# Concurrency lock check: if another pod is currently running setup_once.sh on this volume, wait for it
+if [ -d "/workspace/.setup.lock" ]; then
+    LOCK_TS=$(awk '{print $2}' /workspace/.setup.lock/owner 2>/dev/null || echo "0")
+    if ! [[ "$LOCK_TS" =~ ^[0-9]+$ ]]; then LOCK_TS=0; fi
+    NOW=$(date +%s)
+    AGE=$(( NOW - LOCK_TS ))
+    if [ "$LOCK_TS" -gt 0 ] && [ "$AGE" -ge 0 ] && [ "$AGE" -lt 900 ]; then
+        echo "[Boot] Another pod is currently running setup on /workspace (lock age: ${AGE}s). Waiting up to 10m for completion..."
+        WAIT_TOTAL=0
+        while [ -d "/workspace/.setup.lock" ] && [ "$WAIT_TOTAL" -lt 600 ]; do
+            sleep 5
+            WAIT_TOTAL=$(( WAIT_TOTAL + 5 ))
+        done
+        if [ -s "/workspace/venv_bundle.tar.zst" ] || [ -f "/workspace/.bundle_version" ]; then
+            echo "[Boot] Concurrent setup finished successfully. Proceeding to boot."
+        fi
+    elif [ "$AGE" -ge 900 ] || [ "$LOCK_TS" -eq 0 ]; then
+        echo "[Boot] Removing stale setup lock (>900s old)..."
+        rm -rf /workspace/.setup.lock
+    fi
+fi
 
 # Self-Initialization Check: If venv_bundle or models are missing, run automated setup_once.sh
 if { [ ! -s "/workspace/venv_bundle.tar.zst" ] && [ ! -s "/workspace/venv_bundle.tar" ]; } || [ ! -d "/workspace/models/faster-whisper-large-v3" ] || [ ! -d "/workspace/models/ollama" ]; then
     echo "[Boot] First run detected on /workspace: running automated setup_once.sh..."
-    bash /workspace/setup_once.sh
+    run_setup_once
 fi
 
 # Bundle Version Manifest Check:
@@ -103,7 +163,7 @@ fi
 FOUND_BUNDLE_VER=$(cat /workspace/.bundle_version 2>/dev/null || echo "")
 if [ -n "$FOUND_BUNDLE_VER" ] && [ "$FOUND_BUNDLE_VER" != "$BUNDLE_VERSION" ]; then
     echo "[Boot] Intentional bundle upgrade detected (volume version '${FOUND_BUNDLE_VER}' vs required version '${BUNDLE_VERSION}'). Running setup_once.sh..."
-    bash /workspace/setup_once.sh
+    run_setup_once
 fi
 
 echo "=== [3/8] Verifying Ollama Installation in Container OS ==="
@@ -134,7 +194,7 @@ if ! command -v ollama >/dev/null 2>&1; then
 fi
 
 echo "=== [4/8] Creating Volatile Local SSD Directories ==="
-rm -f /workspace/*.tmp
+find /workspace -maxdepth 1 -name "*.tmp" -mmin +30 -delete 2>/dev/null || true
 mkdir -p /root/app /tmp/hf_cache /tmp/torch_cache /root/.ollama /root/models
 
 echo "=== [5/8] Extracting Python Virtual Environment to NVMe SSD (/root/venv) ==="
@@ -150,7 +210,7 @@ fi
 if [ "$extract_failed" = true ] || [ ! -f "/root/venv/bin/python3" ]; then
     echo "[Boot] Warning: Corrupted or missing /workspace/venv_bundle.tar detected. Self-healing via setup_once.sh..."
     rm -f /workspace/venv_bundle.tar.zst /workspace/venv_bundle.tar
-    bash /workspace/setup_once.sh
+    run_setup_once
 fi
 
 SYS_PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")
@@ -163,7 +223,7 @@ if [ -n "$SYS_PY_VER" ] && [ -n "$VENV_PY_VER" ] && [ "$SYS_PY_VER" != "$VENV_PY
     if ! /root/venv/bin/python3 -c 'import fastapi, uvicorn, faster_whisper, ollama' >/dev/null 2>&1; then
         echo "[Boot] Required packages not importable in venv (minor version mismatch). Rebuilding venv via setup_once.sh..."
         rm -rf /root/venv
-        bash /workspace/setup_once.sh
+        run_setup_once
     fi
 fi
 

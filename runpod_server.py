@@ -9,7 +9,7 @@ import re
 import string
 import threading
 import time
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 import urllib.error
 import urllib.request
 
@@ -89,23 +89,30 @@ except ImportError:
     def filter_anti_hallucination(
         text: Optional[str],
         last_transcript: str = "",
-        glossary_phrases: Optional[list] = None,
+        glossary_phrases: Optional[List[str]] = None,
         is_same_segment: bool = False,
     ) -> Optional[str]:
+        """Run anti-hallucination filters on Whisper transcription output."""
         if not text:
             return None
+
+        # Strip trailing hallucination artifacts (broadcaster tags, polite closing tacks)
         cleaned_tail = TAIL_HALLUCINATION_PATTERN.sub("", text).strip()
         if not cleaned_tail:
+            print(f"Filtered hallucination (pure broadcast/credit): '{text}'")
             return None
         if cleaned_tail != text.strip():
+            print(f"Trimmed trailing hallucination credit from text: '{text}' -> '{cleaned_tail}'")
             text = cleaned_tail
 
         clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
         clean_text = " ".join(clean_text.split())
         words = clean_text.split()
+
         if not words:
             return None
 
+        # 0. Noise / Polite Closing / Broadcaster Hallucination Filter
         clean_no_digits = " ".join(re.sub(r"\b(19\d\d|20\d\d)\b", "", clean_text).split())
         if (
             clean_text in NOISE_HALLUCINATION_PHRASES
@@ -113,15 +120,25 @@ except ImportError:
             or BROADCAST_CREDIT_PATTERN.match(clean_text)
             or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
         ):
+            print(f"Filtered hallucination (noise/broadcaster credit): '{text}'")
             return None
+
+        # Prompt Leakage Filter (Whisper Hallucination)
         elif last_transcript and not is_same_segment:
             clean_last = last_transcript.translate(str.maketrans('', '', string.punctuation)).lower()
             last_words = clean_last.split()
+
+            # a) Exact Prompt Leakage
             if clean_text == clean_last:
-                return None
-            if len(words) >= 3 and clean_text in clean_last:
+                print(f"Filtered hallucination (Exact Prompt Leakage): '{text}'")
                 return None
 
+            # b) Partial Prompt Leakage (len >= 3 and clean_text in clean_last)
+            if len(words) >= 3 and clean_text in clean_last:
+                print(f"Filtered hallucination (Partial Prompt Leakage): '{text}'")
+                return None
+
+            # c) Overlapping sliding-window / sub-sequence prompt-leak trimmer using SequenceMatcher
             matcher = difflib.SequenceMatcher(None, last_words, words)
             match = matcher.find_longest_match(0, len(last_words), 0, len(words))
 
@@ -135,7 +152,9 @@ except ImportError:
                 trimmed_words = orig_words[cut_idx:]
                 text = " ".join(trimmed_words).strip()
                 if not text:
+                    print(f"Filtered hallucination (100% Leaked Prompt Drop): matched {match.size} words")
                     return None
+                print(f"Trimmed {match.size} leaked prompt words (matched at idx {match.b}). Kept: '{text}'")
 
                 clean_text = text.translate(str.maketrans('', '', string.punctuation)).lower().strip()
                 clean_text = " ".join(clean_text.split())
@@ -150,9 +169,43 @@ except ImportError:
                     or BROADCAST_CREDIT_PATTERN.match(clean_text)
                     or BROADCAST_CREDIT_PATTERN.match(clean_no_digits)
                 ):
+                    print(f"Filtered hallucination (noise/broadcaster credit after trim): '{text}'")
                     return None
 
-        return text
+        # 1. Repetition filter
+        # A. Exactly the same word repeated
+        if len(words) >= 2 and len(set(words)) == 1:
+            print(f"Filtered hallucination (pure repetitive): '{text}'")
+            return None
+
+        # B. Consecutive repeating words OR extremely low unique word count
+        max_consecutive = 1
+        current_consecutive = 1
+        for i in range(1, len(words)):
+            if words[i] == words[i - 1]:
+                current_consecutive += 1
+                max_consecutive = max(max_consecutive, current_consecutive)
+            else:
+                current_consecutive = 1
+
+        if max_consecutive >= 4:
+            print(f"Filtered hallucination (consecutive word loop {max_consecutive}x): '{text}'")
+            return None
+
+        # E.g. 10 words, but only 2 unique (< 30%)
+        if len(words) >= 5 and len(set(words)) / len(words) < 0.3:
+            print(f"Filtered hallucination (low unique ratio): '{text}'")
+            return None
+
+        # 2. Isolated glossary word filter
+        # When VAD catches a breath/noise, Whisper defaults to outputting 1-2 words from initial_prompt
+        if glossary_phrases and len(words) <= 2:
+            glos_lower = [p.lower() for p in glossary_phrases]
+            if any(w in glos_lower for w in words) or clean_text in glos_lower:
+                print(f"Filtered hallucination (isolated glossary term): '{text}'")
+                return None
+
+        return text if text else None
 
 app = FastAPI()
 

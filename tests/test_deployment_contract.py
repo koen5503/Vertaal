@@ -442,8 +442,10 @@ class TestDeploymentContract(unittest.TestCase):
 
         # 4. Case B: Intentional version upgrade runs setup_once.sh without pre-emptive rm
         self.assertIn('[ -n "$FOUND_BUNDLE_VER" ] && [ "$FOUND_BUNDLE_VER" != "$BUNDLE_VERSION" ]', version_check_block)
-        self.assertIn("Intentional bundle upgrade detected", version_check_block)
-        self.assertIn("bash /workspace/setup_once.sh", version_check_block)
+        self.assertTrue(
+            "run_setup_once" in version_check_block or "bash /workspace/setup_once.sh" in version_check_block,
+            "Intentional version upgrade must run setup_once.sh via run_setup_once",
+        )
         self.assertNotIn(
             "rm -f /workspace/venv_bundle",
             version_check_block,
@@ -582,15 +584,30 @@ class TestDeploymentContract(unittest.TestCase):
             self.assertFalse(success)
 
     def test_boot_and_setup_synchronize_core_package(self):
-        """Verify boot.sh and setup_once.sh synchronize core/ package to /workspace/app/core/."""
+        """Verify boot.sh and setup_once.sh synchronize all core/ package files to /workspace/app/core/."""
+        core_files = [
+            "core/__init__.py",
+            "core/engine.py",
+            "core/translation.py",
+            "core/audio.py",
+            "core/utils.py",
+            "core/stt/__init__.py",
+            "core/stt/base.py",
+            "core/stt/cloud_engine.py",
+            "core/stt/local_engine.py",
+            "core/stt/runpod_engine.py",
+        ]
+
         # 1. boot.sh step [2/8]
         self.assertIn("mkdir -p /workspace/app/core /workspace/app/core/stt", self.boot_src)
-        self.assertIn("core/__init__.py core/translation.py core/audio.py core/stt/__init__.py core/stt/base.py core/stt/local_engine.py", self.boot_src)
+        for cf in core_files:
+            self.assertIn(cf, self.boot_src, f"boot.sh missing sync for {cf}")
         self.assertIn('sync_repo_file "$core_file" "/workspace/app/$core_file"', self.boot_src)
 
         # 2. setup_once.sh step [8/8]
         self.assertIn("mkdir -p /workspace/app /workspace/app/core /workspace/app/core/stt", self.setup_src)
-        self.assertIn("core/__init__.py core/translation.py core/audio.py core/stt/__init__.py core/stt/base.py core/stt/local_engine.py", self.setup_src)
+        for cf in core_files:
+            self.assertIn(cf, self.setup_src, f"setup_once.sh missing sync for {cf}")
         self.assertIn('sync_repo_file "$core_file" "/workspace/app/$core_file"', self.setup_src)
 
     def test_atomic_bundle_migration_pattern(self):
@@ -598,7 +615,7 @@ class TestDeploymentContract(unittest.TestCase):
         # 1. Orphaned tmp cleanup in step [4/8]
         step4_boot = re.search(r"=== \[4/8\].*?(?==== \[5/8\])", self.boot_src, re.DOTALL)
         self.assertIsNotNone(step4_boot)
-        self.assertIn("rm -f /workspace/*.tmp", step4_boot.group(0))
+        self.assertIn("find /workspace -maxdepth 1 -name \"*.tmp\" -mmin +30 -delete", step4_boot.group(0))
 
         # 2. Background migration block verification
         migration_block = re.search(r"# Background Auto-Migration:.*?(?=\necho \"Launching Live Translation Server)", self.boot_src, re.DOTALL)
@@ -855,6 +872,30 @@ class TestDeploymentContract(unittest.TestCase):
             self.assertEqual(dispatched[0]["id"], "seg1")
 
         asyncio.run(run_reference_count_and_suppression_test())
+
+    def test_concurrency_lock_and_circuit_breaker_contracts(self):
+        """Verify concurrency lock (R2) and rebuild circuit breaker (R3) in boot.sh and setup_once.sh."""
+        # 1. Concurrency lock in setup_once.sh
+        self.assertIn('LOCK_DIR="/workspace/.setup.lock"', self.setup_src)
+        self.assertIn("acquire_setup_lock", self.setup_src)
+        self.assertIn('mkdir "$LOCK_DIR"', self.setup_src)
+        self.assertIn('trap \'rm -rf "$LOCK_DIR"\' EXIT INT TERM', self.setup_src)
+        self.assertIn("Setup lock held by another process", self.setup_src)
+        self.assertIn("Stale setup lock detected", self.setup_src)
+
+        # 2. Concurrency lock check in boot.sh
+        self.assertIn('/workspace/.setup.lock', self.boot_src)
+        self.assertIn("Another pod is currently running setup on /workspace", self.boot_src)
+        self.assertIn("Removing stale setup lock", self.boot_src)
+
+        # 3. Circuit breaker in boot.sh
+        self.assertIn("run_setup_once", self.boot_src)
+        self.assertIn("/workspace/.setup_failures", self.boot_src)
+        self.assertIn("setup_fatal.log", self.boot_src)
+        self.assertIn("Halting pod to prevent infinite restart billing loop!", self.boot_src)
+        self.assertIn("https://api.runpod.io/v2/pods/", self.boot_src)
+        self.assertIn("sleep 86400", self.boot_src)
+        self.assertIn("rm -f /workspace/.setup_failures", self.boot_src)
 
 
 if __name__ == "__main__":

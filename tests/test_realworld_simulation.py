@@ -1295,6 +1295,137 @@ import runpod_server
         # Verify deploy_retry_sec was slept before re-deploying
         self.assertIn(5, sleep_durations)
 
+    def test_circuit_breaker_fatal_prevents_redeploy_loop(self):
+        """When container logs contain circuit breaker FATAL, pod is terminated and deployment halted immediately."""
+        broadcast_messages = []
+        terminated_pods = []
+        deploy_calls = 0
+
+        mock_engine = MagicMock()
+        mock_engine.is_paused = False
+        mock_engine.broadcast = AsyncMock(side_effect=lambda msg: broadcast_messages.append(msg))
+
+        stt_engine = RunPodSTTEngine(engine=mock_engine)
+
+        async def mock_manage_deployment():
+            nonlocal deploy_calls
+            deploy_calls += 1
+            stt_engine.active_pod_id = "pod-fatal-cb-123"
+            return True
+
+        stt_engine.manage_runpod_deployment = mock_manage_deployment
+        stt_engine.discover_runpod_url = MagicMock(return_value=None)
+        stt_engine.terminate_runpod_pod = MagicMock(side_effect=lambda pod_id: terminated_pods.append(pod_id))
+
+        fatal_logs = """
+[Boot] Running setup_once.sh...
+[Boot] FATAL: setup_once.sh has failed 3 consecutive times. Halting pod to prevent infinite restart billing loop!
+cat: /workspace/setup_fatal.log
+"""
+        stt_engine.fetch_pod_logs = MagicMock(return_value=("RUNNING", "RUNNING", fatal_logs))
+
+        async def run_sim():
+            return await stt_engine._deploy_and_wait_for_pod(deploy_retry_sec=10)
+
+        result = asyncio.run(run_sim())
+
+        # Assert returns None immediately
+        self.assertIsNone(result)
+        # Assert deploy was called exactly once (no retry)
+        self.assertEqual(deploy_calls, 1)
+        # Assert circuit breaker and permanent error flags are set
+        self.assertTrue(stt_engine.circuit_breaker_tripped)
+        self.assertTrue(stt_engine.is_permanent_deploy_error)
+        self.assertIn("Circuit Breaker", stt_engine.last_deploy_error)
+        # Assert pod was terminated immediately
+        self.assertEqual(terminated_pods, ["pod-fatal-cb-123"])
+        self.assertIsNone(stt_engine.active_pod_id)
+        # Assert FATAL telemetry was broadcast
+        fatal_telemetry = [b for b in broadcast_messages if b.get("status") == "FATAL"]
+        self.assertGreaterEqual(len(fatal_telemetry), 1)
+        self.assertIn("Circuit Breaker", fatal_telemetry[0]["stage"])
+
+    def test_permanent_deploy_errors_stop_retry_loop(self):
+        """Permanent HTTP errors (401, 403) halt the deployment retry loop immediately without retrying."""
+        for http_code in [401, 403]:
+            broadcast_messages = []
+            sleep_calls = []
+            deploy_calls = 0
+
+            mock_engine = MagicMock()
+            mock_engine.is_paused = False
+            mock_engine.broadcast = AsyncMock(side_effect=lambda msg: broadcast_messages.append(msg))
+
+            stt_engine = RunPodSTTEngine(engine=mock_engine)
+
+            async def mock_manage_deployment():
+                nonlocal deploy_calls
+                deploy_calls += 1
+                stt_engine.is_permanent_deploy_error = True
+                stt_engine.last_deploy_error = f"HTTP {http_code}: Request not allowed"
+                return False
+
+            stt_engine.manage_runpod_deployment = mock_manage_deployment
+
+            async def mock_sleep(sec):
+                sleep_calls.append(sec)
+
+            async def run_sim():
+                with patch("asyncio.sleep", side_effect=mock_sleep):
+                    return await stt_engine._deploy_and_wait_for_pod(deploy_retry_sec=15)
+
+            result = asyncio.run(run_sim())
+
+            self.assertIsNone(result)
+            self.assertEqual(deploy_calls, 1, f"Expected 0 retries for HTTP {http_code}")
+            self.assertEqual(len(sleep_calls), 0, f"Expected no sleep/retry for HTTP {http_code}")
+            self.assertTrue(stt_engine.is_permanent_deploy_error)
+            fatal_telemetry = [b for b in broadcast_messages if b.get("status") == "FATAL"]
+            self.assertGreaterEqual(len(fatal_telemetry), 1)
+            self.assertIn(f"HTTP {http_code}", fatal_telemetry[0]["stage"])
+
+    def test_deploy_runpod_pod_permanent_vs_retryable_classification(self):
+        """Verify deploy_runpod_pod classifies 401, 403, and invalid template 400 as permanent, and stock errors as retryable."""
+        import urllib.error
+        from io import BytesIO
+
+        stt_engine = RunPodSTTEngine()
+
+        # 1. Missing API key
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "", "RUNPOD_TEMPLATE_ID": "tmpl-1"}):
+            res = asyncio.run(stt_engine.deploy_runpod_pod())
+            self.assertFalse(res)
+            self.assertTrue(stt_engine.is_permanent_deploy_error)
+
+        # 2. Missing Template ID
+        stt_engine.is_permanent_deploy_error = False
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "valid_key", "RUNPOD_TEMPLATE_ID": ""}):
+            res = asyncio.run(stt_engine.deploy_runpod_pod())
+            self.assertFalse(res)
+            self.assertTrue(stt_engine.is_permanent_deploy_error)
+
+        # 3. HTTP 401 from REST API v2
+        stt_engine.is_permanent_deploy_error = False
+        err_401 = urllib.error.HTTPError("https://api.runpod.io/v2/pods", 401, "Unauthorized", {}, BytesIO(b"Unauthorized key"))
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "bad_key", "RUNPOD_TEMPLATE_ID": "tmpl-1", "RUNPOD_VOLUME_ID": "cmu123"}), \
+             patch("core.stt.runpod_engine._runpod_request", side_effect=err_401), \
+             patch.object(stt_engine, "ensure_template_http_ports", return_value=True):
+            res = asyncio.run(stt_engine.deploy_runpod_pod())
+            self.assertFalse(res)
+            self.assertTrue(stt_engine.is_permanent_deploy_error)
+            self.assertIn("HTTP 401", stt_engine.last_deploy_error)
+
+        # 4. HTTP 400 Bad Request (non-stock, e.g. malformed template)
+        stt_engine.is_permanent_deploy_error = False
+        err_400_template = urllib.error.HTTPError("https://api.runpod.io/v2/pods", 400, "Bad Request", {}, BytesIO(b"Template not found"))
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "key", "RUNPOD_TEMPLATE_ID": "bad_tmpl", "RUNPOD_VOLUME_ID": "cmu123"}), \
+             patch("core.stt.runpod_engine._runpod_request", side_effect=err_400_template), \
+             patch.object(stt_engine, "ensure_template_http_ports", return_value=True):
+            res = asyncio.run(stt_engine.deploy_runpod_pod())
+            self.assertFalse(res)
+            self.assertTrue(stt_engine.is_permanent_deploy_error)
+            self.assertIn("HTTP 400", stt_engine.last_deploy_error)
+
 
 if __name__ == "__main__":
     unittest.main()

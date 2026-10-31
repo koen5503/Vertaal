@@ -433,6 +433,8 @@ class RunPodSTTEngine(BaseSTTEngine):
         self.last_stt_latency_ms: Optional[int] = None
         self.last_trans_latency_ms: Optional[int] = None
         self.last_deploy_error: Optional[str] = None
+        self.circuit_breaker_tripped: bool = False
+        self.is_permanent_deploy_error: bool = False
         self.active_gpu_name: Optional[str] = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
         self.proxy_url: Optional[str] = None
         self.direct_tcp_url: Optional[str] = None
@@ -854,9 +856,16 @@ class RunPodSTTEngine(BaseSTTEngine):
         preferred_gpu = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
         gpu_fallbacks = get_runpod_gpu_fallbacks(preferred_gpu)
 
-        if not api_key or not template_id:
-            self.last_deploy_error = "Missing RUNPOD_API_KEY or RUNPOD_TEMPLATE_ID in environment."
-            print("[RunPod Deploy] Error: Missing API_KEY or TEMPLATE_ID in .env")
+        if not api_key:
+            self.is_permanent_deploy_error = True
+            self.last_deploy_error = "Missing RUNPOD_API_KEY in environment."
+            print("[RunPod Deploy] Error: Missing RUNPOD_API_KEY in environment.")
+            return False
+
+        if not template_id:
+            self.is_permanent_deploy_error = True
+            self.last_deploy_error = "Missing RUNPOD_TEMPLATE_ID in environment."
+            print("[RunPod Deploy] Error: Missing RUNPOD_TEMPLATE_ID in environment.")
             return False
 
         try:
@@ -908,8 +917,23 @@ class RunPodSTTEngine(BaseSTTEngine):
                     except urllib.error.HTTPError as he:
                         err_body = he.read().decode('utf-8', errors='ignore') if hasattr(he, "read") else str(he)
                         print(f"[RunPod Deploy v2] HTTP {he.code} for {gpu_id} ({dc_label}): {err_body}")
-                        self.last_deploy_error = f"GPU {gpu_id} ({dc_label}): HTTP {he.code} - {err_body}"
-                        if "stock" in err_body.lower() or "supply" in err_body.lower() or "unavailable" in err_body.lower() or he.code == 400:
+                        self.last_deploy_error = f"HTTP {he.code}: {err_body}"
+                        # 401 Unauthorized / 403 Forbidden are permanent
+                        if he.code in (401, 403):
+                            self.is_permanent_deploy_error = True
+                            print(f"[RunPod Deploy v2] Permanent error HTTP {he.code}: {err_body}")
+                            return False
+
+                        # 400 Bad Request: only retry if it is a stock/supply issue
+                        is_stock_issue = any(k in err_body.lower() for k in ["stock", "supply", "unavailable", "instances available", "no longer any instances"])
+                        if he.code == 400 and not is_stock_issue:
+                            self.is_permanent_deploy_error = True
+                            print(f"[RunPod Deploy v2] Permanent error HTTP 400 (Bad Request / Template): {err_body}")
+                            return False
+
+                        if is_stock_issue or he.code == 400:
+                            continue
+                        if he.code in (429, 500, 502, 503, 504):
                             continue
                         return False
                     except Exception as e:
@@ -947,12 +971,17 @@ class RunPodSTTEngine(BaseSTTEngine):
                         if "errors" in res:
                             err_msg = res["errors"][0].get("message", "")
                             self.last_deploy_error = f"GPU {gpu_id}: GraphQL error - {err_msg or res.get('errors')}"
-                            if "SUPPLY_CONSTRAINT" in str(res) or "no longer any instances available" in err_msg:
+                            err_msg_lower = err_msg.lower()
+                            if any(k in err_msg_lower for k in ["unauthorized", "forbidden", "invalid key", "not allowed"]):
+                                self.is_permanent_deploy_error = True
+                                print(f"[RunPod Deploy GraphQL] Permanent authorization error: {err_msg}")
+                                return False
+                            if "SUPPLY_CONSTRAINT" in str(res) or "no longer any instances available" in err_msg_lower:
                                 print(f"[RunPod Deploy GraphQL] {gpu_id} out of stock, trying next...")
                                 continue
-                            else:
-                                print(f"[RunPod Deploy GraphQL] API Error for {gpu_id}: {res['errors']}")
-                                return False
+                            self.is_permanent_deploy_error = True
+                            print(f"[RunPod Deploy GraphQL] Permanent API Error for {gpu_id}: {res['errors']}")
+                            return False
 
                         pod_id = res.get("data", {}).get("podFindAndDeployOnDemand", {}).get("id")
                         if pod_id:
@@ -972,8 +1001,15 @@ class RunPodSTTEngine(BaseSTTEngine):
 
     async def manage_runpod_deployment(self) -> bool:
         """Adopts existing running pod if available, terminates exited pods, and rents a fresh pod."""
+        if getattr(self, "circuit_breaker_tripped", False):
+            print("[RunPod Deploy] Circuit breaker is tripped (/workspace/.setup_failures >= 3). Halting auto-deployment.")
+            self.is_permanent_deploy_error = True
+            return False
+
         api_key = os.getenv("RUNPOD_API_KEY")
         if not api_key:
+            self.is_permanent_deploy_error = True
+            self.last_deploy_error = "Missing RUNPOD_API_KEY in environment."
             return False
         api_key = api_key.strip().strip('\'" ')
 
@@ -1229,6 +1265,16 @@ class RunPodSTTEngine(BaseSTTEngine):
             if deploy_success:
                 break
 
+            if getattr(self, "is_permanent_deploy_error", False) or getattr(self, "circuit_breaker_tripped", False):
+                print(f"[RunPod Deploy] Permanent error detected: {self.last_deploy_error}. Halting deployment retry loop.")
+                await self.broadcast_boot_telemetry(
+                    None,
+                    f"Fout: {self.last_deploy_error}",
+                    "FATAL",
+                    [self.last_deploy_error]
+                )
+                return None
+
             preferred_gpu = os.getenv("RUNPOD_GPU_ID", DEFAULT_RUNPOD_GPU)
             err_detail = getattr(self, "last_deploy_error", None) or f"Kon pod niet provisioneren op RunPod (GPU: {self.active_gpu_name or preferred_gpu})."
             print(f"[RunPod] Auto-Deployment failed: {err_detail}. Retrying in {deploy_retry_sec}s...")
@@ -1263,6 +1309,28 @@ class RunPodSTTEngine(BaseSTTEngine):
                 detailed_stage = f"{stage} ({elapsed_sec}s verlopen)" if "verlopen" not in stage else stage
                 await self.broadcast_boot_telemetry(self.active_pod_id, detailed_stage, last_status or desired_status, clean_lines)
                 print(f"[RunPod Boot] {detailed_stage}")
+
+                log_check_text = ((raw_logs or "") + " " + " ".join(clean_lines or []) + " " + (stage or "")).lower()
+                cb_triggers = [
+                    "fatal: setup_once.sh has failed",
+                    "setup_fatal.log",
+                    "halting pod to prevent infinite restart billing loop!",
+                    "fout in container: fatal",
+                ]
+                if any(trigger in log_check_text for trigger in cb_triggers):
+                    print(f"[RunPod Boot] Circuit breaker tripped detected in pod logs!")
+                    self.circuit_breaker_tripped = True
+                    self.is_permanent_deploy_error = True
+                    self.last_deploy_error = "Circuit Breaker: setup_once.sh is 3x achter elkaar gefaald. Automatische herstart geblokkeerd."
+                    await self.broadcast_boot_telemetry(
+                        self.active_pod_id,
+                        "FATAL: Circuit Breaker geactiveerd (setup 3x gefaald)",
+                        "FATAL",
+                        clean_lines or [self.last_deploy_error]
+                    )
+                    await loop.run_in_executor(None, self.terminate_runpod_pod, self.active_pod_id)
+                    self.active_pod_id = None
+                    return None
 
             if not wss_url:
                 wss_url = self.discover_runpod_url()
@@ -1327,6 +1395,11 @@ class RunPodSTTEngine(BaseSTTEngine):
         connect_start_time = time.time()
         first_connect_attempt = True
         while True:
+            if getattr(self, "is_permanent_deploy_error", False) or getattr(self, "circuit_breaker_tripped", False):
+                print(f"[RunPod] Halting reconnect loop due to permanent error / circuit breaker: {self.last_deploy_error}")
+                while getattr(self, "is_permanent_deploy_error", False) or getattr(self, "circuit_breaker_tripped", False):
+                    await asyncio.sleep(2.0)
+
             if auto_deploy_enabled and not first_connect_attempt:
                 running_url = self.discover_runpod_url()
                 if not running_url:
@@ -1872,6 +1945,28 @@ class RunPodSTTEngine(BaseSTTEngine):
                         stage, clean_lines = self.condense_runpod_logs(raw_logs)
                         detailed_stage = f"{stage} ({elapsed_sec}s verlopen)" if "verlopen" not in stage else stage
                         await self.broadcast_boot_telemetry(self.active_pod_id, detailed_stage, last_status or desired_status, clean_lines)
+
+                        log_check_text = ((raw_logs or "") + " " + " ".join(clean_lines or []) + " " + (stage or "")).lower()
+                        cb_triggers = [
+                            "fatal: setup_once.sh has failed",
+                            "setup_fatal.log",
+                            "halting pod to prevent infinite restart billing loop!",
+                            "fout in container: fatal",
+                        ]
+                        if any(trigger in log_check_text for trigger in cb_triggers):
+                            print(f"[RunPod Boot Telemetry] Circuit breaker tripped detected in pod logs during retry!")
+                            self.circuit_breaker_tripped = True
+                            self.is_permanent_deploy_error = True
+                            self.last_deploy_error = "Circuit Breaker: setup_once.sh is 3x achter elkaar gefaald. Automatische herstart geblokkeerd."
+                            await self.broadcast_boot_telemetry(
+                                self.active_pod_id,
+                                "FATAL: Circuit Breaker geactiveerd (setup 3x gefaald)",
+                                "FATAL",
+                                clean_lines or [self.last_deploy_error]
+                            )
+                            await loop.run_in_executor(None, self.terminate_runpod_pod, self.active_pod_id)
+                            self.active_pod_id = None
+                            wss_url = None
                     except Exception as te:
                         print(f"[RunPod Boot Telemetry] Error updating logs during retry: {te}")
 

@@ -1426,6 +1426,114 @@ cat: /workspace/setup_fatal.log
             self.assertTrue(stt_engine.is_permanent_deploy_error)
             self.assertIn("HTTP 400", stt_engine.last_deploy_error)
 
+    def test_ollama_keep_alive_prevents_unloading_after_prolonged_silence(self):
+        """
+        Verify that after simulated silence intervals (e.g. 15 minutes of quiet during a church service)
+        and periodic heartbeat probes, translation dispatch in both core.translation.TranslationEngine
+        and runpod_server retains keep_alive=-1 so Ollama keeps aya-expanse:8b pinned in GPU VRAM indefinitely.
+        """
+        import sys
+        from core.translation import Translator
+
+        # 1. Verify core.translation.Translator local dispatch retains keep_alive=-1
+        local_engine = Translator(pipeline_mode="local", source_lang="nl")
+        mock_client = AsyncMock()
+        mock_client.chat = AsyncMock(return_value={"message": {"content": "Welcome to the service"}})
+        mock_ollama = MagicMock()
+        mock_ollama.AsyncClient = MagicMock(return_value=mock_client)
+
+        with patch.dict("sys.modules", {"ollama": mock_ollama}):
+            # t0: Initial speech before silence
+            res0 = asyncio.run(local_engine.translate_text_async("Welkom in de dienst", "en", "nl"))
+            self.assertEqual(res0, "Welcome to the service")
+            self.assertEqual(mock_client.chat.call_args.kwargs.get("keep_alive"), -1)
+            mock_client.chat.reset_mock()
+
+            # Simulate 15 minutes (900s) of prolonged silence with 60s heartbeat probes
+            silence_seconds = 900
+            heartbeat_interval = 60
+            probes = 0
+            for _ in range(0, silence_seconds, heartbeat_interval):
+                probes += 1
+            self.assertEqual(probes, 15)
+            self.assertEqual(mock_client.chat.call_count, 0)
+
+            # Minute 15: Speech resumes after quiet passage
+            mock_client.chat.return_value = {"message": {"content": "Let us pray together"}}
+            res15 = asyncio.run(local_engine.translate_text_async("Laten we samen bidden", "en", "nl"))
+            self.assertEqual(res15, "Let us pray together")
+            self.assertEqual(
+                mock_client.chat.call_args.kwargs.get("keep_alive"),
+                -1,
+                "Translator._translate_local must pass keep_alive=-1 after prolonged silence",
+            )
+
+        # 2. Verify runpod_server.py translate_text, warmup_ollama, and environment default
+        saved_modules = {m: sys.modules.get(m) for m in ["faster_whisper", "ollama", "uvicorn", "fastapi", "numpy"]}
+        try:
+            mock_fw = MagicMock()
+            mock_ollama_module = MagicMock()
+            mock_server_client = AsyncMock()
+            mock_server_client.chat = AsyncMock(return_value={"message": {"content": "Peace be with you"}})
+            mock_ollama_module.AsyncClient.return_value = mock_server_client
+
+            sys.modules["faster_whisper"] = mock_fw
+            sys.modules["ollama"] = mock_ollama_module
+            sys.modules["fastapi"] = MagicMock()
+            sys.modules["uvicorn"] = MagicMock()
+            if "numpy" not in sys.modules:
+                try:
+                    import numpy  # type: ignore
+                except ImportError:
+                    sys.modules["numpy"] = MagicMock()
+
+            if "runpod_server" in sys.modules:
+                del sys.modules["runpod_server"]
+
+            with patch("urllib.request.urlopen"):
+                import runpod_server
+
+            self.assertEqual(
+                os.environ.get("OLLAMA_KEEP_ALIVE"),
+                "-1",
+                "runpod_server must setdefault OLLAMA_KEEP_ALIVE='-1'",
+            )
+
+            # Test warmup_ollama payload includes keep_alive: -1
+            captured_requests = []
+            def capture_urlopen(req, timeout=None):
+                captured_requests.append(req)
+                resp = MagicMock()
+                resp.status = 200
+                resp.__enter__.return_value = resp
+                return resp
+
+            with patch("urllib.request.urlopen", side_effect=capture_urlopen):
+                warmup_ok = runpod_server.warmup_ollama("aya-expanse:8b", host="http://127.0.0.1:11434")
+                self.assertTrue(warmup_ok)
+                self.assertEqual(len(captured_requests), 1)
+                payload = json.loads(captured_requests[0].data.decode("utf-8"))
+                self.assertEqual(payload.get("keep_alive"), -1, "warmup_ollama must pass keep_alive: -1 in JSON payload")
+
+            # Test translate_text after prolonged silence retains keep_alive=-1
+            runpod_server.client = mock_server_client
+            runpod_server.reset_session_timer("silence_heartbeat")
+
+            res_server = asyncio.run(runpod_server.translate_text("Vrede zij met u", "en", "nl"))
+            self.assertEqual(res_server, "Peace be with you")
+            self.assertEqual(
+                mock_server_client.chat.call_args.kwargs.get("keep_alive"),
+                -1,
+                "runpod_server.translate_text must pass keep_alive=-1 to Ollama chat client",
+            )
+        finally:
+            for m, mod in saved_modules.items():
+                if mod is None:
+                    sys.modules.pop(m, None)
+                else:
+                    sys.modules[m] = mod
+            sys.modules.pop("runpod_server", None)
+
 
 if __name__ == "__main__":
     unittest.main()

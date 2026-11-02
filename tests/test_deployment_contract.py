@@ -990,6 +990,30 @@ class TestDeploymentContract(unittest.TestCase):
         self.assertIn("sleep 86400", self.boot_src)
         self.assertIn("rm -f /workspace/.setup_failures", self.boot_src)
 
+    def test_ollama_keep_alive_configuration_contract(self):
+        """Verify Ollama keep_alive=-1 is configured across boot.sh, setup_once.sh, runpod_server.py, and core/translation.py."""
+        # 1. boot.sh
+        self.assertIn("export OLLAMA_KEEP_ALIVE=-1", self.boot_src)
+
+        # 2. setup_once.sh
+        self.assertIn("export OLLAMA_KEEP_ALIVE=-1", self.setup_src)
+
+        # 3. runpod_server.py
+        runpod_path = os.path.join(self.project_root, "runpod_server.py")
+        with open(runpod_path, "r", encoding="utf-8") as f:
+            server_src = f.read()
+
+        self.assertIn('os.environ.setdefault("OLLAMA_KEEP_ALIVE", "-1")', server_src)
+        self.assertIn('"keep_alive": -1', server_src)
+        self.assertRegex(server_src, r"client\.chat\([\s\S]*?keep_alive=-1")
+
+        # 4. core/translation.py
+        translation_path = os.path.join(self.project_root, "core", "translation.py")
+        with open(translation_path, "r", encoding="utf-8") as f:
+            trans_src = f.read()
+
+        self.assertRegex(trans_src, r"client\.chat\([\s\S]*?keep_alive=-1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,7 @@ os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
 os.environ.setdefault("TORCH_HOME", "/tmp/torch_cache")
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 os.environ.setdefault("OLLAMA_MODELS", "/root/.ollama/models" if os.path.isdir("/root/.ollama/models") else "/workspace/models/ollama")
+os.environ.setdefault("OLLAMA_KEEP_ALIVE", "-1")
 
 # Ensure volatile local SSD cache directories exist
 os.makedirs("/tmp/hf_cache", exist_ok=True)
@@ -131,7 +132,8 @@ def warmup_ollama(model_name: str, host: str = "http://127.0.0.1:11434", max_ret
                     "model": model_name,
                     "messages": [{"role": "user", "content": "hi"}],
                     "stream": False,
-                    "options": {"temperature": 0}
+                    "options": {"temperature": 0},
+                    "keep_alive": -1,
                 }).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
                 method="POST"
@@ -289,7 +291,8 @@ async def translate_text(text: str, target_lang: str, source_lang: str):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
-            options={'temperature': 0}
+            options={'temperature': 0},
+            keep_alive=-1
         )
         t = response['message']['content'].strip()
         trans_elapsed = time.time() - t_trans_start

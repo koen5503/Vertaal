@@ -315,6 +315,7 @@ export TORCH_HOME=/tmp/torch_cache
 export PYTHONUNBUFFERED=1
 export OLLAMA_MODELS=/root/.ollama/models
 export OLLAMA_NUM_PARALLEL=2
+export OLLAMA_KEEP_ALIVE=-1
 export WHISPER_MODEL=/root/models/faster-whisper-large-v3
 
 # Configure CUDA / cuDNN library paths

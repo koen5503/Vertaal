@@ -197,6 +197,7 @@ class Translator:
                     {"role": "user", "content": text},
                 ],
                 options={"temperature": 0},
+                keep_alive=-1,
             )
             raw = response["message"]["content"].strip()
             return clean_translation_meta(raw)

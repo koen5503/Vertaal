@@ -194,6 +194,7 @@ else
     echo "=== [6/8] Pulling Ollama aya-expanse:8b on local NVMe SSD and copying to /workspace ==="
     mkdir -p /root/.ollama/models /workspace/models/ollama
     pkill -9 -f "ollama" 2>/dev/null || true
+    export OLLAMA_KEEP_ALIVE=-1
     ollama serve &
     OLLAMA_PID=$!
     sleep 4

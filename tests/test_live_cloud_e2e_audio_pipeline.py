@@ -455,22 +455,22 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
         audio_path = get_demo_audio_path()
         self.assertTrue(os.path.exists(audio_path), f"Domain audio file missing: {audio_path}")
 
-        # Slicing frames from authentic sermon audio: 0 to 5s for Baseline, 5 to 10s for Post-Silence
+        # Slicing frames from authentic sermon audio: 9 to 14s for Baseline, 14 to 19s for Post-Silence
         with wave.open(audio_path, "rb") as wf:
             channels = wf.getnchannels()
             sample_width = wf.getsampwidth()
             framerate = wf.getframerate()
 
-            # Slice frames 0 to 5 seconds
-            wf.setpos(0)
+            # Slice frames 9 to 14 seconds
+            wf.setpos(int(framerate * 9.0))
             raw_chunk_1 = wf.readframes(int(framerate * 5.0))
 
-            # Slice frames 5 to 10 seconds
-            wf.setpos(int(framerate * 5.0))
+            # Slice frames 14 to 19 seconds
+            wf.setpos(int(framerate * 14.0))
             raw_chunk_2 = wf.readframes(int(framerate * 5.0))
 
-        self.assertGreater(len(raw_chunk_1), 0, "No audio frames read for baseline chunk 1 (0-5s)")
-        self.assertGreater(len(raw_chunk_2), 0, "No audio frames read for post-silence chunk 2 (5-10s)")
+        self.assertGreater(len(raw_chunk_1), 0, "No audio frames read for baseline chunk 1 (9-14s)")
+        self.assertGreater(len(raw_chunk_2), 0, "No audio frames read for post-silence chunk 2 (14-19s)")
 
         # Resample both 5s chunks to 16kHz mono 16-bit PCM
         pcm_chunk_1 = resample_for_stt(
@@ -594,9 +594,9 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
                     }
                     await ws.send(json.dumps(audio_meta_1))
 
-                    # Stream audio chunk 1 (0 to 5s)
+                    # Stream audio chunk 1 (9 to 14s)
                     await ws.send(pcm_chunk_1)
-                    print(f"[RunPod 15m Baseline] Streamed {len(pcm_chunk_1)} bytes of audio chunk 1 (0-5s).")
+                    print(f"[RunPod 15m Baseline] Streamed {len(pcm_chunk_1)} bytes of audio chunk 1 (9-14s).")
 
                     # Await and record baseline STT (col1_text) and Translation (col2_text)
                     baseline_col1 = ""
@@ -690,7 +690,7 @@ class TestLiveCloudE2EAudioPipeline(unittest.TestCase):
                     }
                     await ws.send(json.dumps(audio_meta_2))
                     await ws.send(pcm_chunk_2)
-                    print(f"\n[RunPod 15m Post-Silence] Streamed audio chunk 2 (5-10s, {len(pcm_chunk_2)} bytes). Awaiting response...")
+                    print(f"\n[RunPod 15m Post-Silence] Streamed audio chunk 2 (14-19s, {len(pcm_chunk_2)} bytes). Awaiting response...")
 
                     deadline = time.time() + 60.0
                     while time.time() < deadline:

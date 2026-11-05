@@ -132,11 +132,11 @@ When updating Python dependencies or the Ollama runtime version:
 
 2. **Compute new bundle version hash**:
    ```bash
-   python3 -c 'import hashlib; c=open("requirements-pod.txt","rb").read()+b"\nOLLAMA_VERSION=0.5.7"; print("2026.10.2+" + hashlib.sha256(c).hexdigest()[:8])'
+   python3 -c 'import hashlib; c=open("requirements-pod.txt","rb").read()+b"\nOLLAMA_VERSION=0.5.7"; print("2026.11.1+" + hashlib.sha256(c).hexdigest()[:8])'
    ```
 
 3. **Update `BUNDLE_VERSION` in boot scripts**:
-   - Set `BUNDLE_VERSION="2026.10.2+<sha8>"` identically in both `boot.sh` and `setup_once.sh`.
+   - Set `BUNDLE_VERSION="2026.11.1+<sha8>"` identically in both `boot.sh` and `setup_once.sh`.
    - Update `OLLAMA_VERSION="<version>"` identically in both scripts.
 
 4. **Run Pre-Flight Verification Gate**:

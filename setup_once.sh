@@ -14,7 +14,7 @@
 set -euo pipefail
 
 OLLAMA_VERSION="0.5.7"
-BUNDLE_VERSION="2026.10.2+bc79cf0b"
+BUNDLE_VERSION="2026.11.1+bc79cf0b"
 REPO_BRANCH="${RUNPOD_REPO_BRANCH:-feature/local-mac-ai-pipeline}"
 REPO_RAW="${RUNPOD_REPO_RAW:-https://raw.githubusercontent.com/koen5503/Vertaal/${REPO_BRANCH}}"
 FALLBACK_REPO_RAW="https://raw.githubusercontent.com/koen5503/Vertaal/main"
@@ -103,7 +103,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     zstd curl procps ffmpeg libsndfile1
 
 mkdir -p /workspace/bin
-if command -v zstd >/dev/null 2>&1 && [ ! -x "/workspace/bin/zstd" ]; then
+if command -v zstd >/dev/null 2>&1; then
     cp -f "$(command -v zstd)" /workspace/bin/zstd
 fi
 

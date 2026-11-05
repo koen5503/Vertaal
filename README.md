@@ -362,13 +362,13 @@ python3 -m unittest discover -s tests -p "test_*.py" -v
 
 ### Upgrading Pod Dependencies
 
-Remote RunPod container dependencies are pinned in `requirements-pod.txt` and bound to the volume bundle version via a deterministic SHA256 suffix (`BUNDLE_VERSION="2026.10.2+<sha8>"`):
+Remote RunPod container dependencies are pinned in `requirements-pod.txt` and bound to the volume bundle version via a deterministic SHA256 suffix (`BUNDLE_VERSION="2026.11.1+<sha8>"`):
 
 1. **Update package pin or Ollama**:
    - Edit package versions in `requirements-pod.txt` or change `OLLAMA_VERSION` in `boot.sh` and `setup_once.sh`.
 2. **Compute new bundle version**:
    ```bash
-   python3 -c 'import hashlib; c=open("requirements-pod.txt","rb").read()+b"\nOLLAMA_VERSION=0.5.7"; print("2026.10.2+" + hashlib.sha256(c).hexdigest()[:8])'
+   python3 -c 'import hashlib; c=open("requirements-pod.txt","rb").read()+b"\nOLLAMA_VERSION=0.5.7"; print("2026.11.1+" + hashlib.sha256(c).hexdigest()[:8])'
    ```
 3. **Update `BUNDLE_VERSION` in `boot.sh` and `setup_once.sh`**:
    - Both scripts must declare identical `BUNDLE_VERSION` and `OLLAMA_VERSION`.

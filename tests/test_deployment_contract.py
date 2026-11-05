@@ -414,7 +414,7 @@ class TestDeploymentContract(unittest.TestCase):
     def test_bundle_version_manifest_and_python_coupling_guard(self):
         """
         Verify Bundle Version Manifest, Legacy Adoption, and Intentional Upgrade Guard:
-        1. BUNDLE_VERSION='2026.10.2+${sha8}' defined dynamically in both boot.sh and setup_once.sh
+        1. BUNDLE_VERSION='2026.11.1+${sha8}' defined dynamically in both boot.sh and setup_once.sh
         2. setup_once.sh writes /workspace/.bundle_version upon successful archiving
         3. Case A: boot.sh adopts BUNDLE_VERSION for legacy bundles when .bundle_version is missing
         4. Case B: boot.sh detects intentional upgrade and runs setup_once.sh when FOUND_BUNDLE_VER != BUNDLE_VERSION
@@ -433,7 +433,7 @@ class TestDeploymentContract(unittest.TestCase):
         with open(self.req_pod_path, "rb") as f:
             req_bytes = f.read()
         expected_sha8 = hashlib.sha256(req_bytes + b"\nOLLAMA_VERSION=" + ollama_ver.encode()).hexdigest()[:8]
-        expected_bundle_ver = f"2026.10.2+{expected_sha8}"
+        expected_bundle_ver = f"2026.11.1+{expected_sha8}"
 
         self.assertIn(f'BUNDLE_VERSION="{expected_bundle_ver}"', self.boot_src)
         self.assertIn(f'BUNDLE_VERSION="{expected_bundle_ver}"', self.setup_src)
